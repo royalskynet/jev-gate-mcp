@@ -4,9 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "build": "node gateway/scripts/build-check.mjs",
+    "gateway:stdio": "node gateway/src/stdio.js",
+    "gateway:http": "node gateway/src/http.js"
   },
   "dependencies": {
-    "jevwire": "github:Brainwires/jevwire#main"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "jevwire": "github:Brainwires/jevwire#main",
+    "zod": "^4.6.5"
   }
 }
