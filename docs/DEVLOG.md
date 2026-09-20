@@ -214,7 +214,45 @@ Test Files  3 passed (3)   Tests  32 passed (32)
 
 ## 接續建議
 
-1. 幾天後看 `$.ui.log` 的 `jev-prune(...)` 與 compaction 的 `decisions:` 命中率，
-   再決定門檻要不要動。兩邊都有 log，不必憑感覺調。
+1. 幾天後看 `~/.openclaw/state/jev-compaction.log` 的走 Jev / 退回比例，再決定門檻
+   要不要動（見 §9）。`jev-prune(...)` 那側目前**沒有**等價的落盤，要調門檻得先比照
+   補一條 ledger。
 2. `assistant:tool_use:Bash` 佔 16.6%、`Write` 佔 8.6%——這兩塊是**模型自己寫的輸入**，
    prune 與 compaction 都碰不到進 context 前的那一刻。要省只能靠 compaction 回頭砍。
+
+
+## 9. 後續觀察：`$.ui.log` 不落盤，所以自己寫 ledger（2026-09-21）
+
+§8 收尾說「兩邊都有 log」——錯的。`$.ui.log` 與 toast **只在 TUI**，除非
+`claude --debug` 否則不寫任何檔案（`~/.claude/debug/` 最後一筆停在 9/14）。
+
+一度想直接 grep session transcript，因為 `jev-prune(` 在本 session 的 `.jsonl` 裡
+grep 得到 136 筆。實際查下去**全部是自己討論這件事時寫的同名字串**：那 41 條
+`jev-prune(` 記錄型別是 `assistant` / `user` message，不是 hook 產出。
+plugin enabled ≠ hook 有跑，而 grep 出來的數字看起來剛好像「有跑」——
+跟 §7 那個 25% 誤判同一類陷阱：量到的東西不是想量的東西。
+
+落地（都在 `~/dev/fast-jev-compaction-openrouter` 與 `~/dev/agent-tools`）：
+
+- `hooks/fast-jev.ts` 的 `notify()` 每次壓縮 append 一行到
+  `~/.openclaw/state/jev-compaction.log`。三種結局（走 Jev / 沒省夠退回 / 例外退回）
+  本來就全部經過 `notify()`，所以這是唯一的縫。`$.fs` 沒有 append，只能 read-then-write；
+  一次壓縮一行，檔案長不大。整段包在 try/catch：ledger 是觀察用的，不准弄壞壓縮。
+  `npm run typecheck` 過、32 測試全過（含活線）。
+- `bin/jev-compaction-watch.sh` + launchd `com.51mini.jev-compaction-watch`（每日 09:00），
+  有新事件才推 Coco，沒事安靜。`--dry-run` 是無頭驗收入口，且刻意不消耗 state。
+- 安裝走 `oneshot.d` break-glass（沙箱擋 `~/Library/LaunchAgents`）。第一次被
+  `BREAKGLASS REFUSED`：boot-guard 用 `head -1` 檢查 `# break-glass:` header，
+  而我把 `#!/bin/bash` 放在第一行。header 必須是**第 1 行**，shebang 都不能擋在前面。
+
+驗收：
+
+```
+launchctl print "gui/$(id -u)/com.51mini.jev-compaction-watch"
+    path = /Users/51mini/Library/LaunchAgents/com.51mini.jev-compaction-watch.plist
+    state = not running        # calendar job 未到點，正常
+    runs = 0
+```
+
+要觀察什麼：`fallback to built-in summary` 若占多數，依序查 `minReductionRatio`
+（短 session 本來就省不到 25%）、`keepThreshold`、金鑰檔可讀性。
