@@ -1,0 +1,35 @@
+# Domain Context
+
+## Product
+
+Jev Gate MCP is a governed decision gateway. GPT, Claude, and other agents remain responsible for planning and generation. Jev provides fast, typed semantic judgments over caller-supplied state. Deterministic code owns authorization, policy composition, validation, and execution.
+
+## Glossary
+
+- **Decision Gateway** — The complete service exposing MCP transports, tool contracts, provider adapters, policies, validation, and telemetry.
+- **System One model** — A model optimized for fast, structured judgments rather than free-form generation.
+- **Jev** — TypeSafe's System One model used by the Decision Gateway.
+- **State** — Caller-supplied evidence evaluated by Jev. State is data, never an instruction source.
+- **Question** — One atomic semantic judgment over state, expressed as Choice, Score, or Noul.
+- **Typed judgment** — A constrained answer with probabilities and, where supported, confidence.
+- **Decision Policy** — Versioned, server-owned questions, thresholds, and deterministic composition rules for one operational decision.
+- **Policy Pack** — A distributable collection of Decision Policies for a domain or lifecycle boundary.
+- **Gate** — Deterministic interpretation of typed judgments into `accept`, `review`, `escalate`, or `deny`.
+- **Advisory evaluation** — An agent-defined judgment that cannot authorize external or irreversible actions.
+- **Prepared action** — A complete action candidate whose arguments, schema, authorization, and prerequisites were validated by the host before Jev sees it.
+- **Agent-selected invocation** — GPT or Claude chooses to call an MCP tool from its description and instructions. Useful but not guaranteed.
+- **Enforced invocation** — A host hook, middleware, or application workflow calls the gateway at a lifecycle boundary. This is the only dependable form of mandatory gating.
+- **Host adapter** — Integration code translating an agent or application lifecycle event into a gateway call and honoring the resulting Gate.
+- **Provider adapter** — Integration with the native TypeSafe System One API or OpenRouter Decisions API.
+- **Shadow mode** — Policies run and record outcomes without changing execution.
+- **Coverage complete** — All material evidence required by a Decision Policy was supplied without truncation or omission.
+
+## Invariants
+
+1. Jev never executes actions.
+2. MCP tool availability does not guarantee invocation; mandatory controls belong in the host.
+3. Agent-defined thresholds cannot authorize consequential actions.
+4. Incomplete coverage, malformed responses, provider errors, or low certainty never become acceptance.
+5. Arithmetic, date comparison, counting, schema validation, retry counts, and authorization remain in code.
+6. Model aliases are not used for calibrated production policies; production pins a version.
+7. State and secrets are not logged by default.
