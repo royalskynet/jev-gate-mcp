@@ -190,6 +190,21 @@ async function prune(tool, $, e, next) {
   if (!droppedLines) return r;
 
   $.ui.log(`jev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped`);
+  // ponytail: the ui.log above is TUI-only and reaches no file unless --debug;
+  // on a headless box the prune outcome would be unobservable and the threshold
+  // impossible to tune, so mirror it to a ledger. $.fs has no append, hence
+  // read-then-write; clock.now for a real ISO timestamp. Ledger is observation
+  // only — never let it break prune.
+  try {
+    const at = new Date(await $.clock.now()).toISOString();
+    const previous = await $.fs.read('/Users/51mini/.openclaw/state/jev-prune.log').catch(() => '');
+    await $.fs.write(
+      '/Users/51mini/.openclaw/state/jev-prune.log',
+      `${previous}${at}\tjev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped\n`,
+    );
+  } catch {
+    /* ledger is observation only */
+  }
   // No `ref`: core re-maps this record for the model instead of reusing its own.
   return { result: target.set(r.result, kept) };
 }
