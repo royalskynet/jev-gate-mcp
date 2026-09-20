@@ -82,13 +82,25 @@ e2e 用 `claude -p` 子 session 實測（子 session 需 `--settings '{"sandbox"
 否則 EPERM 開不了 socket）。注意 `-p` 模式預設沒有 `Grep` 工具，會退回 `grep -rn`；
 要驗 Grep 路徑必須加 `--allowedTools Grep`。
 
-## 下一個槓桿：`session.compact`（2026-09-21 已評估）
+## 下一個槓桿：`session.compact`（2026-09-21 已評估並落地）
 
 **結論：不自己寫，裝 `ingebyd/fast-jev-compaction-openrouter`。** 它已經處理掉
 tool_use/tool_result 配對、最新 N 則釘住、state 裝不下時分階段壓縮與失敗退回內建摘要，
 而且每個 request 固定帶 `{"provider":{"zdr":true,"data_collection":"deny"}}` 不可關閉——
-compaction 送出去的是**整段對話**，這個 ZDR 條件不是可選項。細節與待決的 key 來源問題見
-`docs/DEVLOG.md` §6。
+compaction 送出去的是**整段對話**，這個 ZDR 條件不是可選項。細節見 `docs/DEVLOG.md` §6。
+
+待決的 key 來源問題已解：vendored 到 `~/dev/fast-jev-compaction-openrouter`，在
+`getApiKey` 補一條讀金鑰**檔案**的 fallback，`settings.json` 不留第二份副本。
+活線驗收 17,557→220 字元、32 測試全過，見 `docs/DEVLOG.md` §8。
+
+## context 到底被什麼吃掉（2026-09-21 實測，修正先前誤判）
+
+只統計 transcript 裡帶 `message` 的記錄（＝真的送進 API 的部分）：
+`tool_result` **46.6%**、`user:text` 21.0%、`tool_use:Bash` 16.6%、`Write` 8.6%。
+
+先前 DEVLOG §7 把「hook 驗證錯誤佔 transcript 檔 25%」講成佔 context，是錯的：
+那些 `{"type":"attachment"}` 記錄沒有 `message` 欄位，472 次裡只有 4 次真的進 API。
+`hook_success` 那 15% 同理，注入量 0，不是洞。修 hook 仍然對，但省的是磁碟與重放。
 
 ## 仍未解
 

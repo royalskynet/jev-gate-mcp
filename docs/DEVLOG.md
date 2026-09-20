@@ -129,11 +129,11 @@ Read 刻意最保守：Bash/Grep 的輸出是「關於檔案的報告」，Read 
 而本機的金鑰放在 `~/.creds/kv/`（本 repo 的 hook 是用 `$.fs.read` 讀檔）。照它的裝法會在
 settings 裡多一份金鑰副本。接續時先決定：改走檔案讀取（fork 一行），或由啟動 shell 注入環境變數。
 
-## 7. 順帶挖到的大洞：自己的 hook 在灌 context
+## 7. 自己的 hook 在灌 transcript——但**不是**在灌 context
 
-分析本 session 的 transcript（2,711 列、約 4.9MB）時發現組成：
+分析本 session 的 transcript 時，檔案組成是這樣：
 
-| 類別 | 列數 | 字元 | 佔比 |
+| 類別 | 列數 | 字元 | 佔檔案 |
 |---|---|---|---|
 | `attachment:hook_non_blocking_error` | 438 | 1,238,584 | **25.4%** |
 | assistant | 464 | 1,055,534 | 21.6% |
@@ -148,17 +148,73 @@ Hook JSON output validation failed — hookSpecificOutput is missing required fi
 
 根因：兩支都是 record-only，卻還是印了一個非法的 `hookSpecificOutput`
 （一支印 `{policy:'bypass'}`——`policy` 根本不是合法欄位；另一支在沒有告警時印 `{}`）。
-引擎每次拒收，然後把完整的錯誤訊息＋期望 schema 塞回 transcript，**每次 Bash 呼叫一份**。
+引擎每次拒收，然後把完整的錯誤訊息＋期望 schema 寫回 transcript，**每次 Bash 呼叫一份**。
 
 修法是各刪一行「沒東西就完全不印 stdout」。驗收：餵一筆 PostToolUse payload 進去，
 stdout 必須是空的（用 `xxd` 確認，因為「看起來沒輸出」和「輸出了空字串」在終端上長一樣）。
 
-順序上這件事比 compaction 值錢得多：省下來的是同一個量級的 token，改動是兩行，成本是零。
+### 但「佔 transcript 25%」不等於「吃掉 25% context」——原本這裡寫錯了
+
+回頭查那 15% 的 `hook_success` 時才發現分母搞錯。這兩種 hook 記錄在 `.jsonl` 裡都是
+**獨立的 `{"type":"attachment"}` 記錄，沒有 `message` 欄位**。實測同一份 transcript：
+
+- `hook_non_blocking_error` 出現 **472 次**，其中只有 **4 次**落進帶 `message` 的記錄。
+- `hook_success` 的 no-op 列（`suppressOutput: true`）共 839 筆、約 256KB，注入量 **0**。
+
+真正會進 context 的只有 `hookSpecificOutput.additionalContext` 與 SessionStart 的
+`content`。本 session 實際注入量：claude-mem 召回 60,788、ponytail 24,174、caveman 11,034、
+fixindex 1,570、plan-path-notice 1,217、guard 551——合計約 99KB，其中八成是刻意要的東西。
+
+所以那兩支 hook 的修法仍然對（`/compact`、resume replay、claude-mem 都要讀這個檔），
+但省下來的是**磁碟與重放成本，不是 context 成本**。`hook_success` 那 15% 同理，不是洞。
+
+### 那 context 到底被什麼吃掉？
+
+只統計帶 `message` 的記錄（＝真的送進 API 的部分），總量 548,390 字元：
+
+| 部位 | 字元 | 佔比 |
+|---|---|---|
+| `user:tool_result` | 255,443 | **46.6%** |
+| `user:text` | 115,093 | 21.0% |
+| `assistant:tool_use:Bash`（指令本身） | 91,201 | 16.6% |
+| `assistant:tool_use:Write`（寫進去的檔案內容） | 47,223 | 8.6% |
+| `assistant:text` | 29,514 | 5.4% |
+
+第一槓桿是 `tool_result`，也就是本 repo 的 prune 正對著的那塊。第二槓桿是整段歷史，
+也就是 compaction。hook 噪音根本不在榜上。
+
+## 8. compaction 落地（2026-09-21）
+
+`ingebyd/fast-jev-compaction-openrouter` 已 vendored 到
+`~/dev/fast-jev-compaction-openrouter`（不含 `.git`：沙箱擋 `.git/config` 寫入）。
+
+本機 delta 只有 `hooks/fast-jev.ts` 的 `getApiKey`：在 option → env → `settings.env`
+之後補一條讀**金鑰檔**的 fallback（`keyFile` option，預設 `~/.creds/kv/…`）。
+這就是先前留著的那題——選檔案讀取，避免在 `settings.json` 留第二份金鑰副本。
+`claude plugin validate` 認得出來：`$.fs.read (via getApiKey)`。
+
+活線驗收（`tests/live.test.ts`，打真的 OpenRouter）：
+
+```
+live: 7->3 messages, 17557->220 chars,
+      t1:Read:drop_call/call=0.34/result=0.18  t2:Bash:drop_call/call=0.41/result=0.20
+Test Files  3 passed (3)   Tests  32 passed (32)
+```
+
+順帶量到一個調參訊號：Jev 給「失敗的 `npm test`」只有 `keepCall=0.41`，低於預設
+`keepThreshold` 0.5 而被丟掉。實務上預設 `preserveRecentMessages: 6` 會把它釘住，
+所以只有「久遠但仍相關的失敗」會中招；真的中招就調低 `keepThreshold`（調低＝留更多），
+不是調高釘住則數。
+
+註冊進 `settings.json` 這一步主 session 做不到（沙箱 deny `~/.claude/plugins/`、
+`~/.claude/settings.json`），走 deep-run 在沙箱外執行 `claude plugin marketplace add`
+＋ `claude plugin install`。
 
 ---
 
 ## 接續建議
 
-1. 裝 `fast-jev-compaction`（先解 key 來源那題）。
-2. 幾天後看 `$.ui.log` 的 `jev-prune(...)` 命中率，再決定三個門檻要不要動。
-3. `hook_success` 那 15%（`PreToolUse:Bash` 689 列）還沒查過，可能是下一個同類型的洞。
+1. 幾天後看 `$.ui.log` 的 `jev-prune(...)` 與 compaction 的 `decisions:` 命中率，
+   再決定門檻要不要動。兩邊都有 log，不必憑感覺調。
+2. `assistant:tool_use:Bash` 佔 16.6%、`Write` 佔 8.6%——這兩塊是**模型自己寫的輸入**，
+   prune 與 compaction 都碰不到進 context 前的那一刻。要省只能靠 compaction 回頭砍。
