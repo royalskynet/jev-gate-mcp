@@ -37,18 +37,20 @@ export const ERR = Object.freeze({
 });
 
 // Runtime flags are module state by intent: a kill switch must be server-wide.
-let killSwitched = false;
-const killGlobalExemptId = new Set();
+// A GLOBAL switch takes every tool out of service (evaluate and every policy);
+// a PER-POLICY switch takes only that one policy out. A per-policy kill is a
+// targeted shutdown, never an exemption from the global switch, and never
+// affects other policies or the always-advisory evaluate path.
+let globalKill = false;
+const policyKill = new Set();
 
-export function killSwitchGlobal() { killSwitched = true; }
-export function killSwitchPolicy(id) { killGlobalExemptId.add(id); }
+export function killSwitchGlobal() { globalKill = true; }
+export function killSwitchPolicy(id) { policyKill.add(id); }
 export function isKillSwitched(policyId) {
-  // A per-policy kill switch takes the policy out of service; a global switch
-  // takes everything out unless a policy is explicitly exempted.
-  if (killGlobalExemptId.has(policyId)) return false;
-  return killSwitched;
+  if (globalKill) return true;
+  return policyId != null && policyKill.has(policyId);
 }
-export function resetRuntime() { killSwitched = false; killGlobalExemptId.clear(); }
+export function resetRuntime() { globalKill = false; policyKill.clear(); }
 
 export function stateBytes(s) {
   if (typeof s === 'string') return Buffer.byteLength(s, 'utf8');

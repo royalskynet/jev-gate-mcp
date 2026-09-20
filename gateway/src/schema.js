@@ -69,3 +69,66 @@ export const applyPolicyInputSchema = z
       .optional(),
   })
   .strict(); // thresholds/model/composition are server-owned; no per-call override
+
+// --- Output schemas (advertised in tools/list, validates structuredContent) ---
+// Every tool result is typed so a client can branch on `outcome`/`error` without
+// parsing prose. Errors stay typed and carry no state or secret material.
+
+export const ErrorContentSchema = z.object({
+  error: z.object({
+    code: z.string(),
+    category: z.string(),
+    message: z.string(),
+  }),
+});
+
+const answerSummarySchema = z.object({
+  question: z.string(),
+  answer: z.any(),
+});
+
+const evaluateErrorSchema = z.object({
+  question: z.string(),
+  code: z.string(),
+  message: z.string(),
+});
+
+export const EvaluateResultSchema = z.object({
+  outcome: z.literal('advisory'),
+  model: z.string().nullable(),
+  answers: z.array(answerSummarySchema),
+  errors: z.array(evaluateErrorSchema),
+  coverage: z.enum(['complete', 'incomplete']),
+  usage: z.any().nullable(),
+  latency_ms: z.number().nullable(),
+});
+
+const reasonSchema = z.object({
+  question: z.string(),
+  confidence: z.number().nullable(),
+  semantic_level: z
+    .enum(['accept', 'review', 'escalate', 'deny'])
+    .nullable(),
+  level: z.enum(['accept', 'review', 'escalate', 'deny']).nullable(),
+});
+
+export const ApplyPolicyResultSchema = z.object({
+  outcome: z.enum(['accept', 'review', 'escalate', 'deny']),
+  policy: z.object({ id: z.string(), version: z.number() }),
+  mode: z.string(),
+  consequence: z.string(),
+  gate_reasons: z.array(reasonSchema),
+  coverage: z.enum(['complete', 'incomplete']),
+  model: z.string().nullable(),
+  answers: z.array(answerSummarySchema).optional(),
+  usage: z.any().nullable().optional(),
+  latency_ms: z.number().nullable().optional(),
+  correlation: z.any().nullable().optional(),
+  unavailable: z
+    .object({ code: z.string(), message: z.string() })
+    .optional(),
+});
+
+// A tool either returns its typed result or a typed error; both must validate.
+export const EvaluateOutputSchema = z.union([EvaluateResultSchema, ErrorContentSchema]);
+export const ApplyPolicyOutputSchema = z.union([ApplyPolicyResultSchema, ErrorContentSchema]);

@@ -1,16 +1,17 @@
-// Conformance: the SAME suite runs over stdio and Streamable HTTP and must
-// return equivalent normalized results. Offline (deterministic fake adapter).
+// Conformance (v2 SDK): the SAME suite runs over stdio and Streamable HTTP and
+// must return equivalent normalized results. Offline (deterministic fake
+// adapter). Also verifies the production HTTP surface via `createHttpServer`:
+// exactly-two-tools, /health, unknown path 404, oversize body 413, and
+// Host/Origin 403 guards.
 import { test } from 'node:test';
 import assert from 'node:assert';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { Client } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { buildGateway } from '../src/config.js';
-import { buildServer } from '../src/server.js';
+import { createHttpServer } from '../src/http.js';
 
 const root = fileURLToPath(new URL('../src/', import.meta.url));
 
@@ -53,53 +54,98 @@ async function normalize(raw) {
 }
 
 async function makeStdioClient() {
-  // Minimal child env: a full process.env spread can carry vars that break the
-  // child's JSON-RPC framing; the child only needs a provider override.
-  const base = { JEV_PROVIDER: 'fake', PATH: process.env.PATH, HOME: process.env.HOME };
-  const transport = new StdioClientTransport({ command: process.execPath, args: [root + 'stdio.js'], env: base });
-  const client = new McpClient({ name: 'test', version: '0' }, { capabilities: {} });
-  await client.connect(transport);
-  return { client, transport };
+  const t = new StdioClientTransport({
+    command: process.execPath,
+    args: [root + 'stdio.js'],
+    env: { JEV_PROVIDER: 'fake', PATH: process.env.PATH, HOME: process.env.HOME },
+  });
+  const client = new Client({ name: 'test', version: '0' });
+  await client.connect(t);
+  return { client, transport: t };
 }
 
-async function makeHttpClient() {
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => Math.random().toString(36).slice(2) });
-  const { gateway } = buildGateway({ provider: 'fake' });
-  await buildServer(gateway).connect(transport);
-  const srv = http.createServer(async (req, res) => {
-    if (req.method === 'POST') {
-      const chunks = [];
-      for await (const c of req) chunks.push(c);
-      try {
-        await transport.handleRequest(req, res, JSON.parse(Buffer.concat(chunks).toString()));
-      } catch {
-        try { res.writeHead(400).end(); } catch { /* ignore */ }
-      }
-      return;
-    }
-    if (req.method === 'GET') { await transport.handleRequest(req, res); return; }
-    try { res.writeHead(405).end(); } catch { /* ignore */ }
-  });
-  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-  const port = srv.address().port;
-  const client = new McpClient({ name: 'test', version: '0' }, { capabilities: {} });
+/** Boot the production HTTP server (fake gateway) and a client bound to /mcp. */
+async function makeHttp(serverTest) {
+  const { server, port } = await createHttpServer({ gatewayFactory: () => buildGateway({ provider: 'fake' }).gateway });
+  serverTest.after(() => new Promise((r) => server.close(r)));
+  const client = new Client({ name: 'test', version: '0' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
-  return { client, transport, srv };
+  return { client, base: `http://127.0.0.1:${port}` };
 }
 
 for (const tool of ['jev_evaluate', 'jev_apply_policy']) {
   const name = tool.includes('evaluate') ? 'evaluate-success' : 'apply-policy-accept';
-  test(`conformance: ${name} equivalent over stdio and HTTP (${tool})`, async () => {
+  test(`conformance: ${name} equivalent over stdio and HTTP (${tool})`, async (t) => {
     const st = await makeStdioClient();
     const args = name === 'evaluate-success' ? SUITE[0].args : SUITE[1].args;
     const stRes = await normalize(await st.client.callTool({ name: tool, arguments: args }));
     await st.transport.close();
 
-    const ht = await makeHttpClient();
+    const ht = await makeHttp(t);
     const htRes = await normalize(await ht.client.callTool({ name: tool, arguments: args }));
     await ht.client.close();
-    ht.srv.close();
 
     assert.deepEqual(stRes, htRes, `${tool}: stdio and HTTP diverged`);
+  });
+}
+
+test('conformance: server advertises exactly two tools with outputSchema', async (t) => {
+  const ht = await makeHttp(t);
+  const res = await ht.client.listTools();
+  await ht.client.close();
+  const tools = res.tools ?? res;
+  assert.deepEqual(tools.map((x) => x.name).sort(), ['jev_apply_policy', 'jev_evaluate']);
+  for (const tool of tools) {
+    assert.ok(tool.outputSchema, `${tool.name} must advertise outputSchema`);
+  }
+});
+
+test('http: /health answers 200, unknown path answers 404', async (t) => {
+  const ht = await makeHttp(t);
+  assert.equal((await fetch(`${ht.base}/health`)).status, 200);
+  assert.equal((await fetch(`${ht.base}/other`)).status, 404);
+  assert.equal((await fetch(`${ht.base}/mcp/extra`)).status, 404);
+});
+
+test('http: oversize body answers 413', async (t) => {
+  const ht = await makeHttp(t);
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'jev_evaluate', arguments: { state: 'y'.repeat(512 * 1024), questions: {} } } });
+  const status = await rawRequest('POST', `${ht.base}/mcp`, {
+    'content-type': 'application/json',
+    accept: 'application/json, text/event-stream',
+    'content-length': String(Buffer.byteLength(body)),
+  }, body);
+  assert.equal(status, 413, 'oversize body must be rejected');
+});
+
+test('http: non-localhost Host and Origin are rejected 403', async (t) => {
+  const ht = await makeHttp(t);
+  const badHost = await rawRequest('GET', `${ht.base}/mcp`, { host: 'evil.example.com' });
+  assert.equal(badHost, 403, 'non-localhost Host must be rejected');
+  const badOrigin = await rawRequest('POST', `${ht.base}/mcp`, {
+    origin: 'https://evil.example.com',
+    'content-type': 'application/json',
+    'content-length': '2',
+  }, '{}');
+  assert.equal(badOrigin, 403, 'non-localhost Origin must be rejected');
+  // A request without Origin is a normal non-browser client and must pass the guard.
+  const okOrigin = await rawRequest('POST', `${ht.base}/mcp`, {
+    'content-type': 'application/json',
+    accept: 'application/json, text/event-stream',
+    'content-length': String(Buffer.byteLength(JSON.stringify(SUITE[1].args))),
+  }, JSON.stringify(SUITE[1].args));
+  assert.notEqual(okOrigin, 403, 'request without Origin must pass the guard');
+});
+
+/** Issue a raw request so Host/Origin headers can be set arbitrarily. */
+function rawRequest(method, url, headers, body) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname, method, headers }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.end(body); else req.end();
   });
 }

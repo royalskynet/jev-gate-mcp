@@ -12,17 +12,26 @@ import { applyPolicyInputSchema, evaluateInputSchema, JsonSchema } from './schem
 
 const GATE_ORDER = ['deny', 'escalate', 'review', 'accept']; // index 0 = most conservative
 
+// The Gate never looks at confidence alone. Each answer also carries a
+// policy-owned semantic outcome (which candidate / score level / true-false
+// was chosen), and the two are combined by taking the MORE CONSERVATIVE of:
+//   - the semantic outcome declared by the policy's `mapping`, and
+//   - the confidence outcome derived from the thresholds.
+// Across questions the most conservative signal wins. This is the PRD
+// invariant that incomplete/uncertain judgments can never authorize an action
+// that the answer's own meaning says warrants review or denial.
 export function composeGate(perQuestion, policy) {
+  const thresholds = policy.thresholds ?? { auto: 0.9, review: 0.6 };
   // policy.consequence drives fail-safe: any non-advisory consequence is
   // consequential — it caps at review and can never auto-accept, even on a
-  // confident judgment.
-  const thresholds = policy.thresholds ?? { auto: 0.9, review: 0.6 };
-  // Start at the least conservative allowed outcome, then let the most
-  // conservative signal win: lower rank is more conservative and overrides.
+  // confident judgment. Advisory starts at accept; the most conservative
+  // signal only ever lowers it.
   const start = policy.consequence !== 'advisory' ? 'review' : 'accept';
   let worst = start;
   for (const q of perQuestion) {
-    const level = levelOf(q.confidence, thresholds);
+    const sem = q.map ? semanticLevel(q.map, q.answer) : null;
+    const conf = confidenceLevel(q.confidence, thresholds);
+    const level = combineLevels(sem, conf, start);
     if (rank(level) < rank(worst)) worst = level; // most conservative wins
   }
   return worst;
@@ -30,10 +39,29 @@ export function composeGate(perQuestion, policy) {
 
 function rank(g) { return GATE_ORDER.indexOf(g); }
 
-function levelOf(confidence, t) {
+// Declarative mapping: policy-owned answer->outcome table per question.
+//   choice: keyed by candidate name  |  score: keyed by level index  |  noul: keyed by true/false
+function semanticLevel(map, answer) {
+  if (!map || !answer || answer instanceof Error) return null;
+  if (answer.type === 'choice') return map[answer.choice] ?? null;
+  if (answer.type === 'score') return map[String(answer.score)] ?? null;
+  if (answer.type === 'noul') return map[answer.noul >= 0.5 ? 'true' : 'false'] ?? null;
+  return null;
+}
+
+// Confidence outcome. A missing/null confidence is uncalibrated: treat it as
+// the most conservative signal (escalate) rather than assuming acceptance.
+function confidenceLevel(confidence, t) {
+  if (confidence == null) return 'escalate';
   if (confidence >= t.auto) return 'accept';
   if (confidence >= t.review) return 'review';
   return 'escalate';
+}
+
+function combineLevels(sem, conf, start) {
+  if (sem == null) return conf;
+  if (conf == null) return sem;
+  return rank(sem) <= rank(conf) ? sem : conf; // more conservative wins
 }
 
 export class JevGateway {
@@ -107,7 +135,11 @@ export class JevGateway {
 
     let result;
     try {
-      result = await deadline(this._policyEval(state, questions, {}), LIMITS.deadlineMs);
+      // The immutable, server-owned spec.model is pinned for this policy and
+      // forwarded to the provider adapter; the caller cannot override it (the
+      // strict input schema rejects a model field, and the resolved model is
+      // recorded on the result so drift is observable).
+      result = await deadline(this._policyEval(state, questions, { model: spec.model }), LIMITS.deadlineMs);
     } catch (e) {
       // Provider failure / timeout / rate limit / auth => an explicit typed
       // denial the host can branch on, never a fabricated accept.
@@ -122,7 +154,9 @@ export class JevGateway {
       if (sig instanceof Error) {
         return failClosed(spec, correlation, result, sig);
       }
-      perQuestion.push({ question: id, answer: sig, confidence: confOf(questions[id], sig) });
+      // map comes from the frozen policy spec (declarative answer->outcome),
+      // read once per question; the caller cannot supply or weaken it.
+      perQuestion.push({ question: id, answer: sig, confidence: confOf(questions[id], sig), map: spec.mapping?.[id] });
     }
 
     const gate = composeGate(perQuestion, spec);
@@ -134,10 +168,11 @@ export class JevGateway {
       gate_reasons: perQuestion.map((p) => ({
         question: p.question,
         confidence: round(p.confidence),
-        level: levelOf(p.confidence, spec.thresholds ?? { auto: 0.9, review: 0.6 }),
+        semantic_level: p.map ? semanticLevel(p.map, p.answer) : null,
+        level: confidenceLevel(p.confidence, spec.thresholds ?? { auto: 0.9, review: 0.6 }),
       })),
       coverage: 'complete',
-      model: result.model,
+      model: result.model, // resolved model (pinned to spec.model by the adapter)
       answers: perQuestion.map((p) => ({ question: p.question, answer: p.answer })),
       usage: result.usage ?? null,
       latency_ms: result.latency_ms ?? null,

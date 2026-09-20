@@ -1,10 +1,8 @@
 #!/usr/bin/env node
-// stdio transport entry: `JEV_PROVIDER=fake node gateway/src/stdio.js` or a
-// real provider with a key file. Same tool surface as HTTP.
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+// stdio transport entry (v2 `serveStdio`). `JEV_PROVIDER=fake node gateway/src/stdio.js`
+// or a real provider with a key file. Same Gateway core and tool surface as HTTP.
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { buildGateway } from './config.js';
 import { buildServer } from './server.js';
 
-const { gateway } = buildGateway();
-const server = buildServer(gateway);
-await server.connect(new StdioServerTransport());
+serveStdio(() => buildServer(buildGateway().gateway));

@@ -8,6 +8,9 @@
         "consequence": "advisory",
         "coverage": "complete",
         "thresholds": { "auto": 0.85, "review": 0.6 },
+        "mapping": {
+          "supported": { "true": "accept", "false": "deny" }
+        },
         "questions": {
           "supported": {
             "type": "noul",

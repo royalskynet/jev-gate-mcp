@@ -6,7 +6,7 @@ import assert from 'node:assert';
 import { loadRegistry } from '../src/registry.js';
 import { makeFakeAdapter, FakeMode } from '../src/adapters.js';
 import { JevGateway, composeGate } from '../src/gateway.js';
-import { ERR, LIMITS, killSwitchGlobal, resetRuntime } from '../src/core.js';
+import { ERR, LIMITS, killSwitchGlobal, killSwitchPolicy, resetRuntime } from '../src/core.js';
 
 const registry = loadRegistry();
 const QUESTIONS = {
@@ -124,4 +124,107 @@ test('composeGate: most conservative signal wins', () => {
   // consequential policy starts at escalate; a confident signal can still only reach review
   const conc = { consequence: 'irreversible', thresholds: { auto: 0.9, review: 0.6 } };
   assert.equal(composeGate([{ confidence: 0.95 }], conc), 'review');
+});
+
+// --- Helpers for deterministic answer injection (item 6/7: Gate must look at
+// answer semantics AND confidence, never confidence alone). ---
+
+const NO_MATCH = { type: 'choice', choice: 'no_match', probabilities: { main: 0, deep: 0, review: 0, no_match: 1 }, confidence: 1 };
+const LOW_CONF_CHOICE = { type: 'choice', choice: 'main', probabilities: { main: 0.6, deep: 0.1, review: 0.1, no_match: 0.2 }, confidence: 0.3 };
+
+/** Build an adapter returning an exact answer map (shape already validated). */
+function answers(map) {
+  return async (state, questions, opts) => ({ model: opts.model ?? 'test', answers: map, usage: {}, latency_ms: 1 });
+}
+
+// --- Item 4: kill switch regression ---
+
+test('kill switch: per-policy kills only that policy, never a global exemption', async () => {
+  resetRuntime();
+  killSwitchPolicy('completion-claims');
+  const g = gw(makeFakeAdapter(FakeMode.SUCCESS));
+  // the targeted policy is down
+  await assert.rejects(() => g.applyPolicy({ policy: 'completion-claims', state: 'x' }), (e) => e.code === 'ERR_KILL_SWITCH');
+  // other policies are unaffected
+  const other = await g.applyPolicy({ policy: 'intent-routing', state: 'x' });
+  assert.equal(other.outcome, 'accept');
+  // a per-policy kill never touches the advisory evaluate path
+  const ev = await g.evaluate({ state: 'x', questions: QUESTIONS });
+  assert.equal(ev.outcome, 'advisory');
+  resetRuntime();
+});
+
+test('kill switch: global switch shuts down every policy AND evaluate, even with a per-policy kill set', async () => {
+  resetRuntime();
+  killSwitchPolicy('completion-claims');
+  killSwitchGlobal();
+  const g = gw(makeFakeAdapter(FakeMode.SUCCESS));
+  await assert.rejects(() => g.applyPolicy({ policy: 'completion-claims', state: 'x' }), (e) => e.code === 'ERR_KILL_SWITCH');
+  // a per-policy kill used to *exempt* a policy from the global switch; it must not
+  await assert.rejects(() => g.applyPolicy({ policy: 'intent-routing', state: 'x' }), (e) => e.code === 'ERR_KILL_SWITCH');
+  await assert.rejects(() => g.evaluate({ state: 'x', questions: QUESTIONS }), (e) => e.code === 'ERR_KILL_SWITCH');
+  resetRuntime();
+});
+
+// --- Item 5: jev_apply_policy pins and forwards the immutable spec.model ---
+
+test('applyPolicy: immutable spec.model is forwarded to the adapter and recorded as resolved model', async () => {
+  const seen = [];
+  const spy = async (state, questions, opts) => {
+    seen.push(opts.model);
+    return { model: opts.model ?? 'unset', answers: { supported: { type: 'noul', noul: 1 } }, usage: {}, latency_ms: 1 };
+  };
+  const g = new JevGateway({ evaluateAdapter: spy, registry });
+  const r = await g.applyPolicy({ policy: 'completion-claims', state: 'x' });
+  assert.equal(r.model, 'typesafe/jev-1.13-20260917', 'response records the pinned resolved model');
+  assert.deepEqual(seen, ['typesafe/jev-1.13-20260917'], 'adapter receives exactly the server-owned pinned model');
+  // the caller can never override the model (strict input schema rejects it)
+  await assert.rejects(() => g.applyPolicy({ policy: 'completion-claims', state: 'x', model: 'caller/forge' }), (e) => e.code === 'ERR_BAD_REQUEST');
+});
+
+// --- Item 6/7: declarative Gate composition (answer semantics + confidence) ---
+
+test('gate semantics: completion supported=false denies even at full confidence', async () => {
+  const g = gw(answers({ supported: { type: 'noul', noul: 0 } })); // noul 0 => supported=false
+  const r = await g.applyPolicy({ policy: 'completion-claims', state: 'unsupported claim' });
+  assert.equal(r.outcome, 'deny');
+});
+
+test('gate semantics: intent no_match escalates even at full confidence', async () => {
+  const g = gw(answers({ target: NO_MATCH }));
+  const r = await g.applyPolicy({ policy: 'intent-routing', state: 'task matches nothing' });
+  assert.equal(r.outcome, 'escalate');
+});
+
+test('gate semantics: destructive blast radius or credential exposure deny (consequential)', async () => {
+  const g = gw(answers({
+    blast_radius: { type: 'score', score: 2, legend: { 0: 'l0', 1: 'l1', 2: 'l2' }, probabilities: { 0: 0, 1: 0, 2: 1 } },
+    credential_exposure: { type: 'noul', noul: 1 },
+  }));
+  const r = await g.applyPolicy({ policy: 'proposed-action-risk', state: { action: 'send secret to external' } });
+  assert.equal(r.outcome, 'deny');
+});
+
+test('gate semantics: low confidence escalates even when the answer is semantically acceptable', async () => {
+  const g = gw(answers({ target: LOW_CONF_CHOICE })); // main, but confidence 0.3
+  const r = await g.applyPolicy({ policy: 'intent-routing', state: 'x' });
+  assert.equal(r.outcome, 'escalate');
+});
+
+test('gate semantics: medium-low confidence on a noul yields review, never accept', async () => {
+  const g = gw(answers({ supported: { type: 'noul', noul: 0.55 } })); // true-ish but low confidence
+  const r = await g.applyPolicy({ policy: 'completion-claims', state: 'x' });
+  assert.ok(['review', 'escalate'].includes(r.outcome));
+  assert.notEqual(r.outcome, 'accept');
+});
+
+test('gate semantics: consequential policy caps at review even when every signal is accept', async () => {
+  // full-confidence accept signals on both questions, yet an irreversible/
+  // consequential policy can never auto-accept: it stops at review.
+  const g = gw(answers({
+    blast_radius: { type: 'score', score: 0, legend: { 0: 'l0', 1: 'l1', 2: 'l2' }, probabilities: { 0: 1, 1: 0, 2: 0 }, confidence: 1 },
+    credential_exposure: { type: 'noul', noul: 0 },
+  }));
+  const r = await g.applyPolicy({ policy: 'proposed-action-risk', state: 'low risk read' });
+  assert.equal(r.outcome, 'review');
 });

@@ -8,6 +8,10 @@
         "consequence": "consequential",
         "coverage": "complete",
         "thresholds": { "auto": 0.85, "review": 0.6 },
+        "mapping": {
+          "blast_radius": { "0": "accept", "1": "review", "2": "deny" },
+          "credential_exposure": { "true": "deny", "false": "accept" }
+        },
         "questions": {
           "blast_radius": {
             "type": "score",

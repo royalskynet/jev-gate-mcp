@@ -102,6 +102,9 @@ tested but deliberately not wired — see `docs/NEXT.md` for why.
 
 ## Documents
 
+- [Gateway README](gateway/README.md) — the Decision Gateway MCP server (v2 SDK, two tools, stdio + HTTP)
+- [Companion agent instructions](docs/agent-instructions.md) — when an agent should call the tools
+- [Host Adapter contract](docs/host-adapter.md) — mandatory, host-enforced lifecycle gating
 - [Product requirements](docs/prd/jev-decision-gateway.md)
 - [Domain context](CONTEXT.md)
 - [Architecture decisions](docs/adr/0001-governed-two-tool-mcp-boundary.md)
