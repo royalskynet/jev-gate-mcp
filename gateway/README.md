@@ -3,8 +3,8 @@
 A governed MCP server exposing **exactly two tools** over the same Gateway Core,
 served by both **stdio** and **Streamable HTTP**, built on the official
 `modelcontextprotocol/typescript-sdk` **v2** (`@modelcontextprotocol/server`,
-`@modelcontextprotocol/node`, `@modelcontextprotocol/client` — no legacy
-`@modelcontextprotocol/sdk`). Schemas use **Zod v4**; requires **Node >= 20**.
+`@modelcontextprotocol/node`, `@modelcontextprotocol/client`; the legacy
+monolithic SDK package is not used). Schemas use **Zod v4**; requires **Node >= 20**.
 
 - `jev_evaluate` — advisory, caller-defined batched Choice/Score/Noul judgments. Cannot authorize any action.
 - `jev_apply_policy` — server-owned, versioned Decision Policy returning a deterministic `accept`/`review`/`escalate`/`deny` Gate. The caller supplies state only.
