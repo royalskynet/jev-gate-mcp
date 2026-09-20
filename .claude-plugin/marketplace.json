@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "jev-gate",
+  "description": "Jev decision gateway hooks for Claude Code.",
+  "owner": { "name": "royalskynet", "url": "https://github.com/royalskynet" },
+  "plugins": [
+    {
+      "name": "jev-gate",
+      "description": "Jev-judged pruning of long tool output.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
