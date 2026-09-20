@@ -1,0 +1,12 @@
+{
+  "name": "jev-gate-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "jevwire": "github:Brainwires/jevwire#main"
+  }
+}

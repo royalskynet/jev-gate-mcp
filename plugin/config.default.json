@@ -1,0 +1,11 @@
+{
+  "baseUrl": "https://openrouter.ai/api",
+  "model": "typesafe/jev-1.13.0",
+  "apiKeyFile": "/Users/51mini/.creds/kv/OPENROUTER_API_KEY.txt",
+  "timeoutMs": 2000,
+  "maxRetries": 0,
+  "thresholdChars": 4000,
+  "chunkChars": 16000,
+  "maxChunks": 8,
+  "pruneLog": "/Users/51mini/dev/jev-gate-mcp/.jev/prune.log"
+}

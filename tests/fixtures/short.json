@@ -1,0 +1,1 @@
+{"session_id":"t","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"type":"output","output":"just a short output"}}
