@@ -45,8 +45,9 @@ export function makeTypesafeAdapter({ apiKey, baseUrl = 'https://api.typesafe.ai
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: opts.model });
 }
 
-export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai/api/v1/systemone', model = 'typesafe/jev-1.13', timeoutMs = LIMITS.deadlineMs }) {
-  const m = new JevDecisionModel({ apiKey, baseUrl, model, timeoutMs, maxRetries: LIMITS.maxRetries });
+export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai/api', model = 'typesafe/jev-1.13', timeoutMs = LIMITS.deadlineMs, fetch: fetchImpl, sleep }) {
+  // JevDecisionModel appends `/v1/systemone`; the base must stop at `/api`.
+  const m = new JevDecisionModel({ apiKey, baseUrl, model, timeoutMs, maxRetries: LIMITS.maxRetries, fetch: fetchImpl, sleep });
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: opts.model });
 }
 

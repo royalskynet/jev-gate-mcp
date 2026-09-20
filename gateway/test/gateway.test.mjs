@@ -3,8 +3,11 @@
 // behavior without needing a provider or a transport.
 import test from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { loadRegistry } from '../src/registry.js';
-import { makeFakeAdapter, FakeMode } from '../src/adapters.js';
+import { makeFakeAdapter, FakeMode, makeOpenrouterAdapter } from '../src/adapters.js';
 import { JevGateway, composeGate } from '../src/gateway.js';
 import { ERR, LIMITS, killSwitchGlobal, killSwitchPolicy, resetRuntime } from '../src/core.js';
 
@@ -114,6 +117,26 @@ test('registry: released policy specs are deep-frozen (immutable)', async () => 
 
 test('registry: unknown version selection fails loudly', async () => {
   assert.throws(() => registry.resolve('completion-claims', 99), (e) => e.code === 'ERR_BAD_REQUEST');
+});
+
+test('registry: incomplete semantic mappings fail at startup instead of falling back to confidence-only', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-policy-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'bad.json'), JSON.stringify({
+      broken: { versions: [{
+        version: 1,
+        mode: 'active',
+        model: 'typesafe/jev-1.13-20260917',
+        consequence: 'advisory',
+        thresholds: { auto: 0.85, review: 0.6 },
+        questions: { q: { type: 'choice', instructions: 'pick', criteria: { safe: 'safe', risky: 'risky' } } },
+        mapping: { q: { safe: 'accept' } },
+      }] },
+    }));
+    assert.throws(() => loadRegistry(dir), /must cover exactly its answer space/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('composeGate: most conservative signal wins', () => {
@@ -227,4 +250,32 @@ test('gate semantics: consequential policy caps at review even when every signal
   }));
   const r = await g.applyPolicy({ policy: 'proposed-action-risk', state: 'low risk read' });
   assert.equal(r.outcome, 'review');
+});
+
+test('gate semantics: fractional scores use the more conservative adjacent mapping', () => {
+  const policy = {
+    consequence: 'advisory',
+    thresholds: { auto: 0.85, review: 0.6 },
+  };
+  const risk = { type: 'score', score: 1.4 };
+  assert.equal(composeGate([{ answer: risk, confidence: 1, map: { 0: 'accept', 1: 'review', 2: 'deny' } }], policy), 'deny');
+  const relevance = { type: 'score', score: 1.4 };
+  assert.equal(composeGate([{ answer: relevance, confidence: 1, map: { 0: 'escalate', 1: 'review', 2: 'accept' } }], policy), 'review');
+});
+
+test('OpenRouter adapter targets the canonical System One URL exactly once', async () => {
+  let seenUrl = null;
+  const fetch = async (url) => {
+    seenUrl = String(url);
+    return new Response(JSON.stringify({
+      model: 'typesafe/jev-1.13-20260917',
+      answers: { supported: { type: 'noul', noul: 1 } },
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const adapter = makeOpenrouterAdapter({ apiKey: 'test-only', fetch, sleep: async () => {} });
+  await adapter('evidence', {
+    supported: { type: 'noul', instructions: 'supported?', criteria: { true: 'yes', false: 'no' } },
+  });
+  assert.equal(seenUrl, 'https://openrouter.ai/api/v1/systemone');
 });

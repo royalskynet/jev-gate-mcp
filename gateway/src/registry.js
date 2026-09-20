@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { ERR } from './core.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const GATES = new Set(['accept', 'review', 'escalate', 'deny']);
 
 function deepFreeze(o) {
   for (const v of Object.values(o)) {
@@ -36,11 +37,49 @@ export function loadRegistry(dir) {
         if (!v || typeof v.version !== 'number' || v.version < 1) {
           throw new Error(`policy ${id}: version must be a positive integer`);
         }
+        validatePolicyVersion(id, v);
       }
       raw[id] = def;
     }
   }
   return new Registry(raw);
+}
+
+function validatePolicyVersion(id, v) {
+  if (typeof v.model !== 'string' || v.model.trim() === '') throw new Error(`policy ${id}@${v.version}: pinned model required`);
+  if (!['active', 'shadow'].includes(v.mode ?? 'active')) throw new Error(`policy ${id}@${v.version}: invalid mode`);
+  if (typeof v.consequence !== 'string' || v.consequence === '') throw new Error(`policy ${id}@${v.version}: consequence required`);
+  const { auto, review } = v.thresholds ?? {};
+  if (![auto, review].every((x) => Number.isFinite(x) && x >= 0 && x <= 1) || review > auto) {
+    throw new Error(`policy ${id}@${v.version}: thresholds must satisfy 0 <= review <= auto <= 1`);
+  }
+  if (!v.questions || typeof v.questions !== 'object' || Object.keys(v.questions).length === 0) {
+    throw new Error(`policy ${id}@${v.version}: questions required`);
+  }
+  if (!v.mapping || typeof v.mapping !== 'object') throw new Error(`policy ${id}@${v.version}: mapping required`);
+  const questionIds = Object.keys(v.questions).sort();
+  const mappingIds = Object.keys(v.mapping).sort();
+  if (JSON.stringify(questionIds) !== JSON.stringify(mappingIds)) {
+    throw new Error(`policy ${id}@${v.version}: mapping must cover exactly every question`);
+  }
+  for (const qid of questionIds) {
+    const q = v.questions[qid];
+    const mapping = v.mapping[qid];
+    const expected = q.type === 'choice'
+      ? Object.keys(q.criteria ?? {})
+      : q.type === 'score'
+        ? q.criteria.map((_, i) => String(i))
+        : q.type === 'noul'
+          ? ['true', 'false']
+          : [];
+    const actual = Object.keys(mapping ?? {});
+    if (expected.length === 0 || expected.some((key) => !actual.includes(key)) || actual.some((key) => !expected.includes(key))) {
+      throw new Error(`policy ${id}@${v.version}: mapping ${qid} must cover exactly its answer space`);
+    }
+    if (Object.values(mapping).some((gate) => !GATES.has(gate))) {
+      throw new Error(`policy ${id}@${v.version}: mapping ${qid} contains an invalid Gate`);
+    }
+  }
 }
 
 export class Registry {

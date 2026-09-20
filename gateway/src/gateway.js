@@ -44,7 +44,16 @@ function rank(g) { return GATE_ORDER.indexOf(g); }
 function semanticLevel(map, answer) {
   if (!map || !answer || answer instanceof Error) return null;
   if (answer.type === 'choice') return map[answer.choice] ?? null;
-  if (answer.type === 'score') return map[String(answer.score)] ?? null;
+  if (answer.type === 'score') {
+    // Jev score is probability-weighted and may fall between rubric levels.
+    // Evaluate both adjacent levels and choose the more conservative mapping;
+    // never fall back to confidence-only merely because the score is fractional.
+    const lower = map[String(Math.floor(answer.score))] ?? null;
+    const upper = map[String(Math.ceil(answer.score))] ?? null;
+    if (lower == null) return upper;
+    if (upper == null) return lower;
+    return rank(lower) <= rank(upper) ? lower : upper;
+  }
   if (answer.type === 'noul') return map[answer.noul >= 0.5 ? 'true' : 'false'] ?? null;
   return null;
 }

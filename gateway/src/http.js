@@ -55,7 +55,11 @@ export function createHttpServer({ port = 0, maxBodyBytes = HTTP_DEFAULTS.maxBod
       // work; a body is never truncated. Tool schemas additionally cap state
       // size, so an undersized-but-huge-state request is still rejected.
       const contentLength = Number(req.headers['content-length']);
-      if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
+      if (!Number.isFinite(contentLength) || contentLength < 0) {
+        res.writeHead(411, { 'content-type': 'text/plain', connection: 'close' }).end('content-length required');
+        return;
+      }
+      if (contentLength > maxBodyBytes) {
         res.writeHead(413, { 'content-type': 'text/plain', connection: 'close' }).end('request body too large');
         return;
       }

@@ -118,6 +118,15 @@ test('http: oversize body answers 413', async (t) => {
   assert.equal(status, 413, 'oversize body must be rejected');
 });
 
+test('http: POST without Content-Length is rejected before a chunked body can bypass the cap', async (t) => {
+  const ht = await makeHttp(t);
+  const status = await rawRequest('POST', `${ht.base}/mcp`, {
+    'content-type': 'application/json',
+    'transfer-encoding': 'chunked',
+  }, '{}');
+  assert.equal(status, 411);
+});
+
 test('http: non-localhost Host and Origin are rejected 403', async (t) => {
   const ht = await makeHttp(t);
   const badHost = await rawRequest('GET', `${ht.base}/mcp`, { host: 'evil.example.com' });
