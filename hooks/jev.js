@@ -189,7 +189,8 @@ async function prune(tool, $, e, next) {
   );
   if (!droppedLines) return r;
 
-  $.ui.log(`jev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped`);
+  const line = `jev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped`;
+  $.ui.log(line);
   // ponytail: the ui.log above is TUI-only and reaches no file unless --debug;
   // on a headless box the prune outcome would be unobservable and the threshold
   // impossible to tune, so mirror it to a ledger. $.fs has no append, hence
@@ -200,7 +201,7 @@ async function prune(tool, $, e, next) {
     const previous = await $.fs.read('/Users/51mini/.openclaw/state/jev-prune.log').catch(() => '');
     await $.fs.write(
       '/Users/51mini/.openclaw/state/jev-prune.log',
-      `${previous}${at}\tjev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped\n`,
+      `${previous}${at}\t${line}\n`,
     );
   } catch {
     /* ledger is observation only */
