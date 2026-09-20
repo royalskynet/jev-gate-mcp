@@ -7,5 +7,8 @@
   "thresholdChars": 4000,
   "chunkChars": 16000,
   "maxChunks": 8,
-  "pruneLog": "/Users/51mini/dev/jev-gate-mcp/.jev/prune.log"
+  "pruneLog": "/Users/51mini/dev/jev-gate-mcp/.jev/prune.log",
+  "gateLog": "/Users/51mini/dev/jev-gate-mcp/.jev/gate.log",
+  "shadow": true,
+  "ghostMaxAttempts": 2
 }
