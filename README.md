@@ -3,23 +3,39 @@
 A Claude Code plugin that prunes long tool output with a Jev (System One)
 keep/drop judgment **before it reaches the model's context**.
 
-Status: shipped. One function hook, live-verified end to end.
+Status: shipped. Three function hooks (Bash, Grep, Read), live-verified end to end.
 
 ## What it does
 
-`hooks/jev.js` hooks `tool.call` on `Bash`. It runs the command through
-`next(e)`, and if the result's `stdout` is over 4,000 characters it splits it on
-line boundaries and asks Jev, one Choice per chunk, whether that chunk helps the
-user's current request. Dropped chunks are replaced by
-`[jev-prune: dropped N lines]`; kept text is passed through verbatim, never
-rewritten.
+`hooks/jev.js` hooks `tool.call` on `Bash`, `Grep` and `Read`. It runs the call
+through `next(e)`, and if the long string in the result is over that tool's
+threshold it splits it on line boundaries and asks Jev, one Choice per chunk,
+whether that chunk helps the user's current request. Dropped chunks are
+replaced by `[jev-prune: dropped N lines]`; kept text is passed through
+verbatim, never rewritten.
 
-Measured on a 19,543-character noisy log with one real error line in the middle:
+| tool | field pruned | threshold | criteria drop |
+|---|---|---|---|
+| `Bash` | `stdout` | 4,000 chars | noise, boilerplate, anything off-task |
+| `Grep` | `content` (content mode) | 4,000 chars | matches from vendored, generated or fixture files |
+| `Read` | `file.content` (text branch) | 12,000 chars | mechanical bulk only — minified code, base64, lock bodies |
 
-| | characters the model received |
-|---|---|
-| without the plugin | 19,543 |
-| with the plugin | 30 |
+Read is the cautious one on purpose: a Bash or Grep result is a *report about*
+files, but a Read result *is* the file the model asked for by name, so its
+criteria drop only bulk that carries no meaning to read, and say "when in doubt,
+keep". Its threshold is 12,000 rather than something larger because core
+token-caps a Read before the hook sees it — measured, 8,000 chars delivered for
+a 207 KB log and 16,571 for a 114 KB base64 blob. A threshold above that cap is
+a hook that can never fire, and fail-open would hide it.
+
+What the model actually received, measured end to end in a real session:
+
+| | without the plugin | with the plugin |
+|---|---|---|
+| Bash, 19,543-char noisy log with one error line | 19,543 | 30 |
+| Read, 114 KB base64 blob | 16,571 (core's cap) | ~60 |
+| Grep, 48 KB of vendored minified matches | ~13,000 | 138 |
+| Read, `node_modules/send/index.js`, 20 KB of real source | whole file | whole file (control) |
 
 One Jev call is ~343 in / 33 out tokens, $0.0000144, ~550 ms.
 
@@ -43,6 +59,15 @@ call 400 while three phases of tests still "passed". So the live tests assert
 *positively* — output must measurably shrink, and a chunk of pure noise must
 come back `drop`. Put `typesafe/jev-1.13.0` back in `hooks/jev.js` and they go
 red.
+
+### Registration is spelled out, not looped
+
+`register` names `Bash`, `Grep` and `Read` one line each, and each hook slot is
+a function literal, because `claude plugin validate` reads the source
+statically: a loop variable leaves it reporting `tool.call{tool=tool}`, and a
+factory call in the hook slot makes it refuse the module outright. A test
+asserts the three registered names match the `TARGETS` table, which is what a
+loop would have bought.
 
 ## Install
 

@@ -1,7 +1,9 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "jev-gate",
-  "version": "0.2.0",
-  "description": "Prunes long Bash output with a Jev (System One) keep/drop judgment before it reaches the model's context.",
-  "author": { "name": "royalskynet" }
+  "version": "0.3.0",
+  "description": "Prunes long Bash, Grep and Read output with a Jev (System One) keep/drop judgment before it reaches the model's context.",
+  "author": {
+    "name": "royalskynet"
+  }
 }

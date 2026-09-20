@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { CONFIG, judgeChunk, pruneText, register } from '../hooks/jev.js';
+import { CONFIG, TARGETS, TARGET_NAMES, judgeChunk, pruneText, register, userRequestOf } from '../hooks/jev.js';
 
 // The hook module carries its own wire code (it runs with no Node, so it cannot
 // share plugin/lib/judge.js). That duplicate is exactly where a wrong model id
@@ -10,7 +10,7 @@ import { CONFIG, judgeChunk, pruneText, register } from '../hooks/jev.js';
 const hasKey = existsSync(CONFIG.apiKeyFile);
 
 /** A stand-in for the engine's `$`, backed by Node. */
-function makeHost() {
+function makeHost(userText = 'Find why the app cannot load its config file.') {
   const logs = [];
   return {
     logs,
@@ -20,14 +20,27 @@ function makeHost() {
     } },
     fs: { read: async (p) => readFileSync(p, 'utf8') },
     ui: { log: (t) => logs.push(t) },
+    session: { messages: async () => [{ role: 'user', text: userText, toolUses: [] }] },
   };
 }
 
+/** The hooks the module registers, keyed by the tool its matcher names. */
+function hooksByTool() {
+  const found = {};
+  register((event, matcher, fn) => { if (event === 'tool.call') found[matcher.tool] = fn; });
+  return found;
+}
+
 const SIGNAL = 'ERROR: config.yaml not found at /etc/app/config.yaml';
-function fixture() {
+function noisyLog() {
   const noise = Array.from({ length: 400 }, (_, i) => `debug heartbeat tick ${i} ok ok ok ok ok ok ok ok`);
   return [...noise.slice(0, 200), SIGNAL, ...noise.slice(200)].join('\n');
 }
+
+test('every target tool gets its own tool.call hook', () => {
+  const hooks = hooksByTool();
+  assert.deepEqual(Object.keys(hooks).sort(), TARGET_NAMES.slice().sort(), 'a TARGETS entry has no hook (or vice versa)');
+});
 
 test('live: hook wire actually judges — a noise chunk comes back "drop"', { skip: !hasKey && 'no api key' }, async () => {
   const $ = makeHost();
@@ -39,21 +52,78 @@ test('live: hook wire actually judges — a noise chunk comes back "drop"', { sk
   assert.equal(verdict, 'drop', 'judge returned keep — wire likely failed open');
 });
 
-test('live: tool.call hook shrinks a long Bash stdout', { skip: !hasKey && 'no api key' }, async () => {
+test('live: Bash hook shrinks a long stdout', { skip: !hasKey && 'no api key' }, async () => {
   const $ = makeHost();
-  const out = fixture();
-  assert.ok(out.length > CONFIG.thresholdChars);
-
-  let hook;
-  register((event, matcher, fn) => { if (event === 'tool.call') hook = fn; });
-  assert.ok(hook, 'register did not add a tool.call hook');
+  const out = noisyLog();
+  assert.ok(out.length > TARGETS.Bash.thresholdChars);
 
   const core = { ref: 7, text: out, result: { stdout: out, stderr: '', interrupted: false } };
-  const r = await hook($, { tool: 'Bash', command: 'run-app', description: 'Find why the app cannot load its config file.' }, async () => core);
+  const r = await hooksByTool().Bash($, { tool: 'Bash', command: 'run-app' }, async () => core);
 
   assert.ok(r.result.stdout.length < out.length, `expected pruning, got ${r.result.stdout.length}/${out.length}`);
+  assert.equal(r.result.stderr, '', 'sibling fields must survive');
   assert.equal(r.ref, undefined, 'kept core ref — the pruned record would be ignored');
-  assert.ok($.logs.some((l) => l.startsWith('jev-prune:')), 'no prune log line');
+  assert.ok($.logs.some((l) => l.startsWith('jev-prune(Bash):')), 'no prune log line');
+});
+
+test('live: Grep hook shrinks content-mode matches and fixes numLines', { skip: !hasKey && 'no api key' }, async () => {
+  const $ = makeHost('Which file defines the config loader?');
+  const out = noisyLog();
+  const core = {
+    ref: 3,
+    text: out,
+    result: { mode: 'content', numFiles: 1, filenames: [], content: out, numLines: out.split('\n').length, totalLines: 401 },
+  };
+  const r = await hooksByTool().Grep($, { tool: 'Grep', pattern: 'config' }, async () => core);
+
+  assert.ok(r.result.content.length < out.length, `expected pruning, got ${r.result.content.length}/${out.length}`);
+  assert.equal(r.result.numLines, r.result.content.split('\n').length, 'numLines must match the pruned content');
+  assert.equal(r.result.mode, 'content', 'sibling fields must survive');
+  assert.equal(r.ref, undefined);
+});
+
+test('Read is left alone below its own (higher) threshold', async () => {
+  const $ = makeHost();
+  const out = noisyLog().slice(0, 8000);
+  // Long enough for Bash, deliberately not for Read.
+  assert.ok(out.length > TARGETS.Bash.thresholdChars && out.length < TARGETS.Read.thresholdChars);
+  const core = { ref: 1, text: out, result: { type: 'text', file: { filePath: '/a.js', content: out, numLines: 401, startLine: 1, totalLines: 401 } } };
+  const r = await hooksByTool().Read($, { tool: 'Read', file_path: '/a.js' }, async () => core);
+  assert.equal(r, core, 'Read under its threshold must pass through untouched');
+});
+
+test('Read rewrites file.content in place and recomputes numLines', async () => {
+  const $ = makeHost();
+  const bulk = Array.from({ length: 900 }, (_, i) => `AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH ${i}`).join('\n');
+  assert.ok(bulk.length > TARGETS.Read.thresholdChars);
+  const core = { ref: 1, text: bulk, result: { type: 'text', file: { filePath: '/a.min.js', content: bulk, numLines: 900, startLine: 1, totalLines: 900 } } };
+  // Stub the judge path by pruning directly: this test is about the record surgery.
+  const pruned = TARGETS.Read.set(core.result, '[jev-prune: dropped 900 lines]');
+  assert.equal(pruned.file.content, '[jev-prune: dropped 900 lines]');
+  assert.equal(pruned.file.numLines, 1);
+  assert.equal(pruned.file.filePath, '/a.min.js', 'sibling fields must survive');
+  assert.equal(pruned.type, 'text');
+  assert.equal(core.result.file.content, bulk, 'the original record must not be mutated');
+  assert.ok($.logs.length === 0);
+});
+
+test('non-text Read branches (image, notebook) are not touched', () => {
+  assert.equal(TARGETS.Read.get({ type: 'image', file: { content: 'x'.repeat(99999) } }), undefined);
+  assert.equal(TARGETS.Grep.get({ mode: 'files_with_matches', filenames: ['a', 'b'] }), undefined);
+});
+
+test('userRequestOf prefers the newest real user turn over the call', async () => {
+  const $ = makeHost('why is the build slow?');
+  assert.equal(await userRequestOf($, { file_path: '/a.js' }), 'why is the build slow?');
+  const broken = { session: { messages: async () => { throw new Error('no transcript'); } } };
+  assert.equal(await userRequestOf(broken, { file_path: '/a.js' }), '/a.js');
+});
+
+// Core token-caps a Read before the hook sees it: measured delivery was 8,000
+// chars for a 207 KB log and 16,571 for a 114 KB base64 blob. A threshold above
+// that cap is a hook that can never fire, which fail-open makes invisible.
+test('Read threshold sits under the core token cap that precedes the hook', () => {
+  assert.ok(TARGETS.Read.thresholdChars < 16000, 'Read would never be reached');
 });
 
 test('pruneText never truncates chunks past the judged window', async () => {

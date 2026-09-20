@@ -41,7 +41,7 @@ Phase 全部「通過」。`tests/live.test.js` 補上正向斷言（真打 API�
 | Phase | 狀態 | 驗證 |
 |---|---|---|
 | 0 | ✅ 完成 | 背份＋移出 disabled，驗證指令全過 |
-| 1 | ✅ 上線（function hook） | e2e：19543→30 chars 進 context；無 plugin 對照 7999 chars 無 marker |
+| 1 | ✅ 上線（function hook，Bash/Grep/Read） | e2e：Bash 19543→30、Read blob 16571→~60、Grep 48KB→138；對照組真實原始碼 20KB 原封不動 |
 | 2 | ⏸ 刻意不掛載 | route-bench resolved=9 no_match=1 unavailable=0 avg 977ms；見下方決策 2 |
 | 3 | ⏸ 刻意不掛載 | coexist test 過；shadow=true；見下方決策 3 |
 
@@ -63,6 +63,25 @@ Phase 全部「通過」。`tests/live.test.js` 補上正向斷言（真打 API�
 3. **jev-gate 不掛載**。shadow 模式本來就零效果；要等真的量到 ghost loop 浪費了幾個
    turn，再決定值不值得每次 Stop 多一次 Jev 呼叫。
 
+## 4. Read/Grep 加掛（2026-09-21）
+
+`Bash`/`Grep`/`Read` 各一條 `tool.call`，門檻與 criteria 分開（表見 README）。
+
+兩個實測發現，都是 fail-open 會藏住的那種：
+
+1. **core 在 hook 之前就對 Read 做 token cap**。實測 207KB 日誌只送 8000 字元、
+   114KB base64 blob 送 16571 字元。原本 Read 門檻寫 20000 ＝ 那條 hook 永遠不會觸發，
+   而且因為 fail-open，看起來跟「Jev 都判 keep」一模一樣。降到 12000，並補一條測試
+   `TARGETS.Read.thresholdChars < 16000` 卡住這個回歸。
+2. **`claude plugin validate` 是靜態讀原始碼**。用 `for...of` 迴圈註冊會印成
+   `tool.call{tool=tool}`；hook 位置放工廠呼叫（`prune('Bash')`）直接整個 module 被拒
+   （`the hook is not a function literal or the name of one`）。所以三條寫死，
+   由測試斷言註冊名單 == `TARGETS` 鍵。
+
+e2e 用 `claude -p` 子 session 實測（子 session 需 `--settings '{"sandbox":{"enabled":false}}'`，
+否則 EPERM 開不了 socket）。注意 `-p` 模式預設沒有 `Grep` 工具，會退回 `grep -rn`；
+要驗 Grep 路徑必須加 `--allowedTools Grep`。
+
 ## 下一個槓桿
 
 引擎有 `session.compact` 事件——compaction 時用 Jev 決定哪些段落留下，省的是整個
@@ -73,4 +92,3 @@ context window，量級比單次工具輸出大。等 prune 跑兩週、`$.ui.lo
 
 - claude.ai connectors `Gmail` / `Google_Calendar` / `Claude_Docs`：30 天 0 真實呼叫，
   但斷開是 `/mcp` 的 GUI 動作，無頭機無法程式化執行。
-- prune 目前只掛 `Bash`。Read/Grep 的長輸出要不要一起判，等 log 說話。
