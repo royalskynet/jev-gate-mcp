@@ -238,7 +238,7 @@ Production application decisions should call the gateway from tested code rather
 - Define a provider-neutral Host Adapter contract instead of embedding Claude-specific or OpenAI-specific hooks in the core.
 - Keep fallback routing outside the gateway. The gateway reports uncertainty or unavailability; the host decides whether to use a generative model or a person.
 - Add domain features through Policy Packs before considering new MCP tools.
-- Pin `jev-1.13.0` for initial active policies. Model aliases may be available only for experiments and shadow evaluation.
+- Pin `jev-1.13` for initial active policies. Model aliases may be available only for experiments and shadow evaluation.
 - Use TypeSafe-native semantics for Noul, Choice, and Score. Do not invent a separate confidence field for Noul.
 - Interpret Choice and Score confidence as distribution concentration, not factual correctness.
 - Keep calculations, date handling, counting, schema checks, authorization, retry counters, and exact thresholds in deterministic code.

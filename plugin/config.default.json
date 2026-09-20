@@ -1,6 +1,6 @@
 {
   "baseUrl": "https://openrouter.ai/api",
-  "model": "typesafe/jev-1.13.0",
+  "model": "typesafe/jev-1.13",
   "apiKeyFile": "/Users/51mini/.creds/kv/OPENROUTER_API_KEY.txt",
   "timeoutMs": 2000,
   "maxRetries": 0,

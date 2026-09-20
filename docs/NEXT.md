@@ -1,24 +1,25 @@
 # NEXT：卡點與待辦
 
-## 卡點（必須先解）— Provider 端無法提供 Jev model
+## ~~卡點~~ 已解除：provider 可用（2026-09-20）
 
-WO 指定「Provider 走 OpenRouter Decisions endpoint」＋ `OPENROUTER_API_KEY`。
-`jevwire` 的 `JevDecisionModel` 是 **TypeSafe `/v1/systemone` 直通**（baseUrl 可換，
-wire shape 固定）。實測（2026-09-20）：
+早先結論「OpenRouter 沒有 Jev model」**是錯的**。真正根因是 `plugin/config.default.json`
+把 model 寫成 `typesafe/jev-1.13.0`（多一個 `.0`，該 id 不存在）。所有呼叫回 400，
+fail-open 靜靜吞掉，prune.log 記 `original_len == kept_len`，看起來像「provider 沒 Jev」。
 
-- `POST https://openrouter.ai/api/v1/systemone` 路由存在（非 404），
-- 但此帳號下所有 Jev model id 全部 400「model does not exist」：
-  `typesafe/jev-1.13.0`、`typesafe/jev-latest`、`typesafe/system-one`、`jev-*` 皆然，
-- `GET /v1/models` 不含任何 jev/typesafe/system 系列 model。
+實測可用參數：
 
-**結論**：目前手上這把 key 無法讓任何 Jev 判斷真正跑通。所有 Phase 因此走 fail-open
-（不 prune、全部 no_match、gate 只記錄失敗），**安全但無實際省 token 效果**。
+- 端點 `https://openrouter.ai/api/v1/systemone`（canonical：`POST /api/alpha/decisions`）
+- model **`typesafe/jev-1.13`**，回應的 `model` 欄為 `typesafe/jev-1.13-20260917`
+- auth：OpenRouter key，`Authorization: Bearer`
+- question 形狀：`{type: "choice"|"score"|"noul", instructions, criteria}`，`type` 為必填 discriminator
+- 單次 343 in / 33 out、$0.000014406、約 550ms
+- `GET /v1/models` 不列 Jev，這是設計如此（Decisions 為獨立 endpoint），不代表不可用
 
-解鎖方式（擇一，屬外部依賴）：
-1. 取得真正的 TypeSafe API key（`https://typesafe.ai`），改
-   `plugin/config.default.json` 的 `apiKeyFile` 指向該 key 檔，`baseUrl=https://api.typesafe.ai`，
-   `model=jev-1.13.0`（已釘版本，非 `-latest`）。驗證：跑一次 `node plugin/hooks/prune.js < tests/fixtures/long-bash.json` 看 kept_len 是否 < orig_len。
-2. 若 OpenRouter 之後提供 Jev model，更新 `model` 為其正式 id 並驗證同上。
+驗證：`node plugin/hooks/prune.js < tests/fixtures/long-bash.json` → `59889 → 119`。
+
+**教訓**：驗收只有負向斷言（fail-open 不崩、不洩 key）時，一個壞 model id 可以讓三個
+Phase 全部「通過」。`tests/live.test.js` 補上正向斷言（真打 API，長輸出必須變短），
+把 model 改回 `jev-1.13.0` 該測試即紅。
 
 > 未改 provider adapter：`jevwire` 匯出（`JevDecisionModel`、`runEvaluate`/`runVerify`/`runNextStep`）直接當依賴使用。
 
@@ -43,6 +44,15 @@ shadow 兩週）。待：
 | Phase | 狀態 | 驗證 |
 |---|---|---|
 | 0 | ✅ 完成 | 背份＋移出 disabled，驗證指令全過 |
-| 1 | ✅ 完成（邏輯） | npm test；long-bash 59889→59889（fail-open）；short 未動；log 無 key |
-| 2 | ✅ 完成（結構） | route-bench 10 題全 fail-open no_match；empty 拋錯；npm test 過 |
-| 3 | ✅ 完成（shadow 結構） | coexist test 過；shadow=true 檢查過 |
+| 1 | ✅ 完成（真跑通） | npm test 10 過含 live；long-bash 59889→119；short 未動；log 無 key |
+| 2 | ✅ 完成（真跑通） | route-bench resolved=9 no_match=1 unavailable=0 avg 977ms；empty 拋錯 |
+| 3 | ⚠ shadow 結構完成、未 live | coexist test 過；shadow=true；未註冊進 settings.json |
+
+## 待辦（2026-09-20 重跑後新增）
+
+1. **route 判斷不一致**：「把一段 Python 除錯」→ `no_match`，「找一段程式的 bug」→ `diagnose`。
+   同義句應同落點，candidate description 要調。
+2. **route 延遲 avg 977ms**：掛 `prompt.submit` 等於每次提問 +1s。要嘛只在候選 >N 時才跑，
+   要嘛接受這個延遲，需先決策。
+3. **Phase 1 機制未定**：目前是 command hook（每次 spawn node）。function hooks 旗標已開
+   （CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1，2.1.278），改 in-process 可省 spawn 成本。未決。
