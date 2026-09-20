@@ -82,11 +82,13 @@ e2e 用 `claude -p` 子 session 實測（子 session 需 `--settings '{"sandbox"
 否則 EPERM 開不了 socket）。注意 `-p` 模式預設沒有 `Grep` 工具，會退回 `grep -rn`；
 要驗 Grep 路徑必須加 `--allowedTools Grep`。
 
-## 下一個槓桿
+## 下一個槓桿：`session.compact`（2026-09-21 已評估）
 
-引擎有 `session.compact` 事件——compaction 時用 Jev 決定哪些段落留下，省的是整個
-context window，量級比單次工具輸出大。等 prune 跑兩週、`$.ui.log` 累積實際命中率後再評估
-（`fast-jev-compaction` 是同一個位置的第三方實作）。
+**結論：不自己寫，裝 `ingebyd/fast-jev-compaction-openrouter`。** 它已經處理掉
+tool_use/tool_result 配對、最新 N 則釘住、state 裝不下時分階段壓縮與失敗退回內建摘要，
+而且每個 request 固定帶 `{"provider":{"zdr":true,"data_collection":"deny"}}` 不可關閉——
+compaction 送出去的是**整段對話**，這個 ZDR 條件不是可選項。細節與待決的 key 來源問題見
+`docs/DEVLOG.md` §6。
 
 ## 仍未解
 

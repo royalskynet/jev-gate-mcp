@@ -106,3 +106,4 @@ tested but deliberately not wired — see `docs/NEXT.md` for why.
 - [Domain context](CONTEXT.md)
 - [Architecture decisions](docs/adr/0001-governed-two-tool-mcp-boundary.md)
 - [What is next](docs/NEXT.md)
+- [Dev log](docs/DEVLOG.md) — how this got built, and the traps that cost time
