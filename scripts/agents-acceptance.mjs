@@ -45,8 +45,9 @@ stage('claude plugin validate', () => {
   }
 });
 
-// 2. Full test suite.
-stage('full tests', () => run(process.execPath, ['--test', 'tests']).trim());
+// 2. Full test suite (same discovery as `npm test` — node --test with no path
+// picks up every test file under gateway/ and tests/).
+stage('full tests', () => run(process.execPath, ['--test']).trim());
 
 // 3. Build check.
 stage('build', () => run(process.execPath, ['gateway/scripts/build-check.mjs']).trim());
