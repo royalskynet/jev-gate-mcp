@@ -46,19 +46,30 @@ test('live: hook wire actually judges — a noise chunk comes back "drop"', { sk
   const $ = makeHost();
   const key = readFileSync(CONFIG.apiKeyFile, 'utf8').trim();
   const noise = Array.from({ length: 200 }, (_, i) => `debug heartbeat tick ${i} ok ok ok`).join('\n');
-  const verdict = await judgeChunk($, key, 'Find why the app cannot load its config file.', noise);
+  // ponytail: live judge is nondeterministic — a transient keep (or a >2s host
+  // call failing open) must not fail the suite. Retry and require one real drop.
+  let verdict = 'keep';
+  for (let attempt = 0; attempt < 6 && verdict !== 'drop'; attempt++) {
+    verdict = await judgeChunk($, key, 'Find why the app cannot load its config file.', noise);
+  }
   // Positive assertion: a wrong model id / endpoint / body shape fails open to
   // 'keep', so only a real 'drop' proves the wire.
   assert.equal(verdict, 'drop', 'judge returned keep — wire likely failed open');
 });
 
 test('live: Bash hook shrinks a long stdout', { skip: !hasKey && 'no api key' }, async () => {
-  const $ = makeHost();
   const out = noisyLog();
   assert.ok(out.length > TARGETS.Bash.thresholdChars);
 
-  const core = { ref: 7, text: out, result: { stdout: out, stderr: '', interrupted: false } };
-  const r = await hooksByTool().Bash($, { tool: 'Bash', command: 'run-app' }, async () => core);
+  // ponytail: live judge is nondeterministic — retry the drop a bounded number
+  // of times; the assertions below run against the attempt that shrank.
+  let $, r;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    $ = makeHost();
+    const core = { ref: 7, text: out, result: { stdout: out, stderr: '', interrupted: false } };
+    r = await hooksByTool().Bash($, { tool: 'Bash', command: 'run-app' }, async () => core);
+    if (r.result.stdout.length < out.length) break;
+  }
 
   assert.ok(r.result.stdout.length < out.length, `expected pruning, got ${r.result.stdout.length}/${out.length}`);
   assert.equal(r.result.stderr, '', 'sibling fields must survive');
@@ -67,14 +78,20 @@ test('live: Bash hook shrinks a long stdout', { skip: !hasKey && 'no api key' },
 });
 
 test('live: Grep hook shrinks content-mode matches and fixes numLines', { skip: !hasKey && 'no api key' }, async () => {
-  const $ = makeHost('Which file defines the config loader?');
   const out = noisyLog();
-  const core = {
-    ref: 3,
-    text: out,
-    result: { mode: 'content', numFiles: 1, filenames: [], content: out, numLines: out.split('\n').length, totalLines: 401 },
-  };
-  const r = await hooksByTool().Grep($, { tool: 'Grep', pattern: 'config' }, async () => core);
+  // ponytail: live judge is nondeterministic — retry the drop a bounded number
+  // of times; the assertions below run against the attempt that shrank.
+  let $, r;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    $ = makeHost('Which file defines the config loader?');
+    const core = {
+      ref: 3,
+      text: out,
+      result: { mode: 'content', numFiles: 1, filenames: [], content: out, numLines: out.split('\n').length, totalLines: 401 },
+    };
+    r = await hooksByTool().Grep($, { tool: 'Grep', pattern: 'config' }, async () => core);
+    if (r.result.content.length < out.length) break;
+  }
 
   assert.ok(r.result.content.length < out.length, `expected pruning, got ${r.result.content.length}/${out.length}`);
   assert.equal(r.result.numLines, r.result.content.split('\n').length, 'numLines must match the pruned content');
@@ -177,15 +194,25 @@ test('appendLedger never throws: a broken ledger cannot break its caller', async
 
 test('live: a real drop writes a ledger-style line', { skip: !hasKey && 'no api key' }, async () => {
   // Same live Bash prune as above, but with a full host (clock + fs.write) so
-  // the ledger path is exercised end to end, not just the prune logic.
-  const $ = makeHost();
-  $.__writes = [];
-  $.clock = { now: async () => Date.now() };
-  $.fs.write = async (path, text) => { if (path === '/Users/51mini/.openclaw/state/jev-prune.log') $.__writes.push(text); };
+  // the ledger path is exercised end to end, not just the prune logic. The
+  // judge is a live, nondeterministic model, so retry the drop a bounded number
+  // of times; each attempt writes a ledger line (keep or drop), and we require
+  // at least one to drop AND record a non-zero drop to the ledger.
+  const host = makeHost();
+  host.__writes = [];
+  host.clock = { now: async () => Date.now() };
+  host.fs.write = async (path, text) => { if (path === '/Users/51mini/.openclaw/state/jev-prune.log') host.__writes.push(text); };
   const out = noisyLog();
   const core = { ref: 7, text: out, result: { stdout: out, stderr: '', interrupted: false } };
-  const r = await hooksByTool().Bash($, { tool: 'Bash', command: 'run-app' }, async () => core);
-  assert.ok(r.result.stdout.length < out.length, `expected pruning, got ${r.result.stdout.length}/${out.length}`);
-  assert.ok($.__writes.length >= 1, 'a drop must write at least one ledger line');
-  assert.match($.__writes.at(-1), /jev-prune\(Bash\): /, 'ledger line must carry the jev-prune(Bash) token');
+  let shrank = false;
+  for (let attempt = 0; attempt < 6 && !shrank; attempt++) {
+    const r = await hooksByTool().Bash(host, { tool: 'Bash', command: 'run-app' }, async () => core);
+    shrank = r.result.stdout.length < out.length;
+  }
+  assert.ok(shrank, `expected at least one drop, got ${out.length}/${out.length} every time`);
+  assert.ok(host.__writes.length >= 1, 'a judged-prunable call must write a ledger line');
+  assert.ok(
+    host.__writes.some((w) => /jev-prune\(Bash\): .+ → .+ chars, [1-9][0-9]* lines dropped/.test(w)),
+    'at least one ledger line must record a real non-zero drop',
+  );
 });
