@@ -68,6 +68,37 @@ cannot override it — the strict input schema rejects any model field.
   shutdown, never an exemption from the global switch and never a shutdown of
   other policies.
 
+## Calibration corpus
+
+Every starter policy ships `shadow` + `uncalibrated`, and `registry.js` refuses
+to release an `active` policy that is not `calibrated`. Leaving shadow needs
+labelled decisions — and `scripts/calibrate.mjs` already scores them (precision,
+recall, ECE, false-accept, `eligible_for_review`). What was missing is the
+producer of the file it reads.
+
+Telemetry cannot be that producer: its allowlist deliberately drops state,
+questions and answers so a log line can never leak them. So set
+`JEV_CALIBRATION_LOG=<path>` to append one JSONL sample per `apply_policy`
+decision, in exactly `calibrate.mjs`'s input shape — provenance plus `gate`,
+`coverage`, `confidence`, and a `label: null` slot for the outcome the policy
+*should* have produced. Unset (the default) writes nothing.
+
+```sh
+JEV_CALIBRATION_LOG=corpus.jsonl node gateway/src/stdio.js   # collect
+# fill in "label" on each line
+node gateway/scripts/calibrate.mjs corpus.jsonl              # score
+```
+
+`gate` is the **raw composed gate**, not the shadow-capped public outcome
+(kept alongside as `public_outcome`): capping is a rollout control, not a
+judgement the model made, so scoring against it would measure the fuse.
+
+Two refusals are load-bearing and both come from `calibrate.mjs`: an unlabelled
+corpus fails validation, and a policy's pinned model must match the samples'
+`model`, so a `fake` provider run can never be passed off as calibration data. A
+`synthetic-harness-*` `dataset_version` is likewise flagged harness-only — set a
+real `evaluation_dataset_version` on the policy before collecting for real.
+
 ## Transport
 
 The only supported transport is **stdio** — this is a local MCP plugin. The

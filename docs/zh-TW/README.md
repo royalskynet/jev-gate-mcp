@@ -100,8 +100,14 @@ const result = await guard.enforce({
 
 ## Policy 安全啟用順序
 
-1. 保持 `shadow + uncalibrated + rollout_percent: 0` 收集真實 labels。
+1. 保持 `shadow + uncalibrated + rollout_percent: 0` 收集真實 labels：設
+   `JEV_CALIBRATION_LOG=<path>`，gateway 會把每次 `apply_policy` 決策以
+   `calibrate.mjs` 的 JSONL 格式逐行落盤（projection 後的 state、answers、raw gate、
+   `label: null`）。不設就完全不寫，沒有成本。收完逐行把 `label` 填成「本來應該是什麼結果」。
+   注意 policy 的 `evaluation_dataset_version` 若還是 `synthetic-harness-*`，
+   `calibrate.mjs` 會標記為 harness-only 且永不 eligible——真要收集前先改掉。
 2. 跑 `node gateway/scripts/calibrate.mjs <external.jsonl>`；只有 `eligible_for_review: true` 才進人工審核。
+   未填 label 會被 validate 擋下，fake provider 的樣本會被 provenance 擋下（pinned model 不符）。
 3. 跑 `npm run gateway:replay`，確認 policy digest 與既有 safe/red-line outcome。
 4. 人工更新 dataset version、`calibrated`、`active`；先只 allow 最低風險 outcome。
 5. `rollout_percent` 從小比例 canary 開始；必須傳穩定 `correlation.request_id`，否則 accept 會被壓成 review。

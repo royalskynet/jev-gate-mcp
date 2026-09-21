@@ -7,6 +7,7 @@
 // failure, timeout, or low certainty never becomes `accept`.
 import { randomUUID } from 'node:crypto';
 import { answerToSignal } from './adapters.js';
+import { recordSample } from './calibration.js';
 import { ERR, LIMITS, isKillSwitched } from './core.js';
 import { applyPolicyInputSchema, evaluateInputSchema } from './schema.js';
 import { applyActivation, decisionQuality, policyDigests, projectPolicyState } from './policy-controls.js';
@@ -261,6 +262,32 @@ export class JevGateway {
       ...digests,
     };
     this._emit(payload);
+    // Opt-in corpus (JEV_CALIBRATION_LOG) in scripts/calibrate.mjs's JSONL
+    // shape. Telemetry cannot carry state by design, and a policy cannot leave
+    // shadow without labelled state. `gate` is the raw composed gate, not the
+    // shadow-capped public outcome: capping is a rollout control, not a
+    // judgement the model made, so scoring against it would measure the fuse.
+    const confs = perQuestion.map((p) => p.confidence).filter((c) => typeof c === 'number');
+    recordSample({
+      // provenance -- calibrate.mjs requires these and rejects a file where
+      // they disagree across records
+      policy: spec.id,
+      policy_version: spec.version,
+      model: result.model ?? spec.model ?? null,
+      provider: this._provider ?? 'unknown',
+      dataset_version: spec.evaluation_dataset_version ?? null,
+      // sample
+      gate,
+      coverage: 'complete',
+      confidence: confs.length ? round(Math.min(...confs)) : null,
+      // context for whoever fills in `label` -- not read by calibrate.mjs
+      ts: new Date().toISOString(),
+      correlation_id: correlationId,
+      policy_digest: digests.policy_digest,
+      public_outcome: outcome,
+      state: projectedState,
+      answers: perQuestion.map((p) => ({ question: p.question, answer: p.answer, confidence: round(p.confidence) })),
+    });
     this._metrics?.recordDecision({ policy: spec.id, outcome, mode: spec.mode, coverage: 'complete', latency_ms: result.latency_ms });
     return {
       outcome,

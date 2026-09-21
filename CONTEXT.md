@@ -49,9 +49,13 @@ Mounting an MCP server costs context on every session, before any tool is
 called: the host serializes `tools/list` plus the server's initialization
 instructions into the system prompt. Measured on the stdio surface:
 
-- `tools/list` serialized: 6970 bytes / 1743 est. tokens
+- `tools/list` serialized: 7030 bytes / 1758 est. tokens
 - initialization instructions: 447 bytes / 112 est. tokens
-- total standing cost per session: 7417 bytes / 1855 est. tokens
+- total standing cost per session: 7477 bytes / 1870 est. tokens
+
+Adding a policy moves this number: `jev_apply_policy`'s description enumerates
+the registered policy ids, so `040-diff-risk` cost +60 bytes of standing
+context. Re-run `node gateway/scripts/context-cost.mjs` after any policy change.
 
 This is the only quantifiable evidence for the "fewer tools, smaller context"
 design goal — two tools with bounded `outputSchema` instead of a broad surface.

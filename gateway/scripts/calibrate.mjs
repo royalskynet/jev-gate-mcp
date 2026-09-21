@@ -47,9 +47,17 @@ export function parseCalibrateInput(text) {
   if (first === '{') {
     let doc = null;
     try { doc = JSON.parse(trimmed); } catch { /* not a single object; try JSONL */ }
-    if (doc) {
-      if (!Array.isArray(doc.samples)) return { ok: false, error: 'JSON object must contain a samples array' };
+    if (doc && Array.isArray(doc.samples)) {
       return { ok: true, meta: doc, samples: doc.samples };
+    }
+    // A single-record JSONL file is also a parseable JSON object, so `samples`
+    // being absent does not make it a malformed wrapper. If it carries a
+    // sample's own fields, fall through and read it as one JSONL record; a
+    // corpus with exactly one decision in it is otherwise rejected.
+    const looksLikeSample = doc && typeof doc === 'object' && !Array.isArray(doc)
+      && ('gate' in doc || 'label' in doc);
+    if (doc && !looksLikeSample) {
+      return { ok: false, error: 'JSON object must contain a samples array' };
     }
     // JSONL: one record per non-empty line, per-record provenance must agree.
     const samples = [];

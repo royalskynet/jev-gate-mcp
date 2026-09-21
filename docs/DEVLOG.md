@@ -419,3 +419,213 @@ provider 不通時它沒有退回「先放行再說」，也沒有捏造一個 m
   這次動刀沒有碰 policy、門檻、calibration 狀態。
 - 驗收：`npm test` 0 fail、`npm run build` OK、`gateway:acceptance` OK、
   `gateway:replay` pass 2/2、`plugin-smoke` exit 0。
+
+## 11. 潛能盤點與兩項補齊（2026-09-21）
+
+### 11.1 起點：一個活線驗收撿到的洞
+
+A-3 活線端到端跑完，`claude -p` 的回報裡有一行不起眼的話：
+
+```
+- outcome: `deny`
+- mode: `shadow`（consequence: advisory）
+- calibration_status: 結果無此欄位
+- model: `typesafe/jev-1.13-20260917`
+```
+
+`calibration_status: 結果無此欄位`。查 `gateway/src/gateway.js`：這個欄位進了 `_emit()`
+的 telemetry payload（JSONL log 裡看得到），但成功回傳與 `failClosed()` 的 return
+都沒帶。host 只看得到 `mode: shadow`，無從判斷這條 policy 到底校準過沒有。
+
+`registry.js:68` 確實保證 `active ⟹ calibrated`，所以從 `mode` 反推「active 的一定校準過」
+是對的。但反過來不成立：`shadow + calibrated`（校準完、等著升）與
+`shadow + uncalibrated`（連資料都還沒有）是兩種完全不同的狀態，`activation_reason`
+回的又是合併後的 `shadow_or_uncalibrated`，兩者一樣看不出來。
+
+修法是三行：兩個 return 各加 `calibration_status: spec.calibration_status ?? 'unknown'`，
+`ApplyPolicyResultSchema` 加一個欄位。驗證（fake provider，走真 MCP client）：
+
+```json
+{
+ "outcome": "review",
+ "mode": "shadow",
+ "calibration_status": "uncalibrated",
+ "consequence": "advisory",
+ "shadow_outcome": "accept",
+ "model": "fake/jev-1.13"
+}
+```
+
+順帶驗到封頂：raw gate 是 `accept`，公開 `outcome` 被壓成 `review`（invariant 3）。
+
+**這條的教訓不是「漏欄位」，是 telemetry 與 tool result 是兩個各自獨立的出口。**
+一個欄位在 log 裡看得到，不代表呼叫方拿得到。這次是活線一次真呼叫才撞出來——
+offline 測試全綠、acceptance 全綠、replay 全綠，沒有一個會發現，因為它們沒有一個
+從「host 拿到什麼」這一側看。
+
+### 11.2 對照公開生態盤點潛能
+
+拿當時流傳的 20 個 Jev 應用清單逐條對照本 repo。與 coding agent 相關的 6 條，
+已覆蓋 5 條：
+
+| 公開專案 | 本 repo 的對應 | 狀態 |
+|---|---|---|
+| typesafe-mcp（接進 Claude Code 做 Choice/Score/Noul） | `jev_evaluate`，三型都實作 | 同型 |
+| Canny（防 agent 嘴硬說做完） | `completion-claims` policy | 有 |
+| fast-jev-compaction / Winnow（上下文垃圾回收） | `hooks/jev.js`，逐 chunk 真打 `openrouter/systemone` 判 keep/drop | 有，已活線 |
+| jev-mcp 的內容篩查 | `context-screening`（`relevance` + `suspicious_instructions`） | 有 |
+| jev-codex-router（先判難度再選模型檔位） | `intent-routing`（top-3 機率 + prefilter + dispatch） | 有 |
+| jev-review（審查前挑高風險改動） | `proposed-action-risk` 只吃 action+arguments，不吃 diff | 缺 |
+
+判定為**不該做**的：SemDecide（CLI 殼，gateway 已是 MCP，再包一層是同一件事做兩次）、
+Blink / neo4jev（要迭代導航，不是單次 gate，不屬於 policy gateway 的形狀）、
+jev-curate、json-render，以及遊戲／交易／無人機那批。
+
+**盤點的真正結論不是「少抄了哪個應用」。** 四條 policy 全部 `shadow` + `uncalibrated`
++ `rollout_percent: 0`，公開 outcome 永遠被封頂在 `review`——閘門蓋好、接線接好、
+活線驗過，但沒有一條真的在治理任何東西。`evaluation_dataset_version` 寫的是
+`synthetic-harness-*-v1`，合成的，不是真標註集。`registry.js:68` 又硬性要求
+`active ⟹ calibrated`。所以要開閘只有一條路：先累積真實標註資料。
+
+問題型別分佈也印證這點：`noul` 3 題、`score` 2 題、`choice` 只有 1 題。Noul 的
+confidence 是 `max(p, 1-p)`，這種閾值最吃校準資料，現在完全靠猜。
+
+### 11.3 補齊一：標註集落盤（`src/calibration.js`）
+
+第一版寫錯了方向。我先做了一個 `gateway/scripts/calibration-report.mjs` 去算
+gate 對不對得上 label——然後才發現 `gateway/scripts/calibrate.mjs` **早就存在**，
+而且做得完整得多：precision、recall、ECE、false-accept、provenance 比對、
+`eligible_for_review` 門檻、`synthetic-harness-*` 自動標記為 harness-only。
+我寫的那支是它的劣化重複版，直接刪掉。
+
+**缺的從來不是計分器，是產出者。** `calibrate.mjs` 讀的是一份「外部標註檔」，
+而這個 repo 裡沒有任何東西在產生那份檔案。zh-TW README 的「Policy 安全啟用順序」
+第 1 步寫著「保持 shadow 收集真實 labels」，第 2 步就叫你去跑 `calibrate.mjs`——
+中間那個「收集」沒有實作。四條 policy 卡在 `uncalibrated` 的真正原因就是這個斷點。
+
+所以 sink 直接對齊 `calibrate.mjs` 的 JSONL 契約，不另立格式：每行帶 provenance
+（`policy` / `policy_version` / `model` / `provider` / `dataset_version`，該腳本要求這些
+跨行一致）與 sample 欄位（`gate` / `coverage` / `confidence` / `label`），另外附上
+`state`、`answers`、`public_outcome`、`correlation_id` 給填標註的人看——這些多餘欄位
+`calibrate.mjs` 不讀，不影響驗證。
+
+三個設計決定：
+
+- **不動 telemetry。** `telemetry.js` 的 ALLOWLIST 是刻意設計成擋掉 state、questions、
+  answers 的，allowlist 而非 blocklist，呼叫方再怎麼塞都漏不出去。而 policy 要離開
+  shadow，需要的恰恰是 telemetry 拒絕攜帶的那些材料。兩個需求直接衝突，解法是另開
+  一個檔，不是把 allowlist 開大。
+- **opt-in。** `JEV_CALIBRATION_LOG=<path>` 有設才寫，沒設是 no-op、不開檔、零成本。
+  只寫 policy 自己宣告的 `state_projection` 欄位（未宣告欄位在更早的
+  `projectPolicyState` 就已剝掉）。
+- **`gate` 存 raw composed gate，不是 shadow 封頂後的 `outcome`。** 封頂是 rollout
+  控制，不是模型做的判斷；拿封頂結果去算準確率等於在量自己的保險絲。封頂後的值
+  另存 `public_outcome` 備查。
+
+寫入永不拋例外：語料是盡力而為的證據，不是持久化契約，不能讓一次寫檔失敗把決策打掛。
+
+`label` 一律寫 `null`。`calibrate.mjs` 的 `validateCalibrateInput` 會拒絕沒有合法
+label 的樣本，所以一份沒人碰過的語料不可能被誤當成證據：
+
+```
+=== 單筆未標註 ===
+{ "ok": false, "stage": "validate",
+  "errors": [ "sample[0]: label must be one of accept|review|escalate|deny" ] }
+```
+
+補上標註後，provenance 檢查接著擋下另一件事——fake provider 的樣本永遠不能拿來校準：
+
+```
+=== 單筆已標註（fake provider 產生）===
+{ "ok": false, "stage": "provenance",
+  "problems": [ "model fake/jev-1.13 != pinned typesafe/jev-1.13-20260917 for diff-risk" ] }
+```
+
+這兩道拒絕都是對的，而且是既有程式碼擋的，不是我新加的。
+
+### 11.3.1 順手修掉 `calibrate.mjs` 的單筆 JSONL bug
+
+接語料的時候撞到：**只有一筆樣本的 JSONL 檔會被誤判成格式錯誤的 wrapper。**
+
+```
+{ "ok": false, "stage": "parse", "error": "JSON object must contain a samples array" }
+```
+
+根因在 `parseCalibrateInput`：它看到開頭是 `{` 就先試 `JSON.parse(整份文字)`，
+成功就當作 `{ policy, samples: [...] }` 那種 wrapper 物件，沒有 `samples` 就報錯。
+JSONL 的 fallback 只在整份 parse **失敗**時才走到——而單行 JSONL 剛好是一個合法的
+JSON 物件，於是永遠走不到 fallback。兩筆以上才會正常。
+
+修法：`samples` 不存在時不要馬上判死。若這個物件帶著 sample 自己的欄位
+（`gate` 或 `label`），就落到 JSONL 分支當成一筆記錄讀；否則維持原本的錯誤訊息。
+兩種情形都留了 regression test。
+
+**這個 bug 之所以沒被發現，是因為在沒有產出者的情況下沒人餵過它真檔案。**
+一個 CLI 寫好了、測過了、文件也寫進啟用流程第 2 步，但它的輸入端從來不存在——
+上游一接上就立刻撞到 off-by-one 的格式判斷。沒有生產者的消費者不算驗過。
+
+### 11.4 補齊二：`040-diff-risk` policy
+
+對應清單裡的 jev-review：code review 前先過一遍，把高風險改動挑出來再交給更貴的
+模型或人。`state_projection: ["diff","intent","files_changed"]`，兩題：
+
+- `risk_surface`（score 0–2）：cosmetic ／ 一般邏輯 ／ 安全-金流-資料毀損路徑
+- `undeclared_behavior_change`（noul）：這份 diff 改動的行為，宣稱的 intent 有沒有蓋到
+
+`consequence: advisory`——它做的是分流，不是授權，與 `proposed-action-risk` 的
+`consequential` 不同。同樣 `shadow` + `uncalibrated` + `rollout_percent: 0` 起步。
+
+**驗證程度要講清楚：只有 fake provider 打過。** fake 恆回 index 0，所以下面這份
+刻意惡意的輸入——把 `if (token)` 拔掉卻宣稱「rename a variable」，檔案是
+`src/auth.js`——照樣拿到 `gate: accept`：
+
+```json
+{"policy":"diff-risk","policy_version":1,"model":"fake/jev-1.13","provider":"fake",
+ "dataset_version":"synthetic-harness-diff-v1","gate":"accept","coverage":"complete",
+ "confidence":1,"public_outcome":"review",
+ "state":{"diff":"- if (token) return ok;\n+ return ok;",
+ "intent":"rename a variable","files_changed":"src/auth.js"},
+ "answers":[{"question":"risk_surface","answer":{"type":"score","score":0,
+ "probabilities":{"0":1,"1":0,"2":0}}},
+ {"question":"undeclared_behavior_change","answer":{"type":"noul","noul":0}}],
+ "label":null}
+```
+
+這證明的是管線通（policy 載入、projection、mapping、composeGate、封頂、語料落盤），
+**不是 Jev 判得對**。真 provider 對這份輸入應該回 `risk_surface: 2` 與
+`undeclared_behavior_change: true`；沙箱擋 openrouter.ai，活線驗證另派 oneshot。
+在真 provider 跑過之前，這條 policy 的判斷力未經驗證。
+
+### 11.5 順帶：自己踩到一次覆寫
+
+寫測試時用 Write tool 建 `gateway/test/calibration.test.mjs`，工具回報
+「has been updated successfully」——**updated，不是 created**。那個檔名已經存在，
+裡面有 7 個測 calibration **metadata**（policy spec 上的欄位）的測試，被我整份蓋掉。
+
+沒有任何一個測試變紅。`npm test` 只是從 `pass 98` 變成 `pass 94`：我加了 3 個、
+砍掉了 7 個。若不是順手比對了總數，這次就是靜默刪掉 7 個測試然後推上去。
+
+抓到的方法是 `git stash -u` 前後各跑一次數數：
+
+```
+node --test | grep -c '^✔'   →  94   （改動後）
+git stash -u; node --test … →  98   （改動前）
+```
+
+還原後把新測試改名 `calibration-corpus.test.mjs`（語料 sink），與既有的
+`calibration.test.mjs`（policy metadata）分家，兩邊各自在檔頭註明對方是誰。
+最終 `tests 105 / pass 103 / fail 0`，98 + 5 = 103，對得上。
+
+**規則：測試總數是驗收數字，不是背景噪音。** 「fail 0」不代表沒事——
+pass 數變少同樣是紅燈，而它不會自己跳出來。這與 §10 那三次靜默失敗是同一類：
+工具回報成功，實際結果相反。這次是第四種變形，差別只在受害者是測試本身。
+
+### 11.6 副作用：context 成本隨 policy 增加
+
+`jev_apply_policy` 的 description 會列出已註冊的 policy id，所以多一條 policy
+就多一點常駐 context。實測 `tools/list` 6970 → 7030 bytes（+60 B），
+總常駐 7417 → 7477 bytes / 1870 est. tokens。CONTEXT.md 已更新，並補上
+「改 policy 後重跑 `context-cost.mjs`」。
+
+這是 policy 數量的隱形成本：每加一條治理規則，每個 session 都在付錢。
+現在一條 60 bytes 不痛，但它說明 policy 不是免費的——要加就要值得。
