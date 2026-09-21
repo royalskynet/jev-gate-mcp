@@ -172,6 +172,26 @@ export async function userRequestOf($, e) {
   return e.description || e.pattern || e.command || e.file_path || '';
 }
 
+/** Durable mirror of each judged-prunable outcome; see appendLedger's comment. */
+const LEDGER = '/Users/51mini/.openclaw/state/jev-prune.log';
+
+/**
+ * Append one prune line to the ledger, read-then-write because `$.fs` has no
+ * append. Never throws: the ledger is observation only, so a broken clock or a
+ * write refusal must never break the caller (prune). `$.clock.now` for a real
+ * ISO timestamp.
+ * @returns {Promise<void>}
+ */
+export async function appendLedger($, line) {
+  try {
+    const at = new Date(await $.clock.now()).toISOString();
+    const previous = await $.fs.read(LEDGER).catch(() => '');
+    await $.fs.write(LEDGER, `${previous}${at}\t${line}\n`);
+  } catch {
+    /* ledger is observation only — a failure must not stop the prune */
+  }
+}
+
 /** The body of every pruning hook; `tool` picks the row of TARGETS to use. */
 async function prune(tool, $, e, next) {
   const target = TARGETS[tool];
@@ -187,25 +207,18 @@ async function prune(tool, $, e, next) {
   const { kept, droppedLines } = await pruneText(out, (chunk) =>
     judgeChunk($, key, request, chunk, target.criteria),
   );
-  if (!droppedLines) return r;
-
   const line = `jev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped`;
   $.ui.log(line);
   // ponytail: the ui.log above is TUI-only and reaches no file unless --debug;
   // on a headless box the prune outcome would be unobservable and the threshold
-  // impossible to tune, so mirror it to a ledger. $.fs has no append, hence
-  // read-then-write; clock.now for a real ISO timestamp. Ledger is observation
-  // only — never let it break prune.
-  try {
-    const at = new Date(await $.clock.now()).toISOString();
-    const previous = await $.fs.read('/Users/51mini/.openclaw/state/jev-prune.log').catch(() => '');
-    await $.fs.write(
-      '/Users/51mini/.openclaw/state/jev-prune.log',
-      `${previous}${at}\t${line}\n`,
-    );
-  } catch {
-    /* ledger is observation only */
-  }
+  // impossible to tune, so mirror it to a ledger. Ledger writes on EVERY
+  // judged-prunable call, keep or drop. It used to sit under the
+  // `if (!droppedLines) return r` gate and in a swallow-all catch, so a hook
+  // that fired but judged everything `keep` left zero durable trace —
+  // indistinguishable from a hook that never loaded. appendLedger never throws,
+  // so a broken ledger cannot stop the prune itself.
+  await appendLedger($, line);
+  if (!droppedLines) return r;
   // No `ref`: core re-maps this record for the model instead of reusing its own.
   return { result: target.set(r.result, kept) };
 }
