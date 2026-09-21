@@ -13,7 +13,10 @@ if (registry.ids().length < 4) throw new Error('expected the four starter policy
 
 const g = new JevGateway({ evaluateAdapter: makeFakeAdapter(FakeMode.SUCCESS), registry });
 const r = await g.applyPolicy({ policy: 'completion-claims', state: 'evidence present' });
-if (r.outcome !== 'accept') throw new Error('fake policy did not accept: ' + r.outcome);
+// Starter policies are shadow/uncalibrated: the gateway must never auto-accept,
+// capping the outcome at 'review' and exposing the raw gate as shadow_outcome.
+if (r.outcome !== 'review') throw new Error('shadow/uncalibrated policy must cap at review, got: ' + r.outcome);
+if (r.shadow_outcome !== 'accept') throw new Error('expected raw composed gate accept via shadow_outcome, got: ' + r.shadow_outcome);
 
 // Build the transport-agnostic server object (confirms tool registration).
 buildServer(g);

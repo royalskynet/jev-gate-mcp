@@ -71,10 +71,11 @@ test('applyPolicy: consequential policy can never auto-accept on low certainty',
   assert.ok(['deny', 'escalate', 'review'].includes(r.outcome));
 });
 
-test('applyPolicy: high-certainty advisory policy accepts', async () => {
+test('applyPolicy: shadow/uncalibrated policy is capped at review, raw gate exposed as shadow_outcome', async () => {
   const g = gw(makeFakeAdapter(FakeMode.SUCCESS));
   const r = await g.applyPolicy({ policy: 'completion-claims', state: 'evidence present' });
-  assert.equal(r.outcome, 'accept');
+  assert.equal(r.outcome, 'review', 'shadow/uncalibrated outcome must never be accept');
+  assert.equal(r.shadow_outcome, 'accept', 'raw composed gate observable via shadow_outcome');
   assert.equal(r.policy.id, 'completion-claims');
   assert.equal(r.policy.version, 1);
 });
@@ -127,6 +128,8 @@ test('registry: incomplete semantic mappings fail at startup instead of falling 
         version: 1,
         mode: 'active',
         model: 'typesafe/jev-1.13-20260917',
+        evaluation_dataset_version: 'synthetic-v1',
+        calibration_status: 'calibrated',
         consequence: 'advisory',
         thresholds: { auto: 0.85, review: 0.6 },
         questions: { q: { type: 'choice', instructions: 'pick', criteria: { safe: 'safe', risky: 'risky' } } },
@@ -168,9 +171,10 @@ test('kill switch: per-policy kills only that policy, never a global exemption',
   const g = gw(makeFakeAdapter(FakeMode.SUCCESS));
   // the targeted policy is down
   await assert.rejects(() => g.applyPolicy({ policy: 'completion-claims', state: 'x' }), (e) => e.code === 'ERR_KILL_SWITCH');
-  // other policies are unaffected
+  // other policies are unaffected (resolvable; shadow/uncalibrated caps at review)
   const other = await g.applyPolicy({ policy: 'intent-routing', state: 'x' });
-  assert.equal(other.outcome, 'accept');
+  assert.notEqual(other.outcome, 'accept');
+  assert.equal(other.shadow_outcome, 'accept');
   // a per-policy kill never touches the advisory evaluate path
   const ev = await g.evaluate({ state: 'x', questions: QUESTIONS });
   assert.equal(ev.outcome, 'advisory');

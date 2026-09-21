@@ -117,6 +117,10 @@ export const ApplyPolicyResultSchema = z.object({
   policy: z.object({ id: z.string(), version: z.number() }),
   mode: z.string(),
   consequence: z.string(),
+  // raw composed gate for a shadow/uncalibrated policy whose public outcome was
+  // capped at 'review'; observation only, never an authorization. Optional so
+  // the stable (non-capped) result shape is unchanged.
+  shadow_outcome: z.enum(['accept', 'review', 'escalate', 'deny']).optional(),
   gate_reasons: z.array(reasonSchema),
   coverage: z.enum(['complete', 'incomplete']),
   model: z.string().nullable(),

@@ -1,0 +1,3 @@
+{"label": "accept", "gate": "accept", "confidence": 0.9, "coverage": "complete"}
+not valid json
+{"label": "accept", "gate": "not-a-gate", "confidence": 0.9, "coverage": "complete"}
