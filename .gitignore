@@ -8,3 +8,8 @@ coverage/
 *.log
 .DS_Store
 types/
+
+# calibration corpora: contain projected policy state, never commit
+*.jsonl
+!gateway/test/**/*.jsonl
+!gateway/fixtures/**/*.jsonl
