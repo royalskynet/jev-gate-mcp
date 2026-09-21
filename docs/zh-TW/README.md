@@ -74,7 +74,7 @@ codex mcp list
 | 用法 | 判什麼 | 契約 |
 |---|---|---|
 | route | 這一輪交給哪個候選 | 只能從給定候選挑；無匹配回 `no_match`；失敗保留目前模型 |
-| triage | 一次請求三問（`difficulty`/`kind`/`costly_mistake`）映射到 cheap→medium→hard tier | 三問一趟 Jev；危險文本掃**整段原文**（非切片）；risky／低信心／大 context 一律不降級；transport 失敗保留現狀 |
+| triage | 一次請求數問（`difficulty`/`kind`/`costly_mistake`，有 catalog 時加一支 advisory `skill` Choice）映射到 cheap→medium→hard tier | 一趟 Jev 全問完；skill 選擇搭同趟請求（**不另開一次**）；危險文本掃**整段原文**（非切片）；risky／低信心／大 context 一律不降級；transport 失敗保留現狀 |
 | compact | 哪個 tool call/result 該刪或截斷 | user/assistant 文字**原樣**通過；call/result 成對；首筆與近期 pin |
 | verify | 完成宣稱回 `pass｜fail｜unknown` | `pass` 必附可稽核 command/log evidence；沒有執行證據一律 `unknown` |
 | review | 分階段 diff 審查 | risk filter → file profile → evidence → mechanism → severity → reviewer route |
@@ -101,8 +101,12 @@ manifest 分檔互不覆寫：Claude 走 `hooks/hooks.json`，Codex 走 `.codex/
 
 ### Triage（省錢判斷層）
 
-`triage` 一趟 Jev 一次問三件事——`difficulty`（Score）、`kind`（Choice）、
-`costly_mistake`（Noul）——再由 deterministic code 映射到 cheap→medium→hard tier。
+`triage` 一趟 Jev 一次問數件事——`difficulty`（Score）、`kind`（Choice）、
+`costly_mistake`（Noul），有 skill catalog 時再加一支 advisory `skill`（Choice，
+criteria＝catalog＋`no_match`，**騎同一趟請求、不另開一次**）——再由
+deterministic code 映射到 cheap→medium→hard tier。route 已接真線（`cli.mjs`/
+`bridge.mjs` 不再回寫死 stub）：無 live model 時 `route` 自身 fail-open 到
+`no_match`，candidates 缺漏則 catch 成有界 `no-candidates`（exit 0）。
 兩端都接、但都純 advisory 且預設 **opt-in（`enabled:false`）**：
 
 - **Claude**：`agent-glue/claude/spawn-hook.mjs` 註冊 `agent.spawn`。開啟

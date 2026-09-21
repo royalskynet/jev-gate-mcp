@@ -933,3 +933,60 @@ risky/stakes>0.4→永不 cheapest；stakes>0.85 且已偏難→hard。另加工
 
 policy 檔零改動，MCP surface 仍只有兩支工具，`enabled:false` 預設接線不設任何 model。
 **triage 全程 advisory / fail-open**——不授權不阻擋，省錢只在「夠簡單、夠安全、夠有信心」時降級。
+
+## 16. 補兩個掛著沒接線的洞（2026-09-21）
+
+上一輪 triage 落地後剩兩個殘件，本輪一次補齊：
+
+### 16.1 洞一：route 子命令是 stub
+
+`agent-glue/cli.mjs` 與 `agent-glue/claude/bridge.mjs` 的 `route` 分支原本回傳寫死的
+`{ no_match, reason:'cli-no-model' }`，但 `plugin/lib/route.js` 的 `route()` 早已存在且測過，
+且沒有 model 時 `makeScorer()` 會 throw、`route()` 自己 catch 成 `jev-unavailable`——fail-open
+本來就有，stub 只是遮蔽真線。
+
+修法：兩檔 `route` 分支改成 `await route(payload)`（import 清單本就有 `route`）。`route()`
+在 candidates 缺漏／空／含 `no_match` 時 throw `EmptyCandidatesError`，CLI 用 try/catch
+統一回傳有界 `{ no_match:true, top:[], dispatch:null, reason:'no-candidates' }` 且 exit 0，
+其他例外同樣 catch。`cli-no-model` 字串與兩段過期註解刪除，docstring 改成「route 走真判斷，
+無 model 時由 route 自身 fail-open」。
+
+新增 `tests/agent-glue/route-cli.test.mjs`：兩支入口走 stdin JSON 各驗兩筆——給 candidates
+（有界 JSON、exit 0、不洩 stack trace；本環境有 live Jev model，`route()` 回真 `no_match`，
+故測「有界且 fail-open 到 no_match」而非鎖死 `jev-unavailable`）、不給 candidates（`no-candidates`）。
+另用注入 failing scorer 對 `route()` 本體做 `jev-unavailable` 的確定性單測。
+
+> **環境差異**：工單要求「無 model → `jev-unavailable`」走 CLI 驗。但本機 `plugin/config.default.json`
+> 指向已存在的 key，`route()` 實際打到 live Jev 並回真 `no_match`，無法靠 CLI 子程序確定性重現
+> 「無 model」；該斷言改用注入 failing scorer 的 `route()` 單測覆蓋。CLI 側測有界輸出不變。
+
+### 16.2 洞二：pickSkills 改併入 triage 的第 4 題 Choice
+
+`spawn-hook.mjs` 的 `pickSkills` 是「skill 名命中 regex **且** prompt 含名字」的雙重過濾
+啟發式，實測幾乎恆回 `[]`，等於沒作用；它自己的 `ponytail:` 註解也寫明升級路徑＝對 catalog
+做一次真 Jev Choice。
+
+修法（**不另開一次請求**）：skill 選擇併進既有的那一次 triage 請求，當第 4 題 `skill`
+（Choice，criteria = catalog + `no_match`）。`triageQuestions(catalog)` 可接 catalog 參數；
+catalog 為空或未提供時 questions 仍只有 3 題（零額外成本）。`triage()` 的 `cacheKey`
+加入 catalog 穩定指紋（排序後 join 走 `configFingerprint` 同款 FNV-ish hash，
+`catalogFingerprint`）——換 catalog 才會 cache miss。`triage()` 回傳加 `skills` 陣列。
+沿用既有邊界：transport 失敗／低信心／features 隱私模式一律 `[]`，絕不猜（隱私模式連
+catalog 也不問）。`spawnDecision` 改用 `decision.skills`，`pickSkills` 整支刪除（含三處呼叫）。
+catalog 來源：`input.skills ?? deps.skillCatalog ?? []`。skills 純 advisory，不改 model、不動
+`change` 旗標。
+
+### 16.3 測試與驗收對帳
+
+新增測試：`route-cli.test.mjs`（5）、triage 補 6 筆 catalog／cache 負向、spawn-hook 補 2 筆
+（原 `pickSkills` 測試隨函數刪除調整合併）。
+
+| | 承接 §15 | 修後 |
+|---|---|---|
+| tests | 167 | 181 |
+| pass | 165 | 179 |
+| **fail** | **0** | **0** |
+| skipped | 2 | 2 |
+
+`npm run agents:acceptance` 全綠（`ALL OK` exit 0）。政策檔零改動、MCP surface 仍兩支、
+`gateway/` 零 diff。route 與 skills 皆 advisory，**不改變 model 選擇、不設任何硬阻斷**。

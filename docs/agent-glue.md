@@ -11,9 +11,11 @@ agent-glue/
   src/verify.js     完成驗證（pass|fail|unknown + evidence / file:line）
   src/review.js     分階段審查（risk→profile→evidence→mechanism→severity→route）＋真 git diff parser
   src/client.js     注入式 gateway client（production 走 in-process gateway；test 用 fake）
-  src/triage.js     省錢判斷層（一次三問 + tier 映射 + 地板規則 + cache + features 隱私）
+  src/triage.js     省錢判斷層（一次數問 + tier 映射 + 地板規則 + cache + features 隱私；
+                    有 catalog 時併 `skill` Choice 第 4 題，skills 為 advisory）
   src/index.js      匯出面
-  cli.mjs           共用 CLI（compact|verify|review|route）
+  cli.mjs           共用 CLI（compact|verify|review|route，route 已接真線：無 model
+                    由 route 自身 fail-open，candidates 缺漏→有界 no-candidates）
   claude/bridge.mjs Claude adapter（route/verify/review/compact 走共享 core）
   claude/spawn-hook.mjs Claude `agent.spawn` hook（triage 設 subagent model，opt-in）
   codex/*.mjs       Codex adapter command hooks（user_prompt_submit 跑真 triage）
@@ -48,9 +50,11 @@ skills/jev-agent/   兩端共用操作規則
 
 ## 3.5 Triage（省錢判斷層）
 
-`src/triage.js` 一趟 Jev 一次問三件事——`difficulty`（Score 4 級）、`kind`
-（Choice: coding/writing/research/general）、`costly_mistake`（Noul）——再由
-deterministic code（`decideTier`）映射到 cheap→medium→hard tier。
+`src/triage.js` 一趟 Jev 一次問數件事——`difficulty`（Score 4 級）、`kind`
+（Choice: coding/writing/research/general）、`costly_mistake`（Noul），有 skill
+catalog 時加第 4 題 `skill`（Choice，criteria＝catalog＋`no_match`，**騎同一趟、
+不另開一次 Jev**）——再由 deterministic code（`decideTier`）映射到
+cheap→medium→hard tier。skill 選擇是 advisory 的 `skills` 陣列，不改 model 選擇。
 
 **省錢閘（全在 Jev 呼叫之前）**：
 
@@ -59,8 +63,9 @@ deterministic code（`decideTier`）映射到 cheap→medium→hard tier。
 - **切片**：先 unwrap 排程信封（`## Prompt|Task|Request` 段落保留，`previous
   output` 段落丟棄），超長再取開頭 1/4＋結尾 3/4（`ask_chars` 預設 2500）。
 - **decision cache**：key＝（切片、context bucket、config 指紋、has_images、
-  pinned、profile）。**context 必須進 key**，否則小 context 的答案會被大 context
-  命中（`tests` 有 bucket 不同則 miss 的防回歸）。
+  pinned、profile、**catalog 指紋**）。**context 與 catalog 都必須進 key**——否則
+  小 context 的答案會被大 context 命中、換 catalog 會吃到舊答案（`tests` 有 bucket
+  不同則 miss、catalog 不同則 miss 的防回歸）。
 - **features 隱私模式**：只送統計特徵（`len_bucket`/`chars`/`has_code`/`steps`
   /`has_danger_word`），原文不出機器；敏感 profile 自動開啟。
 
@@ -75,8 +80,9 @@ deterministic code（`decideTier`）映射到 cheap→medium→hard tier。
 **Claude 端**：`claude/spawn-hook.mjs` 註冊 `agent.spawn`。預設 `enabled:false`
 （`JEV_TRIAGE_ENABLED=1` 才開）；開啟**且**有注入 transport 時才依 tier 設
 subagent 的 `model`，model 對應可設 `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`。
-預設接線是 no-op——副 agent 的模型從不被動。skili select 另跑 `pickSkills`，
-多數 turn 回「不需要任何 skill」（`[]`）。
+預設接線是 no-op——副 agent 的模型從不被動。skill 選擇併進同趟 triage 的 `skill`
+第 4 題（`pickSkills` 的關鍵字啟發式已刪除），catalog 來源
+`input.skills ?? deps.skillCatalog ?? []`；多數 turn 回「不需要任何 skill」（`[]`）。
 
 **Codex 端**：`user_prompt_submit.mjs` 跑真 triage，但 Codex hook 換不了模型，
 所以只吐一行 advisory `additionalContext` notice，並在 `codex-route.log` 寫一行

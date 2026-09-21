@@ -130,10 +130,17 @@ Provider settings live at the top of `hooks/jev.js`: endpoint
 | | what it decides | contract |
 |---|---|---|
 | route | which candidate handles this turn | picks only from the given candidates; `no_match` when none fit; failure keeps the current model |
-| triage | one request, three answers (`difficulty` / `kind` / `costly_mistake`), mapped to a cheap→medium→hard tier | one Jev call serves all three; dangerous text is regex-scanned whole (not the slice); risky / low-confidence / large-context never downgrade; transport failure keeps the status quo |
+| triage | one request, three answers (`difficulty` / `kind` / `costly_mistake`) — plus an advisory `skill` Choice when a catalog is given — mapped to a cheap→medium→hard tier | one Jev call serves all of them; skill selection rides the same request (no extra call); dangerous text is regex-scanned whole (not the slice); risky / low-confidence / large-context never downgrade; transport failure keeps the status quo |
 | compact | which tool call/result to drop or truncate | user/assistant prose passes through byte-for-byte; call/result stay paired; first and recent turns pinned |
 | verify | `pass` / `fail` / `unknown` on a completion claim | `pass` needs auditable command/log evidence; no execution evidence means `unknown`, never `pass` |
 | review | staged diff review | risk filter → file profile → evidence → mechanism → severity → reviewer route |
+
+The `route` and `triage` glue paths are fully wired through `agent-glue/cli.mjs`
+and `agent-glue/claude/bridge.mjs` (the old `route` stub with `cli-no-model` is
+gone): with no live Jev model `route` fails open to `no_match` itself, and a
+missing/empty candidate list is caught into a bounded `no-candidates` result
+(exit 0). Skill selection rides the same single triage request — it never spawns
+a second Jev call.
 
 Two rules hold the whole thing up:
 
@@ -156,10 +163,13 @@ not a replacement. Manifests stay in separate files — `hooks/hooks.json` for C
 
 ### The triage layer (money-saving judgment)
 
-`triage` asks one Jev request three questions at once — `difficulty` (Score),
-`kind` (Choice) and `costly_mistake` (Noul) — and deterministic code maps them
-onto a cheap→medium→hard tier. It is wired on both hosts but is strictly
-advisory and **opt-in** (`enabled:false` by default):
+`triage` asks one Jev request several questions at once — `difficulty` (Score),
+`kind` (Choice) and `costly_mistake` (Noul), plus an advisory `skill` (Choice
+over the catalog + `no_match`) when a skill catalog is supplied — and
+deterministic code maps them onto a cheap→medium→hard tier. The skill pick
+rides the same request, so it never costs an extra Jev call and is advisory
+only (never changes the model choice). It is wired on both hosts but is
+strictly advisory and **opt-in** (`enabled:false` by default):
 
 - **Claude**: `agent-glue/claude/spawn-hook.mjs` registers `agent.spawn`. When
   enabled (`JEV_TRIAGE_ENABLED=1`) **and** a transport is injected, it picks the
