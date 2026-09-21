@@ -67,7 +67,7 @@ fail-open 行為本來就有，stub 是多餘的。
 ```
 cd /Users/51mini/dev/jev-gate-mcp
 npm test 2>&1 | grep -E '^(ℹ|#) (tests|pass|fail|skipped)'
-npm run acceptance:agents 2>&1 | tail -20 ; echo "exit=$?"
+npm run agents:acceptance 2>&1 | tail -20 ; echo "exit=$?"
 grep -rn "cli-no-model" agent-glue/ ; echo "grep_rc=$?"     # 必須 rc=1（無命中）
 grep -rn "pickSkills" agent-glue/ ; echo "grep_rc=$?"       # 必須 rc=1（無命中）
 grep -rn "registerTool" gateway/src/ | wc -l                # 必須 = 2
