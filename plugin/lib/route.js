@@ -51,12 +51,19 @@ export async function route(opts) {
 
   const choices = [...filtered, noMatchLabel];
   const score = scorer || makeScorer();
+  // Candidate descriptions, when the caller has them. Without them Jev sees
+  // bare labels ("main", "deep", "review") and has to guess what they mean —
+  // measured at 1/4 on a four-case live probe. They are optional so an
+  // id-only caller still works, but a caller that knows what its candidates do
+  // should say so.
+  const descriptions = opts?.descriptions ?? null;
 
   let result;
   try {
     result = await score(
       { user_request: userRequest ?? '' },
       choices,
+      descriptions,
     );
   } catch {
     return { no_match: true, top: [], dispatch: null, reason: 'jev-unavailable' };
@@ -77,7 +84,10 @@ export async function route(opts) {
   // Dispatch target: main vs deep — a second judgment.
   let dispatch = null;
   try {
-    const d = await score({ user_request: userRequest ?? '' }, ['main', 'deep']);
+    const d = await score({ user_request: userRequest ?? '' }, ['main', 'deep'], {
+      main: 'Handle it in the current session: short, interactive, or needs the user in the loop.',
+      deep: 'Hand it to a background worker: long, multi-step, or self-contained enough to run unattended.',
+    });
     dispatch = d.choice === 'deep' ? 'deep' : 'main';
   } catch {
     dispatch = null; // fail-open: no dispatch opinion
@@ -96,9 +106,12 @@ export function makeScorer(cfg = DEFAULT_CONFIG) {
   if (!model) {
     return async () => { throw new Error('no Jev model configured'); };
   }
-  return async function scorer(state, choices) {
+  return async function scorer(state, choices, descriptions = null) {
     const criteria = {};
-    for (const c of choices) criteria[c] = null;
+    for (const c of choices) criteria[c] = descriptions?.[c] ?? null;
+    if (criteria[noMatchLabel] == null) {
+      criteria[noMatchLabel] = 'None of the listed options is a good fit for this request.';
+    }
     const answer = await model.choice(state, {
       instructions: 'Which option best matches the user request? Choose the single best fit, or no_match if none is a good fit.',
       criteria,

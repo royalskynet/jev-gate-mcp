@@ -40,3 +40,41 @@ test('client: gateway transport surfaces bounded applyPolicy fields', async () =
   assert.equal(out.mode, 'shadow');
   assert.equal(JSON.stringify(out).includes('never-exposed'), false, 'raw server fields are not surfaced');
 });
+
+// Regression: the real gateway answers as an ARRAY of {question, answer}; every
+// caller reads answers[<question id>]. Keying by array index made triage read
+// `answers.difficulty === undefined` and fail-open to status quo on every live
+// turn while the fake transport (keyed by question id) kept the tests green.
+test('client: gateway transport keys answers by question id, not array index', async () => {
+  const fakeGateway = {
+    async evaluate() {
+      return {
+        answers: [
+          { question: 'difficulty', answer: { type: 'score', score: 2.9, probabilities: { 0: 0, 1: 0, 2: 0.05, 3: 0.95 }, confidence: 0.95 } },
+          { question: 'kind', answer: { choice: 'coding', probabilities: { coding: 0.9 } } },
+        ],
+        model: 'typesafe/jev-1.13',
+        coverage: 'complete',
+        latency_ms: 120,
+      };
+    },
+    async applyPolicy() { throw new Error('not used'); },
+  };
+  const t = makeGatewayTransport(fakeGateway);
+  const out = await t.evaluate({ state: {}, questions: {} });
+  assert.deepEqual(Object.keys(out.answers).sort(), ['difficulty', 'kind']);
+  assert.equal(out.answers.difficulty.score, 2.9);
+  assert.equal(out.answers.kind.choice, 'coding');
+  assert.equal(out.latency_ms, 120);
+  // and the array-index spelling must be gone
+  assert.equal(out.answers['0'], undefined);
+});
+
+test('client: an object-shaped answers map still passes through', async () => {
+  const fakeGateway = {
+    async evaluate() { return { answers: { risk: { choice: 'low' } }, coverage: 'complete' }; },
+    async applyPolicy() { throw new Error('not used'); },
+  };
+  const out = await makeGatewayTransport(fakeGateway).evaluate({ state: {}, questions: {} });
+  assert.equal(out.answers.risk.choice, 'low');
+});

@@ -25,11 +25,27 @@ export function makeGatewayTransport(gateway) {
       const res = await gateway.evaluate(input);
       // Bounded surface: question keys + answers only. raw/questions echoes
       // nothing back; usage/latency are tiny numbers we keep off the wire.
+      //
+      // `gateway.evaluate` answers as an ARRAY of `{question, answer}`, while
+      // every caller (triage, and the fake transport the tests use) reads
+      // `answers[<question id>]`. Iterating Object.entries over the array gave
+      // `{0:…,1:…}`, so `answers.difficulty` was always undefined and triage
+      // fail-opened to status quo on every live turn — invisible to the tests,
+      // because only the fake keyed by question id. Key by question id here.
       const answers = {};
-      for (const [key, a] of Object.entries(res?.answers ?? {})) {
-        answers[key] = a;
+      const list = Array.isArray(res?.answers) ? res.answers : [];
+      for (const entry of list) {
+        if (entry?.question) answers[entry.question] = entry.answer;
       }
-      return { answers, model: res?.model ?? null, coverage: res?.coverage ?? 'complete' };
+      if (!list.length && res?.answers && typeof res.answers === 'object') {
+        for (const [key, a] of Object.entries(res.answers)) answers[key] = a;
+      }
+      return {
+        answers,
+        model: res?.model ?? null,
+        coverage: res?.coverage ?? 'complete',
+        latency_ms: res?.latency_ms ?? null,
+      };
     },
     async applyPolicy(input) {
       const res = await gateway.applyPolicy(input);
