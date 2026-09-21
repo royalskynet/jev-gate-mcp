@@ -52,22 +52,23 @@ export async function benchCore(n, warmup) {
 }
 
 /**
- * Transport overhead: a full MCP tool call over in-process Streamable HTTP,
+ * Transport overhead: a full MCP tool call over in-process stdio transport,
  * exactly like the conformance suite mounts the production surface.
+ * ponytail: previously this measured Streamable HTTP; the HTTP/Docker layer was
+ * removed (local plugin needs only stdio), so the stdio transport carries the
+ * in-process transport benchmark instead.
  */
 export async function benchTransport(n, warmup) {
   const { Client } = await import('@modelcontextprotocol/client');
-  const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/client');
-  const { createHttpServer } = await import('../src/http.js');
-  const { buildGateway } = await import('../src/config.js');
-  // Keep production middleware in the path, but raise its quota so the
-  // benchmark measures request overhead rather than intentionally tripping 429.
-  const http = await createHttpServer({
-    rateLimit: (n ?? 200) + (warmup ?? 30) + 10,
-    gatewayFactory: () => buildGateway({ provider: 'fake', telemetry: false }).gateway,
+  const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
+  const { fileURLToPath } = await import('node:url');
+  const t = new StdioClientTransport({
+    command: process.execPath,
+    args: [fileURLToPath(new URL('../src/stdio.js', import.meta.url))],
+    env: { JEV_PROVIDER: 'fake', PATH: process.env.PATH, HOME: process.env.HOME },
   });
   const client = new Client({ name: 'bench', version: '0' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${http.port}/mcp`)));
+  await client.connect(t);
   try {
     const run = () => client.callTool({ name: 'jev_apply_policy', arguments: ARGS });
     for (let i = 0; i < (warmup ?? 30); i++) await run();
@@ -80,6 +81,6 @@ export async function benchTransport(n, warmup) {
     return summarize(samples);
   } finally {
     await client.close();
-    await new Promise((r) => http.server.close(r));
+    await t.close();
   }
 }

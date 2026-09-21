@@ -120,7 +120,7 @@ Current stars and package activity were rechecked before adding dependencies:
 | concern | wheel | stars | decision |
 |---|---|---:|---|
 | JSON Schema + minimum-state validation | `ajv-validator/ajv` / `ajv@8.20` | 14,837 | Adopted. Policy-owned JSON Schema; a tiny deterministic top-level allowlist performs projection before Ajv validation and before provider egress. |
-| request rate limit | `animir/node-rate-limiter-flexible@11.2` | 3,586 | Adopted. In-memory limiter fits the single-process container; switch its store for horizontal replicas. |
+| request rate limit | `animir/node-rate-limiter-flexible@11.2` | 3,586 | Adopted, then **removed 2026-09-21** with the HTTP transport. A stdio plugin has one local caller and no request queue to protect. Re-adopt only if a remote transport comes back. |
 | Prometheus metrics | `prometheus/client_js` / `@prometheus-io/client@0.16` | 3,489 | Adopted current package. The former `prom-client` name is deprecated, so it was removed before commit. Current package requires Node 22/24/26+, and the production image pins Node 22. |
 | TLS / reverse proxy | `caddyserver/caddy` | 75,893 | Adopted as deployment glue: automatic HTTPS, upstream health checks, compression, security headers. Gateway remains the auth/rate/concurrency enforcement point. |
 | stable digest | third-party stringify/hash packages | <=1,474 | Rejected. Node `crypto` plus a small key-sorted JSON encoder is less supply chain for a narrow, fully tested policy digest. |

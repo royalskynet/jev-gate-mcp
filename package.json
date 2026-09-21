@@ -11,8 +11,7 @@
     "build": "node gateway/scripts/build-check.mjs",
     "gateway:acceptance": "node gateway/scripts/acceptance.mjs",
     "gateway:replay": "node gateway/scripts/replay.mjs gateway/fixtures/replay-baseline.json",
-    "gateway:stdio": "node gateway/src/stdio.js",
-    "gateway:http": "node gateway/src/http.js"
+    "gateway:stdio": "node gateway/src/stdio.js"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
@@ -23,7 +22,6 @@
     "jevwire": "github:Brainwires/jevwire#main",
     "opossum": "^9.0.0",
     "pino": "^10.3.1",
-    "rate-limiter-flexible": "^11.2.1",
     "simple-statistics": "^7.12.0",
     "tinybench": "^6.2.0",
     "zod": "^4.6.5"

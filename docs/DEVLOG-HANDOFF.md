@@ -1,5 +1,11 @@
 # Dev Log Handoff — Jev Decision Gateway production hardening
 
+> **部分作廢（2026-09-21）**：第 6 節說「唯一驗收缺口 = Docker runtime smoke」。
+> 該缺口只在「部署成公開 HTTP 服務」這個沒人提出的前提下成立；實際用途是本機 MCP plugin。
+> HTTP / Docker / Caddy 層已於 2026-09-21 整層刪除，本文件所有相關段落（§2 的 `http.js`、
+> `Dockerfile`、`compose.yaml`、`deploy/`、§6 的 Docker 缺口）只當歷史紀錄讀，不要照做。
+> 現況看 [`DEVLOG.md` §10](DEVLOG.md)。
+
 這份文件提供給「沒有前文、沒有 session memory」的下一個模型。先不要擴功能；先依下列順序重建現況。
 
 ## 1. Repo 與任務

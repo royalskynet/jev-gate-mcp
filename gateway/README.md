@@ -1,14 +1,14 @@
 # Jev Decision Gateway MCP (v2)
 
-繁中快速上手、Codex 設定、Docker/Caddy 上線與 policy 啟用流程：
+繁中快速上手、Claude Code / Codex 接線與 policy 啟用流程：
 [`docs/zh-TW/README.md`](../docs/zh-TW/README.md)。
 
 A governed MCP server exposing **exactly two tools** over the same Gateway Core,
-served by both **stdio** and **Streamable HTTP**, built on the official
+served over **stdio** (the local plugin transport), built on the official
 `modelcontextprotocol/typescript-sdk` **v2** (`@modelcontextprotocol/server`,
 `@modelcontextprotocol/node`, `@modelcontextprotocol/client`; the legacy
 monolithic SDK package is not used). Schemas use **Zod v4**; production runtime
-is **Node 22 or 24** (the container pins Node 22).
+is **Node 22 or 24**.
 
 - `jev_evaluate` — advisory, caller-defined batched Choice/Score/Noul judgments. Cannot authorize any action.
 - `jev_apply_policy` — server-owned, versioned Decision Policy returning a deterministic `accept`/`review`/`escalate`/`deny` Gate. The caller supplies state only.
@@ -24,13 +24,12 @@ is **Node 22 or 24** (the container pins Node 22).
 | `src/adapters.js` | OpenRouter Provider Adapter (via `jevwire`); native TypeSafe kept for the offline contract fixture only (all Jev live rides the single OpenRouter key); deterministic fakes |
 | `src/server.js` | v2 `McpServer` tool surface (`outputSchema` + `structuredContent`) |
 | `src/config.js` | deployment wiring and provider/keys |
-| `src/stdio.js` | v2 `serveStdio(factory)` entry |
-| `src/http.js` | `/mcp` transport + auth, Host/Origin guards, limits, readiness, metrics, graceful drain |
+| `src/stdio.js` | v2 `serveStdio(factory)` entry (the only transport) |
 | `src/policy-controls.js` | state projection/schema, digests, quality signals, deterministic canary |
 | `src/host-adapter.js` | concrete lifecycle enforcement for in-process or MCP clients |
-| `src/metrics.js` | low-cardinality Prometheus decision/HTTP/workflow metrics |
+| `src/metrics.js` | low-cardinality Prometheus decision/workflow metrics |
 | `policies/*.json` | the four starter Policy Packs (data, not code) |
-| `test/` | unit, conformance (stdio+HTTP equivalence, edge guards), opt-in smoke |
+| `test/` | unit, conformance (stdio surface), opt-in smoke |
 
 ## Gate composition (answer semantics AND confidence)
 
@@ -69,22 +68,42 @@ cannot override it — the strict input schema rejects any model field.
   shutdown, never an exemption from the global switch and never a shutdown of
   other policies.
 
-## HTTP surface
+## Transport
 
-`src/http.js` mounts `/mcp` plus operational `/health`, `/ready`, and `/metrics`
-(other paths → 404). It applies official SDK Host/Origin guards, Bearer auth,
-request-body/rate/in-flight limits, and graceful signal-driven draining. A
-non-loopback bind refuses startup without auth and an explicit host allowlist.
-The same Gateway Core serves stdio and HTTP. Caddy/Docker production assets are
-at repo root; see the Traditional Chinese deployment guide linked above.
+The only supported transport is **stdio** — this is a local MCP plugin. The
+former Streamable HTTP / Docker / Caddy layer (`src/http.js`, `Dockerfile`,
+`compose.yaml`, `deploy/`, and the `rate-limiter-flexible` dependency) was
+removed; a local plugin needs no remote service layer, and that layer was never
+runtime-smoked.
+
+## Claude Code
+
+Register the stdio server once, at user scope:
+
+```sh
+claude mcp add jev_gate -s user \
+  -e JEV_PROVIDER=openrouter -e JEV_MODEL=typesafe/jev-1.13 \
+  -- node /absolute/path/to/jev-gate-mcp/gateway/src/stdio.js
+```
+
+The server name must come **before** the `-e` flags. `--env` is variadic, so a
+name placed after them is swallowed as one more `KEY=value` token and the CLI
+fails with `Invalid environment variable format`.
+
+No key path is passed: `src/config.js` defaults `apiKeyFile` to
+`~/.creds/kv/OPENROUTER_API_KEY.txt`. Policies resolve through `import.meta.url`
+rather than `process.cwd()`, so the host may spawn the server from any
+directory.
+
+Verify with `claude mcp list` (expect `jev_gate` ✓ connected); `/mcp` inside a
+session lists the two tools.
 
 ## Codex
 
 Project-scoped `.codex/config.toml` starts the stdio server and enables exactly
 the two read-only tools with bounded output-token budgets. The server advertises
 short initialization instructions so Codex can decide when *not* to spend a
-tool call. Remote Codex clients can connect to the HTTPS `/mcp` endpoint with
-`bearer_token_env_var`.
+tool call.
 
 ## Run
 

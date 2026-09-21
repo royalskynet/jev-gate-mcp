@@ -183,35 +183,14 @@ provenance→provenance hard error, synthetic→harness-only, invalid→parse ha
 error, never mutates a policy), and the processing-overhead p95 <50ms benchmark
 (direct core + transport, deterministic no-I/O provider).
 
-## 7. HTTP production controls
+## 7. Transport (stdio only)
 
-Loopback remains the safe default. Binding `JEV_HTTP_HOST` to a non-loopback
-address fails startup unless both `JEV_HTTP_AUTH_TOKEN_FILE` and
-`JEV_HTTP_ALLOWED_HOSTS` are configured. The token is read from a file and is
-never logged. `/mcp`, `/ready`, and `/metrics` require Bearer auth when enabled;
-`/health` exposes only `{ "status": "alive" }`.
-
-| env | default | purpose |
-|---|---:|---|
-| `JEV_HTTP_RATE_LIMIT` | 60 | requests per token/IP window |
-| `JEV_HTTP_RATE_WINDOW_SECONDS` | 60 | rate window |
-| `JEV_HTTP_MAX_IN_FLIGHT` | 16 | reject excess MCP concurrency with 503; do not queue |
-| `JEV_MAX_BODY_BYTES` | 262144 | transport body cap |
-| `JEV_HTTP_SHUTDOWN_MS` | 10000 | graceful drain deadline |
-
-`/ready` returns 503 when the provider breaker is open. `/metrics` uses bounded
-labels only. Horizontal replicas need a shared limiter store or an equivalent
-edge rate limit because the default limiter is process-local.
-
-Production reference:
-
-```sh
-docker compose --env-file deploy/.env config
-docker compose --env-file deploy/.env up -d --build
-```
-
-Caddy owns public 80/443 and automatic TLS. The gateway has no host-published
-port in Compose and runs read-only with `no-new-privileges`.
+The only supported transport is stdio — this is a local MCP plugin. The former
+Streamable HTTP / Docker / Caddy layer (`src/http.js`, `Dockerfile`,
+`compose.yaml`, `deploy/`, and the `rate-limiter-flexible` dependency) was
+removed; a local plugin needs no remote service layer, and that layer was never
+runtime-smoked. Start the server with `node gateway/src/stdio.js` (or `npm run
+gateway:stdio`); `JEV_PROVIDER=fake` gives a deterministic no-key run.
 
 ## 8. State minimization, activation, and replay
 

@@ -1,7 +1,19 @@
 # Jev Gate
 
-> 繁中：若要把 Decision Gateway 接到 Codex 或正式部署，直接看
-> [繁中上線與 Codex 快速指南](docs/zh-TW/README.md)。
+> 繁中：若要把 Decision Gateway 接到 Claude Code 或 Codex，直接看
+> [繁中接線與 Codex 快速指南](docs/zh-TW/README.md)。
+
+## Two separate things live here
+
+| | what it is | entry point | status |
+|---|---|---|---|
+| **Prune plugin** | a Claude Code plugin that shrinks long tool output before the model reads it | `hooks/jev.js` | shipped, live-verified |
+| **Decision Gateway** | a local MCP server exposing exactly two governed decision tools | `gateway/src/stdio.js` | shipped as a **local stdio plugin**; policies run in shadow only |
+
+They share a repo and a provider key, nothing else. The rest of this page is the
+prune plugin; the gateway has its own [README](gateway/README.md).
+
+## Prune plugin
 
 A Claude Code plugin that prunes long tool output with a Jev (System One)
 keep/drop judgment **before it reaches the model's context**.
@@ -105,7 +117,7 @@ tested but deliberately not wired — see `docs/NEXT.md` for why.
 
 ## Documents
 
-- [Gateway README](gateway/README.md) — the Decision Gateway MCP server (v2 SDK, two tools, stdio + HTTP)
+- [Gateway README](gateway/README.md) — the Decision Gateway MCP server (v2 SDK, two tools, stdio only)
 - [Companion agent instructions](docs/agent-instructions.md) — when an agent should call the tools
 - [Host Adapter contract](docs/host-adapter.md) — mandatory, host-enforced lifecycle gating
 - [Product requirements](docs/prd/jev-decision-gateway.md)

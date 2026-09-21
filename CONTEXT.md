@@ -33,3 +33,26 @@ Jev Gate MCP is a governed decision gateway. GPT, Claude, and other agents remai
 5. Arithmetic, date comparison, counting, schema validation, retry counts, and authorization remain in code.
 6. Model aliases are not used for calibrated production policies; production pins a version.
 7. State and secrets are not logged by default.
+
+## Transport
+
+The gateway is a **local MCP plugin over stdio** (`gateway/src/stdio.js`). It is
+not a deployed service: the Streamable HTTP transport, `Dockerfile`,
+`compose.yaml`, `deploy/` (Caddy), and the `rate-limiter-flexible` dependency
+were removed on 2026-09-21 because a single local caller needs none of them.
+Re-introducing a remote transport re-introduces every control that layer carried
+(auth, bind policy, body caps, rate limiting) — it is not a drop-in.
+
+## Context cost of mounting the gateway
+
+Mounting an MCP server costs context on every session, before any tool is
+called: the host serializes `tools/list` plus the server's initialization
+instructions into the system prompt. Measured on the stdio surface:
+
+- `tools/list` serialized: 6970 bytes / 1743 est. tokens
+- initialization instructions: 447 bytes / 112 est. tokens
+- total standing cost per session: 7417 bytes / 1855 est. tokens
+
+This is the only quantifiable evidence for the "fewer tools, smaller context"
+design goal — two tools with bounded `outputSchema` instead of a broad surface.
+Re-measure whenever a tool description, schema, or the instructions change.

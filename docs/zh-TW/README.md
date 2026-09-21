@@ -6,8 +6,9 @@ deterministic code 負責 schema、授權、門檻、組合、執行與 fail-clo
 
 ## 現在能上線到哪裡
 
-- **服務層可上線**：Bearer auth、Host/Origin guard、body/rate/in-flight limit、
-  readiness、Prometheus metrics、circuit breaker、graceful shutdown、Docker、Caddy TLS 都已具備。
+- **本機 MCP plugin（stdio）是唯一主路徑**：`gateway/src/stdio.js` 直接接 Codex/Claude。
+  原 Streamable HTTP / Docker / Caddy 層（`src/http.js`、`Dockerfile`、`compose.yaml`、
+  `deploy/`、`rate-limiter-flexible`）已移除，未做過 runtime smoke。
 - **目前 policies 只能 shadow**：四個 starter policy 都是 `uncalibrated`，所以原始結果即使是
   `accept`，公開 outcome 仍會被壓成 `review`。這是安全設計，不是故障。
 - **要自動 accept**：必須收集真實 target-domain 標註、通過 calibration、人工審核 policy，
@@ -26,15 +27,26 @@ npm run gateway:acceptance
 npm run gateway:stdio
 ```
 
-HTTP 預設只聽 `127.0.0.1:3456`：
+`gateway:stdio` 是本機 plugin 的唯一 transport，直接由 Codex/Claude 以 stdio 啟動。
+
+## Claude Code 接線
+
+user scope 註冊一次即可：
 
 ```sh
-npm run gateway:http
-curl -fsS http://127.0.0.1:3456/health
-curl -fsS http://127.0.0.1:3456/ready
+claude mcp add jev_gate -s user \
+  -e JEV_PROVIDER=openrouter -e JEV_MODEL=typesafe/jev-1.13 \
+  -- node /absolute/path/to/jev-gate-mcp/gateway/src/stdio.js
 ```
 
-`/health` 只證明 process 活著；`/ready` 還會檢查 breaker/runtime 是否可接流量。
+server 名稱**必須排在 `-e` 之前**。`--env` 是 variadic，名稱放在後面會被當成又一個
+`KEY=value` 吃掉，CLI 回 `Invalid environment variable format`。
+
+不必傳 key 路徑：`src/config.js` 的 `apiKeyFile` 預設就是
+`~/.creds/kv/OPENROUTER_API_KEY.txt`。policies 以 `import.meta.url` 解析而非
+`process.cwd()`，所以 host 從任何目錄啟動都找得到。
+
+驗證：`claude mcp list` 要看到 `jev_gate` ✓ connected；session 內 `/mcp` 看得到兩個工具。
 
 ## Codex 直接適配
 
@@ -53,16 +65,6 @@ codex mcp list
 - 兩工具宣告 read-only/idempotent，省掉無意義的 write approval。
 - 各工具設 `output_token_limit`，避免一次結果佔滿 context。
 - server initialization 帶短版 instructions；重要規則在前 512 chars 內。
-
-遠端 HTTP gateway 可用官方 CLI 加入：
-
-```sh
-codex mcp add jev-gate \
-  --url https://jev.example.com/mcp \
-  --bearer-token-env-var JEV_GATE_TOKEN
-```
-
-`JEV_GATE_TOKEN` 應由 shell secret manager/CI secret 注入，別寫入 repo 或指令歷史。
 
 ## 怎麼省 token 又不拖慢
 
@@ -95,31 +97,6 @@ const result = await guard.enforce({
 
 只有 literal `accept` 才會呼叫 `execute()`；`review`、`escalate`、`deny` 全部停止。
 支援邊界：`before_action`、`after_external_result`、`before_finish`。
-
-## 公開部署（Docker Compose + Caddy）
-
-先準備兩個權限 `0600` 的單行 secret file：OpenRouter token 與 gateway bearer token。
-
-```sh
-cp deploy/.env.example deploy/.env
-# 編輯 deploy/.env：DNS 名稱與兩個 secret 的絕對路徑
-docker compose --env-file deploy/.env config
-docker compose --env-file deploy/.env up -d --build
-docker compose --env-file deploy/.env ps
-```
-
-Caddy 負責 automatic HTTPS；gateway 不直接 publish port，只在 compose internal network 接流量。
-非 loopback 啟動若缺 Bearer token 或 allowed hosts，process 會直接拒絕啟動。
-
-驗證：
-
-```sh
-curl -fsS https://jev.example.com/health
-curl -fsS -H "Authorization: Bearer $JEV_GATE_TOKEN" https://jev.example.com/ready
-curl -fsS -H "Authorization: Bearer $JEV_GATE_TOKEN" https://jev.example.com/metrics
-```
-
-`/mcp`、`/ready`、`/metrics` 需要 Bearer；`/health` 只回 alive，不含 provider/secret 資訊。
 
 ## Policy 安全啟用順序
 
@@ -166,12 +143,11 @@ policy digest 變更或 red-line outcome 漂移都會 non-pass，適合接 CI。
 
 ## 觀測與告警建議
 
-Prometheus endpoint 提供：decision outcome/latency、HTTP status/in-flight、Host Adapter resolution、
+Prometheus endpoint 提供：decision outcome/latency、Host Adapter resolution、
 retry cost、false-accept severity。至少告警：
 
-- `/ready` 連續 503 或 breaker open。
+- breaker open。
 - `deny`/`review` 比率突升。
-- 429/503 增加。
 - provider latency p95 超過 SLO。
 - 任何 `false_accept_severity > 0`。
 
@@ -185,14 +161,12 @@ npm test
 npm run build
 npm run gateway:acceptance
 npm run gateway:replay
-docker build -t jev-gate-mcp:verify .
-docker compose --env-file deploy/.env config
 ```
 
-- DNS 已指向主機，80/443 開放，Caddy data volume 可持久化。
-- secrets 只用 file/secret mount，權限最小化。
-- Codex `/mcp` 可看到 exactly two tools；實際呼叫回 structuredContent。
-- 公開服務先 shadow；未完成外部校準前，不宣稱「可自動放行」。
+- 本機 plugin 以 stdio 啟動（`node gateway/src/stdio.js` 或 `npm run gateway:stdio`）。
+- secrets 只用檔案路徑傳給 provider，權限最小化。
+- `claude mcp list` 與 Codex `/mcp` 都看得到 exactly two tools；實際呼叫回 structuredContent。
+- policy 先 shadow；未完成外部校準前，不宣稱「可自動放行」。
 - Host Adapter 對 `review` 的紅線測試必須證明 `execute()` 沒被呼叫。
 
 更完整營運細節見 [`gateway/operations/runbook.md`](../../gateway/operations/runbook.md)。
