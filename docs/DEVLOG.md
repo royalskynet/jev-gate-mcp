@@ -390,6 +390,28 @@ jev_gate:
 設定檔分家（寫到別人身上）。三次都回報成功。驗收寫「跑了什麼」擋不住任何一次，
 寫「哪個檔案裡要出現什麼字串」三次都擋得住。
 
+### 順帶驗到 fail-closed（沙箱擋 egress 的意外用途）
+
+從沙箱內直呼 stdio server 打真 provider，被 proxy 擋下：
+
+```
+--- jev_evaluate ---
+{ "error": { "code": "ERR_PROVIDER", "category": "provider",
+             "message": "Could not reach https://openrouter.ai/api/v1/systemone: fetch failed" } }
+
+--- jev_apply_policy ---
+{ "outcome": "deny", "mode": "shadow", "consequence": "advisory",
+  "coverage": "incomplete",
+  "unavailable": { "code": "ERR_PROVIDER", "message": "Could not reach ... fetch failed" },
+  "model": null, "correlation": null,
+  "policy_digest": "sha256:cd1880ba…", "question_digest": "sha256:d0032813…" }
+```
+
+這正是 invariant 4（「provider errors never become acceptance」）該有的樣子：
+`coverage` 標 `incomplete`、`outcome` 降到 `deny`、`model` 是 `null`、digest 照常算出來。
+provider 不通時它沒有退回「先放行再說」，也沒有捏造一個 model id。
+活線驗收得另外在沙箱外跑，但這條斷網路徑本來就該驗，剛好白撿。
+
 ### 現況
 
 - 唯一 transport：stdio。tool surface 不變，仍恰好 `jev_evaluate` + `jev_apply_policy`。
