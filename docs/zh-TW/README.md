@@ -66,14 +66,15 @@ codex mcp list
 - 各工具設 `output_token_limit`，避免一次結果佔滿 context。
 - server initialization 帶短版 instructions；重要規則在前 512 chars 內。
 
-## Agent Glue：四項用法、兩端共用
+## Agent Glue：五項用法、兩端共用
 
 `agent-glue/src/` 是 Claude Code 與 Codex **共用的純判斷核心**，兩端只留薄 adapter。
-完整安裝／停用／觀測／四項成效指標見 [`docs/agent-glue.md`](../agent-glue.md)。
+完整安裝／停用／觀測／成效指標見 [`docs/agent-glue.md`](../agent-glue.md)。
 
 | 用法 | 判什麼 | 契約 |
 |---|---|---|
 | route | 這一輪交給哪個候選 | 只能從給定候選挑；無匹配回 `no_match`；失敗保留目前模型 |
+| triage | 一次請求三問（`difficulty`/`kind`/`costly_mistake`）映射到 cheap→medium→hard tier | 三問一趟 Jev；危險文本掃**整段原文**（非切片）；risky／低信心／大 context 一律不降級；transport 失敗保留現狀 |
 | compact | 哪個 tool call/result 該刪或截斷 | user/assistant 文字**原樣**通過；call/result 成對；首筆與近期 pin |
 | verify | 完成宣稱回 `pass｜fail｜unknown` | `pass` 必附可稽核 command/log evidence；沒有執行證據一律 `unknown` |
 | review | 分階段 diff 審查 | risk filter → file profile → evidence → mechanism → severity → reviewer route |
@@ -97,6 +98,25 @@ codex mcp list
 
 manifest 分檔互不覆寫：Claude 走 `hooks/hooks.json`，Codex 走 `.codex/hooks.json` 或
 `.codex-plugin/hooks.json`。
+
+### Triage（省錢判斷層）
+
+`triage` 一趟 Jev 一次問三件事——`difficulty`（Score）、`kind`（Choice）、
+`costly_mistake`（Noul）——再由 deterministic code 映射到 cheap→medium→hard tier。
+兩端都接、但都純 advisory 且預設 **opt-in（`enabled:false`）**：
+
+- **Claude**：`agent-glue/claude/spawn-hook.mjs` 註冊 `agent.spawn`。開啟
+  （`JEV_TRIAGE_ENABLED=1`）**且**注入 transport 時才依 tier 設 subagent 的 `model`；
+  預設接線什麼都不改，所以副 agent 的模型不會被動。要改可設
+  `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD` 對應各 tier。
+- **Codex**：`UserPromptSubmit` 跑同一套 triage 但換不了模型，只吐一行 advisory
+  `additionalContext` notice，並在 `codex-route.log` 寫一行 bounded 記錄。
+
+所有省錢閘都發生在 Jev 呼叫之前：空 turn／pinned／沒設 tiers 直接保留現狀不打；
+危險詞表掃**整段原文**（不是切片）；超長文本取開頭 1/4＋結尾 3/4（`ask_chars`）；
+decision cache key 含 **context bucket**（小 context 的答案不會被大 context 命中）；
+`features` 隱私模式（敏感 profile 自動開啟）只送統計特徵、原文不出機器。全程 fail-open：
+transport 掛了就保留現狀，絕不往上或往下猜。每筆決策記一行 bounded ledger，不記原文不記 secret。
 
 **壓縮互斥**：本 plugin 不註冊自己的 `session.compact`。若本機同時裝了外部 fast-jev
 compaction plugin，**不要雙開**，切換方式見 [`docs/agent-glue.md`](../agent-glue.md) §2。
@@ -216,7 +236,7 @@ npm run agents:acceptance
 - policy 先 shadow；未完成外部校準前，不宣稱「可自動放行」。
 - Host Adapter 對 `review` 的紅線測試必須證明 `execute()` 沒被呼叫。
 
-- Agent glue 的四項全是 advisory；policy 未校準前不宣稱「Jev 決定了什麼」。
+- Agent glue 的五項全是 advisory；policy 未校準前不宣稱「Jev 決定了什麼」。
 
 更完整營運細節見 [`gateway/operations/runbook.md`](../../gateway/operations/runbook.md)、
 [`docs/agent-glue.md`](../agent-glue.md)、[`skills/jev-agent/SKILL.md`](../../skills/jev-agent/SKILL.md)。

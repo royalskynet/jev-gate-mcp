@@ -9,7 +9,7 @@
 |---|---|---|---|
 | **Prune plugin** | a Claude Code plugin that shrinks long tool output before the model reads it | `hooks/jev.js` | shipped, live-verified |
 | **Decision Gateway** | a local MCP server exposing exactly two governed decision tools | `gateway/src/stdio.js` | shipped as a **local stdio plugin**; policies run in shadow only |
-| **Agent glue** | one shared core for four Jev uses, thin adapters for Claude Code *and* Codex | `agent-glue/src/` | shipped; **advisory only** while the policies stay uncalibrated |
+| **Agent glue** | one shared core for five Jev uses, thin adapters for Claude Code *and* Codex | `agent-glue/src/` | shipped; **advisory only** while the policies stay uncalibrated |
 
 They share a repo and a provider key, nothing else. The rest of this page is the
 prune plugin; the gateway has its own [README](gateway/README.md), and the glue
@@ -123,13 +123,14 @@ Provider settings live at the top of `hooks/jev.js`: endpoint
 `POST /api/alpha/decisions`), model `typesafe/jev-1.13`, key read from
 `~/.creds/kv/OPENROUTER_API_KEY.txt`.
 
-## Agent glue: four Jev uses, two hosts
+## Agent glue: five Jev uses, two hosts
 
 `agent-glue/src/` holds one testable core, shared verbatim by both hosts:
 
 | | what it decides | contract |
 |---|---|---|
 | route | which candidate handles this turn | picks only from the given candidates; `no_match` when none fit; failure keeps the current model |
+| triage | one request, three answers (`difficulty` / `kind` / `costly_mistake`), mapped to a cheap→medium→hard tier | one Jev call serves all three; dangerous text is regex-scanned whole (not the slice); risky / low-confidence / large-context never downgrade; transport failure keeps the status quo |
 | compact | which tool call/result to drop or truncate | user/assistant prose passes through byte-for-byte; call/result stay paired; first and recent turns pinned |
 | verify | `pass` / `fail` / `unknown` on a completion claim | `pass` needs auditable command/log evidence; no execution evidence means `unknown`, never `pass` |
 | review | staged diff review | risk filter → file profile → evidence → mechanism → severity → reviewer route |
@@ -152,6 +153,31 @@ built-in compaction; Codex can only block in `PreToolUse`, and its compaction si
 is a **restoration layer** (`PreCompact` snapshot + `PostCompact` additionalContext),
 not a replacement. Manifests stay in separate files — `hooks/hooks.json` for Claude,
 `.codex/hooks.json` / `.codex-plugin/hooks.json` for Codex.
+
+### The triage layer (money-saving judgment)
+
+`triage` asks one Jev request three questions at once — `difficulty` (Score),
+`kind` (Choice) and `costly_mistake` (Noul) — and deterministic code maps them
+onto a cheap→medium→hard tier. It is wired on both hosts but is strictly
+advisory and **opt-in** (`enabled:false` by default):
+
+- **Claude**: `agent-glue/claude/spawn-hook.mjs` registers `agent.spawn`. When
+  enabled (`JEV_TRIAGE_ENABLED=1`) **and** a transport is injected, it picks the
+  subagent `model` by tier; with the default wiring it does nothing, so the
+  subagent's model is never changed out of the box. A per-tier model can be set
+  with `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`.
+- **Codex**: `UserPromptSubmit` runs the same triage but can't change the model,
+  so it only emits a one-line advisory `additionalContext` notice and writes a
+  bounded line to `codex-route.log`.
+
+The money-saving gates all run before a Jev call: empty/pinned/no-tiers turns
+are kept as-is without any request; a dangerous word list is regex-scanned over
+the **full original** text (not the slice); overlong text is cut to the last
+3/4 plus first 1/4 (`ask_chars`); a decision cache keys on the **context bucket**
+so a small-context answer is never served to a large-context hit; and `features`
+privacy mode (forced for a sensitive profile) sends only statistics, never the
+original text. Every decision records one bounded ledger line. Fail-open holds:
+any transport failure keeps the status quo and never guesses up or down.
 
 This plugin does **not** register its own `session.compact`. If you also run the
 external fast-jev compaction plugin, do not enable both — see

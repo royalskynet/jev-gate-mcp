@@ -90,5 +90,21 @@ stage('injected client smoke', () => {
   return out.trim() || 'fake client ok';
 });
 
+stage('triage + spawn-hook smoke', () => {
+  const out = run(process.execPath, ['--input-type=module', '-e',
+    `import { triage } from './agent-glue/src/triage.js';
+     import { spawnDecision } from './agent-glue/claude/spawn-hook.mjs';
+     const easy = () => ({ type:'score', score:0.5, probabilities:{0:0.3,1:0.55,2:0.15,3:0}, confidence:0.92 });
+     const t = { async evaluate(){ return { answers:{ difficulty:easy(), kind:{type:'choice',choice:'coding',confidence:0.9}, costly_mistake:{type:'noul',noul:0.1} }, latency_ms:5 }; } };
+     const r = await triage({ text:'quick rename', contextChars:1000 }, { transport:t });
+     if (r.tier !== 'cheap') throw new Error('expected cheap on safe easy task, got '+r.tier);
+     // spawn hook is off by default and must not change the model
+     const d = await spawnDecision({ prompt:'do a big risky redesign' });
+     if (d.change !== false) throw new Error('spawn hook must be off by default');
+     process.stdout.write('triage=cheap spawn=disabled-by-default');`,
+  ]);
+  return out.trim() || 'triage+spawn ok';
+});
+
 if (failed) process.exit(1);
 process.stdout.write('[agents:acceptance] ALL OK\n');

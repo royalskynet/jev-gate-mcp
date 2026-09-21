@@ -877,3 +877,59 @@ injected client smoke。任何一步非零即整體失敗。實跑：
 
 policy 檔零改動，MCP surface 仍只有 `jev_evaluate` / `jev_apply_policy`。
 **四項膠水全是 advisory**——五個 policy 還是 uncalibrated，收標註仍是唯一出路（§4）。
+
+## 15. Triage：一次三問的省錢判斷層（2026-09-21）
+
+把 `agent-glue` 從「四項膠水」補成「五項」——新增 `src/triage.js`：一趟 Jev 一次問三件事
+（`difficulty` Score 4 級／`kind` Choice 四類／`costly_mistake` Noul），deterministic
+`decideTier` 映射到 cheap→medium→hard tier，並且在 Jev 呼叫**之前**擋掉一大堆不該花錢的案例。
+
+### 15.1 做對什麼（對照工單）
+
+| 需求 | 落地 |
+|---|---|
+| 一次請求三個答案 | `transport.evaluate({state, questions:{difficulty,kind,costly_mistake}})`，single round-trip |
+| 免費前置守門 | 空 turn／pinned／tiers 空 → 不打 Jev，直接 `unchanged` |
+| 危險正則 | `isDangerous` 掃**整段原文**（非切片），測試證明切片已無該詞仍擋 |
+| 切片 | `unwrapEnvelope` 丟 `previous output`，超長取開頭 1/4＋結尾 3/4（`ask_chars` 2500） |
+| decision cache | key 含 **context bucket**，bucket 不同則 miss（有測試） |
+| features 隱私 | 只送統計特徵；敏感 profile 自動切 features，原文不出機器 |
+| Claude 端 | `claude/spawn-hook.mjs` 註冊 `agent.spawn`，預設 `enabled:false`，不設 model |
+| Codex 端 | `user_prompt_submit.mjs` 跑真 triage，吐一行 advisory notice + `codex-route.log` |
+
+四條地板規則全進 `decideTier`（純函式）：低信心不危險→現狀；低信心但危險→medium；
+risky/stakes>0.4→永不 cheapest；stakes>0.85 且已偏難→hard。另加工單第四節的
+「large context 一律不降級」floor。
+
+### 15.2 兩個自己踩到的坑
+
+1. **`io.mjs` 的 `appendLedger` 首寫被吃掉。** 它在 `try` 裡先 `readFileSync` 讀不存在的檔案，
+   ENOENT throw 直接中斷整個 block，害**第一筆** decision 永遠落不了 `codex-route.log`。
+   這是既有缺陷（`codex-verify.log` 同樣首寫丟掉），工單要求每筆決策都記一行，所以修掉：
+   read 失敗回退空字串再寫。補了 `tests/agent-glue/codex-io.test.mjs` 防回歸。
+2. **acceptance 的 `-e` 用 top-level `return`。** `node --input-type=module -e` 不接受 `return`，
+   只有 CJS 的 wrapper 才吃。acceptance stage 原本寫 `return '...'` 會直接 SyntaxError
+   （被 gateway 大量 log 淹沒，很難看出）。改成 `process.stdout.write(...)`。
+
+### 15.3 測試與驗收對帳
+
+新增測試：`tests/agent-glue/triage.test.js`（22）、`spawn-hook.test.mjs`（7）、
+`codex-io.test.mjs`（1）＝ +30。
+
+| | 承接基線 | 修後 |
+|---|---|---|
+| tests | 137 | 167 |
+| pass | 135 | 165 |
+| **fail** | **0** | **0** |
+| skipped | 2 | 2 |
+
+`npm run agents:acceptance` 新增 `triage + spawn-hook smoke` stage，全綠：
+
+```text
+[agents:acceptance] triage + spawn-hook smoke: OK
+  triage=cheap spawn=disabled-by-default
+[agents:acceptance] ALL OK
+```
+
+policy 檔零改動，MCP surface 仍只有兩支工具，`enabled:false` 預設接線不設任何 model。
+**triage 全程 advisory / fail-open**——不授權不阻擋，省錢只在「夠簡單、夠安全、夠有信心」時降級。

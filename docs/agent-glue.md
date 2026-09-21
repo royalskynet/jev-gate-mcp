@@ -11,11 +11,14 @@ agent-glue/
   src/verify.js     完成驗證（pass|fail|unknown + evidence / file:line）
   src/review.js     分階段審查（risk→profile→evidence→mechanism→severity→route）＋真 git diff parser
   src/client.js     注入式 gateway client（production 走 in-process gateway；test 用 fake）
+  src/triage.js     省錢判斷層（一次三問 + tier 映射 + 地板規則 + cache + features 隱私）
   src/index.js      匯出面
   cli.mjs           共用 CLI（compact|verify|review|route）
   claude/bridge.mjs Claude adapter（route/verify/review/compact 走共享 core）
-  codex/*.mjs       Codex adapter command hooks
+  claude/spawn-hook.mjs Claude `agent.spawn` hook（triage 設 subagent model，opt-in）
+  codex/*.mjs       Codex adapter command hooks（user_prompt_submit 跑真 triage）
 hooks/jev.js        Claude prune hook（保留，勿刪）
+hooks/hooks.json    載入 jev.js + claude/spawn-hook.mjs
 skills/jev-agent/   兩端共用操作規則
 ```
 
@@ -43,7 +46,48 @@ skills/jev-agent/   兩端共用操作規則
 - **能力差異**：Codex 的 `PostCompact` 只能「追加 additionalContext」做原文 restoration，
   **不能**像 Claude function hook 直接替換內建 compaction——因此永遠標成 restoration layer。
 
-## 4. 四項成效指標（對照 HANDOFF §6）
+## 3.5 Triage（省錢判斷層）
+
+`src/triage.js` 一趟 Jev 一次問三件事——`difficulty`（Score 4 級）、`kind`
+（Choice: coding/writing/research/general）、`costly_mistake`（Noul）——再由
+deterministic code（`decideTier`）映射到 cheap→medium→hard tier。
+
+**省錢閘（全在 Jev 呼叫之前）**：
+
+- **免費前置守門**：空 turn／pinned／沒設 tiers → 一次都不打，直接保留現狀。
+- **危險正則**：掃**整段原文**（不是送出去的切片），`isDangerous`。
+- **切片**：先 unwrap 排程信封（`## Prompt|Task|Request` 段落保留，`previous
+  output` 段落丟棄），超長再取開頭 1/4＋結尾 3/4（`ask_chars` 預設 2500）。
+- **decision cache**：key＝（切片、context bucket、config 指紋、has_images、
+  pinned、profile）。**context 必須進 key**，否則小 context 的答案會被大 context
+  命中（`tests` 有 bucket 不同則 miss 的防回歸）。
+- **features 隱私模式**：只送統計特徵（`len_bucket`/`chars`/`has_code`/`steps`
+  /`has_danger_word`），原文不出機器；敏感 profile 自動開啟。
+
+**地板規則（`decideTier`，純函式，優先於方向判定）**：
+
+- 低信心且不危險 → 保留現狀（不升級不降級）。
+- 低信心但危險、或掃到危險詞 → medium。
+- risky 或 `costly_mistake` noul（stakes）> 0.4 → 永不落到最便宜 tier。
+- stakes > 0.85 且已偏難（難度側機率 ≥ `hard_needs_probability`，且信心足）→ hard。
+- large context（bucket `l`）→ 永不降級到 cheapest。
+
+**Claude 端**：`claude/spawn-hook.mjs` 註冊 `agent.spawn`。預設 `enabled:false`
+（`JEV_TRIAGE_ENABLED=1` 才開）；開啟**且**有注入 transport 時才依 tier 設
+subagent 的 `model`，model 對應可設 `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`。
+預設接線是 no-op——副 agent 的模型從不被動。skili select 另跑 `pickSkills`，
+多數 turn 回「不需要任何 skill」（`[]`）。
+
+**Codex 端**：`user_prompt_submit.mjs` 跑真 triage，但 Codex hook 換不了模型，
+所以只吐一行 advisory `additionalContext` notice，並在 `codex-route.log` 寫一行
+bounded 記錄（文件要標明：**Codex 端只給建議，不設模型**）。
+
+**ledger**：每筆決策記一行 bounded：tier／specialty（`kind.choice`）／confidence／
+cached／latency_ms／是否 fail-open。**不記原文不記 secret。**
+
+**驗收**：`npm run agents:acceptance` 已含 triage + spawn-hook smoke stage。
+
+## 4. 成效指標（對照 HANDOFF §6）
 
 | 指標 | 定義 | 從哪量 | 目標方向 |
 |---|---|---|---|
@@ -51,6 +95,7 @@ skills/jev-agent/   兩端共用操作規則
 | compaction reduction + rerun | 每 pass 減少的 chars；reduction < 最小門檻時的回退次數 | `compactMessages.reducedBy/minReductionChars`、`codex-compact.log` | reduction 夠、回退少 |
 | verify false-pass / unknown | pass 但證據不足／`unknown` 的比例 | `codex-verify.log`、verify 測試 | 0 false-pass、unknown 只在真缺證據 |
 | review precision / latency | 分階段審查精確度（真 diff 吃進、severity 正確）；端到端延遲 | review 測試、`reviewDiff` 輸出 | precision 高、latency 低 |
+| triage savings / fail-open | 三問一趟、省錢閘（切片/cache/features）生效比例；transport 掛了是否保留現狀 | `codex-route.log`、triage 測試 | cache hit 高、fail-open 不誤升不誤降、地板規則零違反 |
 
 ## 5. 驗收
 
@@ -59,4 +104,5 @@ npm run agents:acceptance
 ```
 
 依序跑：Claude plugin validate（CLI 存在時）、完整 tests、build、gateway acceptance、
-Claude bridge smoke、Codex hooks smoke、injected client smoke。任何一步非零即整體失敗。
+Claude bridge smoke、Codex hooks smoke、injected client smoke、triage + spawn-hook smoke。
+任何一步非零即整體失敗。
