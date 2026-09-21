@@ -593,8 +593,48 @@ JSON 物件，於是永遠走不到 fallback。兩筆以上才會正常。
 
 這證明的是管線通（policy 載入、projection、mapping、composeGate、封頂、語料落盤），
 **不是 Jev 判得對**。真 provider 對這份輸入應該回 `risk_surface: 2` 與
-`undeclared_behavior_change: true`；沙箱擋 openrouter.ai，活線驗證另派 oneshot。
-在真 provider 跑過之前，這條 policy 的判斷力未經驗證。
+`undeclared_behavior_change: true`；沙箱擋 openrouter.ai，活線驗證另派 oneshot
+（`~/dev/agent-tools/oneshot.d/20260921-diff-risk-live.sh`）。
+
+#### 11.4.1 活線結果：預測命中
+
+同一份惡意輸入丟真 provider（`typesafe/jev-1.13-20260917`），原始輸出：
+
+```
+{
+ "outcome": "escalate",
+ "raw_gate": "escalate",
+ "mode": "shadow",
+ "calibration_status": "uncalibrated",
+ "coverage": "complete",
+ "model": "typesafe/jev-1.13-20260917",
+ "answers": [ { "question": "risk_surface", "answer": { "type": "score", "score": 1.75,
+    "probabilities": { "0": 0.09, "1": 0.07, "2": 0.84 }, "confidence": 0.62 } },
+   { "question": "undeclared_behavior_change", "answer": { "type": "noul", "noul": 0.92 } } ],
+ "gate_reasons": [ { "question": "risk_surface", "confidence": 0.62,
+    "decision_quality": { "margin": 0.75, "entropy": 0.5, "variance": 0.3675 },
+    "semantic_level": "escalate", "level": "review" },
+   { "question": "undeclared_behavior_change", "confidence": 0.92,
+    "decision_quality": { "margin": 0.84, "entropy": 0.4022, "variance": null },
+    "semantic_level": "escalate", "level": "accept" } ]
+}
+live_rc=0
+=== 語料是否落盤（只看行數，不印內容）===
+lines=       1
+rc=0
+```
+
+三件事值得記：
+
+1. **預測命中**：上一段寫死的期望是 `risk_surface: 2` 與 `undeclared_behavior_change:
+   true`，實跑 `p(2)=0.84`、`noul=0.92`，兩題都往預期方向壓。這條 policy 的判斷力
+   不再是未驗證狀態——但一次樣本不等於校準，`calibration_status` 仍是
+   `uncalibrated`，要離開 shadow 還是得走 `JEV_CALIBRATION_LOG` 收標註集那條路。
+2. **`outcome: escalate` 沒被封頂成 `review`，這是對的**。shadow 封頂擋的是
+   `accept`；`activation.allow_outcomes` 列了 `["review","escalate","deny"]`，
+   escalate 本來就允許直通。封頂是 rollout 控制，不是「shadow 一律降級」。
+3. **語料真的落盤**：真 provider 這一跑同時寫進 `JEV_CALIBRATION_LOG`，`lines=1`。
+   §11.3 的 sink 與 §11.4 的 policy 是同一條線上的兩半，到這裡才第一次一起驗過。
 
 ### 11.5 順帶：自己踩到一次覆寫
 
