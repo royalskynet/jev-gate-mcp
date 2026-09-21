@@ -1,0 +1,79 @@
+{
+  "description": "Jev agent glue hooks for Codex (project-level): advisory route, compaction snapshot/restoration, completion verification with one retry. All decisions are advisory while the five policies stay shadow/uncalibrated.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/agent-glue/codex/user_prompt_submit.mjs\"",
+            "timeout": 10,
+            "statusMessage": "jev-agent route"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/agent-glue/codex/pre_compact.mjs\"",
+            "timeout": 10,
+            "statusMessage": "jev-agent snapshot"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/agent-glue/codex/post_compact.mjs\"",
+            "timeout": 10,
+            "statusMessage": "jev-agent restore"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/agent-glue/codex/stop.mjs\"",
+            "timeout": 30,
+            "statusMessage": "jev-agent verify completion"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/agent-glue/codex/pre_tool_use.mjs\"",
+            "timeout": 10,
+            "statusMessage": "jev-agent advisory"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/agent-glue/codex/post_tool_use.mjs\"",
+            "timeout": 10,
+            "statusMessage": "jev-agent advisory"
+          }
+        ]
+      }
+    ]
+  }
+}
