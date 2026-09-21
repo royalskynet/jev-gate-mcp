@@ -1,5 +1,8 @@
 # Dev Log Handoff — Jev Decision Gateway production hardening
 
+> **已被取代（2026-09-21）**：接手請改讀 [`HANDOFF-20260921.md`](HANDOFF-20260921.md)。
+> 本文件只當歷史紀錄。
+>
 > **部分作廢（2026-09-21）**：第 6 節說「唯一驗收缺口 = Docker runtime smoke」。
 > 該缺口只在「部署成公開 HTTP 服務」這個沒人提出的前提下成立；實際用途是本機 MCP plugin。
 > HTTP / Docker / Caddy 層已於 2026-09-21 整層刪除，本文件所有相關段落（§2 的 `http.js`、

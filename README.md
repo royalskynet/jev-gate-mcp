@@ -124,5 +124,6 @@ tested but deliberately not wired — see `docs/NEXT.md` for why.
 - [Domain context](CONTEXT.md)
 - [Architecture decisions](docs/adr/0001-governed-two-tool-mcp-boundary.md)
 - [What is next](docs/NEXT.md)
+- [Handoff 2026-09-21（繁中）](docs/HANDOFF-20260921.md) — **start here if you have no prior context**
 - [Jev 十步操作手冊（繁中）](docs/zh-TW/PLAYBOOK.md) — the ten-step playbook mapped onto this repo, gaps included
 - [Dev log](docs/DEVLOG.md) — how this got built, and the traps that cost time
