@@ -39,7 +39,16 @@ export function appendLedger(name, line) {
   try {
     mkdirSync(RUNTIME_DIR, { recursive: true });
     const file = runtimePath(name);
-    const prefix = readFileSync(file, 'utf8').trim();
+    // readFileSync on a missing first file throws, which used to abort the whole
+    // block and silently dropped the very first ledger line (a decision with no
+    // prior entry was never recorded). Read with a fallback so a fresh ledger
+    // still writes its first line.
+    let prefix = '';
+    try {
+      prefix = readFileSync(file, 'utf8').trim();
+    } catch {
+      prefix = ''; // first write
+    }
     writeFileSync(file, `${prefix ? prefix + '\n' : ''}${line}`);
   } catch {
     /* observation only */
