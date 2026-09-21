@@ -17,7 +17,7 @@ monolithic SDK package is not used). Schemas use **Zod v4**; requires **Node >= 
 | `src/schema.js` | Zod v4 input + output schemas (advertised as `outputSchema`) |
 | `src/gateway.js` | Gateway Core: validation, answer checking, Gate composition, fail-safe |
 | `src/registry.js` | immutable, versioned Decision Policy registry |
-| `src/adapters.js` | native TypeSafe / OpenRouter Provider Adapters (via `jevwire`), deterministic fakes |
+| `src/adapters.js` | OpenRouter Provider Adapter (via `jevwire`); native TypeSafe kept for the offline contract fixture only (all Jev live rides the single OpenRouter key); deterministic fakes |
 | `src/server.js` | v2 `McpServer` tool surface (`outputSchema` + `structuredContent`) |
 | `src/config.js` | deployment wiring and provider/keys |
 | `src/stdio.js` | v2 `serveStdio(factory)` entry |
@@ -40,6 +40,14 @@ conservative signal wins. A non-`advisory` consequence caps the result at
 `review` — a consequential policy can never auto-`accept`. Incomplete,
 malformed, or provider-failed results fail closed to `deny`, never fabricate an
 `accept`.
+
+The four **starter policies ship `mode: shadow` + `uncalibrated`** on a
+`synthetic-harness-*` dataset: synthetic labels + generated matching answers can
+only exercise the harness, not prove model correctness. So the gateway **caps any
+shadow or uncalibrated policy's public `outcome` at `review` (never `accept`)**
+and reports the raw composed gate as `shadow_outcome` for observation. A policy
+is only elevated to `active` + `calibrated` from real target-domain labels (see
+the calibration CLI).
 
 ## Pinned model
 
@@ -64,13 +72,44 @@ serves stdio and HTTP.
 
 ## Run
 
+Offline (ordinary CI, no keys):
+
 ```sh
-JEV_PROVIDER=fake node gateway/src/stdio.js   # offline stdio
-JEV_PROVIDER=fake node gateway/src/http.js    # offline HTTP on :3456/mcp
-npm test                                      # offline unit + conformance
-npm run build                                 # offline build check
-JEV_PROVIDER=<typesafe|openrouter> JEV_RUN_SMOKE=1 node --test gateway/test/smoke.test.mjs  # opt-in live smoke
+npm test                     # offline unit + conformance (breaker/telemetry canary/calibration/drift/tool-eval config/bench)
+npm run build                # offline build check
+npm run gateway:acceptance   # offline acceptance: eval thresholds, drift fixtures, tool-eval config, p95<50ms bench
 ```
+
+Opt-in live (key-gated; never required by offline CI):
+
+```sh
+JEV_RUN_SMOKE=1 node --test gateway/test/smoke-matrix.test.mjs          # Jev (typesafe/jev-1.13) live smoke, single OpenRouter key
+JEV_RUN_EVAL=1 node gateway/scripts/tool-eval.mjs                        # GPT/Claude tool-selection eval
+```
+
+Operational CLIs:
+
+```sh
+node gateway/scripts/eval.mjs                 # per-policy eval report (no key)
+node gateway/scripts/drift.mjs <base.json> <current.json>   # drift report
+node gateway/scripts/bench.mjs                # processing-overhead p95 benchmark
+node gateway/scripts/calibrate.mjs <external-labels.jsonl>  # calibration report; EXTERNAL labels only, never mutates a policy or marks it calibrated
+```
+
+Calibration input accepts a single JSON object (`{ samples, ...provenance }`), a
+bare array, or JSONL with per-record provenance. It checks configurable
+thresholds (min samples, coverage, precision, recall, false-accept, ECE) and
+reports `breaches`, `meets_thresholds`, and `eligible_for_review`. A real
+target-domain dataset meeting every threshold is only **eligible for a
+policy-owner review** — a human must still hand-edit the policy's
+`mode` / `calibration_status` / `evaluation_dataset_version`; this CLI never does
+so and never labels a policy `calibrated`. Synthetic/demo sources are always
+`harness_only` + not eligible. Exit codes: 0 clean, 1 threshold breach, 2
+parse/validation/provenance failure.
+
+See `operations/runbook.md` for breaker tuning, telemetry schema, calibration /
+drift data contracts, live commands, and the raw-state rule. Wheel/research
+rationale is in `docs/research/issue-1-prior-art.md`.
 
 The plugin side of this repo (`hooks/`, `plugin/`) is the Claude Code prune
 plugin; it is separate from this gateway and deliberately left untouched.
