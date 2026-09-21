@@ -669,3 +669,59 @@ pass 數變少同樣是紅燈，而它不會自己跳出來。這與 §10 那三
 
 這是 policy 數量的隱形成本：每加一條治理規則，每個 session 都在付錢。
 現在一條 60 bytes 不痛，但它說明 policy 不是免費的——要加就要值得。
+
+## 12. 對照外部十步拆解（2026-09-21）
+
+外部來源：0xCodila 的十步文章（<https://x.com/0xcodila/status/2100984487802708306>），
+隨附 TypeSafe 宣稱在 Claude Fable 5.1 / GPT-6 Astra 上「193× 加速、444× 降本」。
+拿它當**檢查表**而不是當結論，逐條比對這個 repo 現況，順手寫成
+`docs/zh-TW/PLAYBOOK.md`（繁中操作手冊）。
+
+### 12.1 先處理那兩個倍數
+
+193× / 444× 是廠商自家測試，本 repo 沒有複現、不背書。我們手上唯一自己量過的
+效能數字是網關的處理開銷：`benchCore` 與 `benchTransport` 的 p95 各自 < 50ms，
+超過就 exit 非零（`gateway/scripts/bench.mjs`）。
+
+而且要講清楚：那支 bench **不含 provider 往返**，所以 repo 裡根本沒有「整個迴圈
+快了幾倍」這種數字。當初刻意把 provider 延遲排除，是為了讓回歸測試不要變成網路
+測試——代價就是端到端收益無法從現有工具讀出來。外部文章的第 7 步「benchmark
+整個迴圈而非單次呼叫」，我們是**明知而只做一半**，不是漏做。
+
+### 12.2 十步逐條盤點
+
+| # | 外部主張 | 本 repo | 依據 |
+|---|---|---|---|
+| 1 | LLM 創造／agent 執行／Jev 決定 | ✅ | MCP surface 只有兩支工具，都 advisory |
+| 2 | 拆成 Choice／Score／Noul | ✅ 三種都在用 | choice=`intent-routing.target`；score=`risk_surface`/`blast_radius`/`relevance`；noul 四處 |
+| 3 | 先用他家建，再換 Jev 不重建圖 | ✅ adapter 級 | `adapters.js` 三個 adapter 同簽名 `(state, questions, opts)` |
+| 4 | 共享 state／並行／閾值／佇列 | ⚠️ 一半 | state_projection ✅、thresholds ✅；並行 ❌、佇列 ❌（佇列刻意不做，屬 host） |
+| 5 | 批次決策而非依序 | ⚠️ 單 policy 內 ✅，跨 policy ❌ | `evaluate({state, questions})` 一次帶全部題目；但五個 policy 各打一次 |
+| 6 | 放在受限分支上 | ✅ 只有一條真的接上 | `hooks/jev.js`（context-screening）；其餘四個有 policy 無 hook |
+| 7 | benchmark 整個迴圈 | ⚠️ 只量網關開銷 | 見 12.1 |
+| 8 | 廣泛排序、狹窄閱讀 | ✅ | `hooks/jev.js` 切 chunk → 逐 chunk keep/drop → 只有 keep 進 context |
+| 9 | 重複使用同一套系統 | ✅ | 加 policy = 加 JSON，不寫程式：registry → gateway → telemetry → calibration |
+| 10 | 排除數學／寫作／不可逆 | ✅ 寫進 server instructions | 所有 policy `consequence` 停在 advisory，阻斷由 host adapter 負責 |
+
+### 12.3 真正撿到的一個缺口：跨 policy 沒有批次
+
+第 5 步是唯一讓我改變 roadmap 判斷的一條。文章舉的例子是「13 題一次打完，
+快 10 倍、便宜 12.2 倍」——那個倍數的來源是**把題目塞進同一次呼叫**，不是模型本身快。
+
+我們的 adapter 簽名本來就收複數 `questions`，所以**單一 policy 內已經是批次**
+（`context-screening`、`proposed-action-risk`、`diff-risk` 各 2 題都是一次呼叫）。
+但連續套五個 policy 就是五次呼叫，五次往返。
+
+卡住的點不是懶，是形狀：每個 policy 宣告自己的 `state_projection`，五份投影互不相同。
+要合併成一次呼叫，得先回答「同一次 request 怎麼送五份不同投影的 state，而且不讓
+A policy 的欄位漏進 B policy 的題目」。這個問題沒解之前硬合併，等於把
+state_projection 這道隔離牆拆掉換效能——不做。
+
+先記在這裡，不開工單。真要動，前置條件是先有標註集能證明合併後答案沒有變差。
+
+### 12.4 順手修掉的陳述漂移
+
+`docs/zh-TW/README.md` 還寫著「四個 starter policy」，`040-diff-risk` 進來之後
+已經是五個。數字寫死在散文裡就會這樣——每加一個 policy 要改的地方目前有三處：
+policy 檔、`CONTEXT.md` 的 context 成本實測、zh-TW README 的數量陳述。
+沒有 hook 擋這件事，下次加第六個還是會漏。

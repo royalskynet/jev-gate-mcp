@@ -9,7 +9,7 @@ deterministic code 負責 schema、授權、門檻、組合、執行與 fail-clo
 - **本機 MCP plugin（stdio）是唯一主路徑**：`gateway/src/stdio.js` 直接接 Codex/Claude。
   原 Streamable HTTP / Docker / Caddy 層（`src/http.js`、`Dockerfile`、`compose.yaml`、
   `deploy/`、`rate-limiter-flexible`）已移除，未做過 runtime smoke。
-- **目前 policies 只能 shadow**：四個 starter policy 都是 `uncalibrated`，所以原始結果即使是
+- **目前 policies 只能 shadow**：五個 starter policy 都是 `uncalibrated`，所以原始結果即使是
   `accept`，公開 outcome 仍會被壓成 `review`。這是安全設計，不是故障。
 - **要自動 accept**：必須收集真實 target-domain 標註、通過 calibration、人工審核 policy，
   再設定 `active + calibrated + activation.allow_outcomes + rollout_percent`。不可拿 synthetic fixture 當校準。
