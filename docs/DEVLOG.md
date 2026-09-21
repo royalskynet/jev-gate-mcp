@@ -366,6 +366,30 @@ rc=0
 **回報成功的那一層不是真正落地的那一層**。所以註冊必須由沙箱外的執行者做，
 且完成判準只認 `claude mcp list` 的輸出，不認 `mcp add` 的 rc。
 
+### 坑：沙箱外的執行者也可能有自己的設定檔
+
+第一次改派子代理（沙箱外）去註冊——它回報成功，它自己 `claude mcp list` 也看得到，
+但主機 `grep -c jev_gate ~/.claude.json` 仍是 `0`。它的 `CLAUDE_CONFIG_DIR` 指向自家
+config 目錄，user scope 全寫到它自己身上。**它的自我驗收因此必然通過，錯不出來。**
+
+「沙箱外」不等於「同一個設定檔」。要改的是主 session 自己的設定檔時，不要派子代理。
+最後走 break-glass 腳本：`unset CLAUDE_CONFIG_DIR` → 備份 → `claude mcp add` →
+`grep` 自證（不看 rc）→ 失敗自動還原備份，由沙箱外的 boot-guard 代跑。落地輸出：
+
+```
+jev_gate_occurrences=1
+jev_gate:
+  Scope: User config (available in all your projects)
+  Status: ✔ Connected
+  Type: stdio
+  Command: node
+  Args: /Users/51mini/dev/jev-gate-mcp/gateway/src/stdio.js
+```
+
+**這段的三次失敗是同一題的三種變形**：旗標順序（指令沒生效）、沙箱回滾（寫入沒生效）、
+設定檔分家（寫到別人身上）。三次都回報成功。驗收寫「跑了什麼」擋不住任何一次，
+寫「哪個檔案裡要出現什麼字串」三次都擋得住。
+
 ### 現況
 
 - 唯一 transport：stdio。tool surface 不變，仍恰好 `jev_evaluate` + `jev_apply_policy`。
