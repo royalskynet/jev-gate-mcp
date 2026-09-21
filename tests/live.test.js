@@ -15,11 +15,20 @@ test('live: real Jev call actually prunes, keeps the signal line verbatim', { sk
   const output = [...noise.slice(0, 200), SIGNAL, ...noise.slice(200)].join('\n');
   assert.ok(output.length > THRESHOLD_CHARS);
 
-  const r = await pruneOutput({
-    output,
-    userRequest: 'Find why the app cannot load its config file.',
-    judge: makeJudge(DEFAULT_CONFIG),
-  });
+  // ponytail: the judge is a live, nondeterministic model and the provider call
+  // can legitimately exceed the 2s timeout in DEFAULT_CONFIG, failing open to
+  // keep. Retry a bounded number of times and require that at least one real
+  // attempt drops — still the positive guarantee that the wire can prune
+  // (a wrong model id / shape would fail open on every attempt).
+  let r;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    r = await pruneOutput({
+      output,
+      userRequest: 'Find why the app cannot load its config file.',
+      judge: makeJudge(DEFAULT_CONFIG),
+    });
+    if (r.droppedLines > 0) break;
+  }
 
   // The whole point of the component: it must actually shrink something.
   assert.ok(r.kept.length < output.length, `expected pruning, got ${r.kept.length}/${output.length}`);
