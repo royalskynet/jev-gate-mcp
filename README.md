@@ -75,6 +75,19 @@ call 400 while three phases of tests still "passed". So the live tests assert
 come back `drop`. Put `typesafe/jev-1.13.0` back in `hooks/jev.js` and they go
 red.
 
+### Observability: the ledger
+
+`$.ui.log` only reaches the TUI, not a file, so on a headless box the only
+durable record of the hook is a ledger appended to `/Users/51mini/.openclaw/state/jev-prune.log`
+(`$` has no append, hence read-then-write; `$.clock.now` for the ISO timestamp).
+The ledger records **every judged-prunable call**, kept or dropped — not only
+drops. It used to write only after a successful drop and swallow its own write
+errors, so a hook that fired but judged everything `keep` left zero trace,
+indistinguishable from a hook that never loaded. `appendLedger()` never throws,
+so a broken ledger cannot stop the prune itself. A ledger line is evidence that
+the hook fired; **it is not a calibration result** — `calibration_status`
+stays `uncalibrated` until a labelled evaluation corpus exists.
+
 ### Registration is spelled out, not looped
 
 `register` names `Bash`, `Grep` and `Read` one line each, and each hook slot is
