@@ -122,6 +122,9 @@ export const ApplyPolicyResultSchema = z.object({
   outcome: z.enum(['accept', 'review', 'escalate', 'deny']),
   policy: z.object({ id: z.string(), version: z.number() }),
   mode: z.string(),
+  // shadow vs active alone does not say whether the policy was ever calibrated;
+  // a host deciding how much to trust an outcome needs both.
+  calibration_status: z.string(),
   consequence: z.string(),
   // raw composed gate for a shadow/uncalibrated policy whose public outcome was
   // capped at 'review'; observation only, never an authorization. Optional so
