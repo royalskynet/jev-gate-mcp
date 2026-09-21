@@ -1,1 +1,1 @@
-{ "modules": ["./jev.js"] }
+{ "modules": ["./jev.js", "../agent-glue/claude/spawn-hook.mjs"] }
