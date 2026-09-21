@@ -226,3 +226,11 @@ test('textFeatures never leaks the original characters', () => {
   assert.equal(f.has_code, true);
   assert.equal(f.steps, 2);
 });
+
+test('a difficulty answer with no score and no probabilities never reads as simple', () => {
+  // A malformed/partial Jev answer used to clear the simple gate on the default
+  // simpleProb and downgrade to the cheapest tier. Absent signal == status quo.
+  const out = decideTier({ difficulty: { confidence: 0.95 }, costly_mistake: { noul: 0 } }, {});
+  assert.equal(out.tier, null);
+  assert.equal(out.notice, 'status-quo');
+});

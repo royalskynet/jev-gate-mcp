@@ -232,7 +232,9 @@ export function decideTier(answers, { cfg = {}, tierNames = DEFAULT_TRIAGE.tiers
   // probability the difficulty leans simple / hard, derived from the score's
   // per-level probabilities when present, else from the single confidence.
   const probs = dif?.probabilities;
-  let simpleProb = c.simple_needs_probability;
+  // No difficulty signal at all (malformed answer) must not read as "simple":
+  // a missing score would otherwise clear the simple gate and downgrade.
+  let simpleProb = 0;
   let hardProb = 0;
   if (probs && typeof probs === 'object' && Object.keys(probs).length) {
     const entries = Object.entries(probs).map(([k, v]) => [Number(k), v]).sort((a, b) => a[0] - b[0]);
