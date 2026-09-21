@@ -11,7 +11,8 @@
     "build": "node gateway/scripts/build-check.mjs",
     "gateway:acceptance": "node gateway/scripts/acceptance.mjs",
     "gateway:replay": "node gateway/scripts/replay.mjs gateway/fixtures/replay-baseline.json",
-    "gateway:stdio": "node gateway/src/stdio.js"
+    "gateway:stdio": "node gateway/src/stdio.js",
+    "agents:acceptance": "node scripts/agents-acceptance.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",

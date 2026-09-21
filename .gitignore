@@ -13,3 +13,8 @@ types/
 *.jsonl
 !gateway/test/**/*.jsonl
 !gateway/fixtures/**/*.jsonl
+
+# agent-glue runtime scratch (codex snapshots/ledgers): repo-relative, never commit
+.jev-runtime/
+# stray non-task artifact from the abandoned deep-run probe
+deep/

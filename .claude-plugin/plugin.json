@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "jev-gate",
   "version": "0.3.0",
-  "description": "Prunes long Bash, Grep and Read output with a Jev (System One) keep/drop judgment before it reaches the model's context.",
+  "description": "Jev decision gateway for Claude Code: prunes long tool output, plus a shared agent-glue core for route / verbatim compaction / completion verification / staged diff review. All four are advisory while the five policies stay shadow/uncalibrated.",
   "author": {
     "name": "royalskynet"
   }
