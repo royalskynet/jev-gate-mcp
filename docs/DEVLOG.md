@@ -725,3 +725,51 @@ state_projection 這道隔離牆拆掉換效能——不做。
 已經是五個。數字寫死在散文裡就會這樣——每加一個 policy 要改的地方目前有三處：
 policy 檔、`CONTEXT.md` 的 context 成本實測、zh-TW README 的數量陳述。
 沒有 hook 擋這件事，下次加第六個還是會漏。
+
+
+## 13. prune hook 的 ledger 空白：根因與 observability 修復（2026-09-21）
+
+handoff §5.3 掛了「從沒剪掉過」的問號，本 session 用真實 `tool.call` 證據分層查。
+
+### 13.1 各層證據
+
+- **hook 有載入並觸發**。`~/.claude/debug/` 的 probe session 有
+  `hooks module jev-gate@jev-gate loaded (worker, environment 1, tier user); events: tool.call`
+  與 `jev-gate@jev-gate tool.call settled in 1746.0ms (worker hop, next() included)`——
+  1746ms 表示沒走短迴路，真的跑了 provider 判斷。
+- **wire 會 drop**。同一 noisy fixture 用真 provider 走 `pruneText+judgeChunk`：
+  `input 35942 → kept 16043, droppedLines 223`，marker 兩筆。
+- **完整 `prune→ledger` 在真 host API 下可寫**。補齊 `$` host（`clock.now`+`fs.write`）後
+  `prune()` 把 `jev-prune(Bash): 44042 → 16027 chars, 573 lines dropped` 寫進
+  `/Users/51mini/.openclaw/state/jev-prune.log`。
+- **原本的 observability 盲點**：ledger 只在 `droppedLines > 0` 時寫、且寫在 swallow-all
+  catch 裡。probe 的 diag 量到 `out=7999 kept=7999 dropped=0`——hook 觸發了、judge 全回
+  keep，但零可寫記錄，跟「hook 根本沒載入」外觀完全一樣。這就是 §5.3「沒查」卡住的地方。
+
+### 13.2 一個無關的環境發現
+
+deep-agent（`CLAUDE_CODE_ENTRYPOINT=sdk-cli`）的 tool 結果走自己的 persistence，
+plugin function hook 不在那條路徑上——本 deep session 丟 122KB Bash 輸出時
+`jev-prune.log` 沒長大。獨立的 `claude -p`/互動 session（debug cc2b2102）才是 hook
+會跑的地方。無頭機若用 deep 當主力，prune 本來就不會觸發，這是預期不是 bug。
+
+### 13.3 修法（最小，只動 observability）
+
+- `hooks/jev.js`：抽出 `appendLedger($, line)`。ledger 現在**每個被判定過的超門檻
+  呼叫都寫一行**（keep 或 drop），不再只寫 drop；ledger 失敗永不 throw（不弄壞 prune）。
+  不碰 policy、threshold、calibration、MCP surface、HTTP/Docker/Caddy。
+- `tests/hook.live.test.js`：+3 regression（`appendLedger` 寫 ISO 行、ledger 失敗不 throw、
+  活線 drop 寫 ledger 行）。測試數 105 → 108。
+
+### 13.4 測試與驗收對帳
+
+| | 接手基線 | 修後 |
+|---|---|---|
+| tests | 105 | 108 |
+| pass | 103 | 106 |
+| fail | 0 | 0 |
+| skipped | 2 | 2 |
+
+`build-check OK`、`gateway acceptance OK` 不變。ledger 已有真 drop 一筆：
+`2026-09-21T07:09:48Z jev-prune(Bash): 44042 → 16027 chars, 573 lines dropped`。
+**單次 drop 不是品質校準**——判準仍是 `uncalibrated`，收標註才是唯一出路（§4）。
