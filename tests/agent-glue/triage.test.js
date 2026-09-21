@@ -227,6 +227,72 @@ test('textFeatures never leaks the original characters', () => {
   assert.equal(f.steps, 2);
 });
 
+// --- skill (catalog) selection: folded into the same single triage request ---
+
+const skillEasy = () =>
+  ({ difficulty: easy(), kind: { type: 'choice', choice: 'coding', confidence: 0.9 }, costly_mistake: lowRisk() });
+
+test('triage: no catalog -> exactly three questions and skills is []', async () => {
+  const calls = [];
+  const t = fakeTransport(skillEasy(), calls);
+  const out = await triage({ text: 'quick refactor', contextChars: 1000 }, { transport: t });
+  assert.equal(calls.length, 1);
+  assert.equal(Object.keys(calls[0].questions).length, 3, 'no catalog must stay three questions');
+  assert.ok(!('skill' in calls[0].questions));
+  assert.deepEqual(out.skills, []);
+});
+
+test('triage: with a catalog the fourth skill question rides the same request', async () => {
+  const calls = [];
+  const t = fakeTransport({ ...skillEasy(), skill: { type: 'choice', choice: 'review', confidence: 0.9 } }, calls);
+  const out = await triage({ text: 'audit the diff', contextChars: 1000, skills: ['review', 'debug'] }, { transport: t });
+  assert.equal(calls.length, 1, 'skill select must not cost an extra request');
+  assert.equal(Object.keys(calls[0].questions).length, 4);
+  assert.deepEqual(Object.keys(calls[0].questions.skill.criteria).sort(), ['debug', 'no_match', 'review'].sort());
+  assert.deepEqual(out.skills, ['review']);
+  assert.equal(out.tier, 'cheap', 'skill pick must not disturb the tier decision');
+});
+
+test('triage: skill answered no_match -> skills []', async () => {
+  const calls = [];
+  const t = fakeTransport({ ...skillEasy(), skill: { type: 'choice', choice: 'no_match', confidence: 0.9 } }, calls);
+  const out = await triage({ text: 'something', contextChars: 1000, skills: ['debug', 'review'] }, { transport: t });
+  assert.deepEqual(out.skills, []);
+});
+
+test('triage: skill answer not in catalog -> skills [] (never guesses)', async () => {
+  const calls = [];
+  const t = fakeTransport({ ...skillEasy(), skill: { type: 'choice', choice: 'not-a-catalog-entry', confidence: 0.9 } }, calls);
+  const out = await triage({ text: 'something', contextChars: 1000, skills: ['debug'] }, { transport: t });
+  assert.deepEqual(out.skills, []);
+});
+
+test('triage: same prompt with a different catalog is a cache MISS', async () => {
+  const calls = [];
+  // answer the skill question with the first catalog entry of that call
+  const t = {
+    calls,
+    async evaluate(input) {
+      calls.push(input);
+      const first = input?.questions?.skill ? Object.keys(input.questions.skill.criteria).filter((c) => c !== 'no_match')[0] : null;
+      return { answers: { ...skillEasy(), skill: first ? { type: 'choice', choice: first, confidence: 0.9 } : undefined }, model: 'fake', latency_ms: 5 };
+    },
+  };
+  const cache = new Map();
+  const a = await triage({ text: 'fix the flaky test', contextChars: 1000, skills: ['debug'] }, { transport: t, cache });
+  assert.deepEqual(a.skills, ['debug']);
+  const b = await triage({ text: 'fix the flaky test', contextChars: 1000, skills: ['review'] }, { transport: t, cache });
+  assert.equal(calls.length, 2, 'a different catalog must not reuse the old answer');
+  assert.deepEqual(b.skills, ['review'], 'the second catalog must get its own answer');
+});
+
+test('triage: transport failure -> skills [] with failOpen true', async () => {
+  const broken = { async evaluate() { throw new Error('provider down'); } };
+  const out = await triage({ text: 'hard task', contextChars: 40000, skills: ['debug'] }, { transport: broken });
+  assert.equal(out.failOpen, true);
+  assert.deepEqual(out.skills, []);
+});
+
 test('a difficulty answer with no score and no probabilities never reads as simple', () => {
   // A malformed/partial Jev answer used to clear the simple gate on the default
   // simpleProb and downgrade to the cheapest tier. Absent signal == status quo.

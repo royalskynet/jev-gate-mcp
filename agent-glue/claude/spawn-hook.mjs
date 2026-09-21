@@ -9,9 +9,10 @@
  * to "retain status quo", so the default wiring here is a no-op — the value a
  * host realizes only when it enables the hook AND injects a live transport.
  *
- * The hook also runs a skill-select pass: it can answer "no skill needed", so
- * most turns load zero skills (see `pickSkills`). The returned skill list is
- * advisory only.
+ * The hook also folds skill selection into the same single triage request as a
+ * 4th `skill` Choice question when a catalog is supplied (see `triage`): it can
+ * answer "no skill needed", so most turns load zero skills. The returned skill
+ * list is advisory only and never affects model choice.
  */
 import { triage, DEFAULT_TRIAGE } from '../src/triage.js';
 
@@ -31,26 +32,10 @@ export function tierToModel(tier) {
 }
 
 /**
- * Skill-select: rank a catalog for one prompt. Deterministic first pass keeps
- * cheap (never calls Jev when nothing needs a skill); returns `[]` for "no
- * skill needed", which is the common case.
- *
- * ponytail: the deterministic pass is a keyword heuristic — the upgrade path
- * is a real Jev Choice over the catalog when the deterministic pass flags a
- * candidate conflict.
- */
-export function pickSkills(prompt = '', catalog = []) {
-  if (!prompt || !catalog || catalog.length === 0) return [];
-  return catalog.filter((s) => {
-    const name = String(s?.name ?? s ?? '').toLowerCase();
-    return /skill|agent|debug|review|research|search|route|verify/i.test(name) && prompt.toLowerCase().includes(name.replace(/[^a-z]/g, '') || '');
-  }).slice(0, 3);
-}
-
-/**
  * Decide what the spawn hook should do. Pure-ish (reads module env) and
  * transport-injected for tests. `forceEnabled` lets tests exercise the enabled
- * path without a global env.
+ * path without a global env. Skill selection rides on the same single triage
+ * request (no second Jev call); a catalog comes from `input.skills ?? deps.skillCatalog`.
  */
 export async function spawnDecision(input = {}, deps = {}) {
   const enabled = deps.forceEnabled === true || ENABLED;
@@ -61,24 +46,26 @@ export async function spawnDecision(input = {}, deps = {}) {
   if (input.fork) {
     return { change: false, model: undefined, skills: [], decision: null, reason: 'fork' };
   }
+  const catalog = input.skills ?? deps.skillCatalog ?? [];
   const decision = await triage(
     {
       text: input.prompt ?? '',
       contextChars: input.contextChars ?? 0,
       pinned: input.fork, // fork -> pinned (inherits) -> pre-gated in triage too
       has_images: input.has_images ?? false,
+      skills: catalog,
     },
     deps,
   );
   if (decision.unchanged || decision.failOpen) {
-    return { change: false, model: undefined, skills: pickSkills(input.prompt), decision, reason: 'status-quo' };
+    return { change: false, model: undefined, skills: decision.skills, decision, reason: 'status-quo' };
   }
   const map = deps.modelMap ?? TIER_MODELS;
   const model = map[decision.tier];
   if (!model) {
-    return { change: false, model: undefined, skills: pickSkills(input.prompt), decision, reason: 'no-model-map' };
+    return { change: false, model: undefined, skills: decision.skills, decision, reason: 'no-model-map' };
   }
-  return { change: true, model, skills: pickSkills(input.prompt), decision, reason: 'triage' };
+  return { change: true, model, skills: decision.skills, decision, reason: 'triage' };
 }
 
 export const register = (on) => {

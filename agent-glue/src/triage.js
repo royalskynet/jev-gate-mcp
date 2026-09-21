@@ -51,9 +51,19 @@ export function configFingerprint(cfg = {}) {
     c.tiers, c.ask_chars, c.min_confidence, c.simple_needs_probability,
     c.simple_needs_confidence, c.hard_needs_probability, c.danger_words,
   ]);
+  return hashString(s);
+}
+
+/** FNV-ish short hash of a string (stable across runs; used for cache keys). */
+export function hashString(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
   return (h >>> 0).toString(36);
+}
+
+/** Stable fingerprint of a skill catalog: sorted names joined then hashed. */
+export function catalogFingerprint(catalog = []) {
+  return hashString([...(catalog ?? [])].sort().join('\n'));
 }
 
 /** Map a context length onto a coarse bucket; the bucket is part of the cache key. */
@@ -115,9 +125,13 @@ export function textFeatures(text) {
   };
 }
 
-/** Build the Jev question set for one triage request. */
-export function triageQuestions() {
-  return {
+/**
+ * Build the Jev question set for one triage request. `catalog` (skill ids)
+ * adds a 4th `skill` Choice question (criteria = catalog + `no_match`); with
+ * no catalog the set stays exactly three questions (zero extra cost).
+ */
+export function triageQuestions(catalog = []) {
+  const q = {
     difficulty: {
       type: 'score',
       instructions:
@@ -145,6 +159,28 @@ export function triageQuestions() {
       criteria: { true: 'yes, a wrong move would be hard or expensive to undo', false: 'no — reversible, sandboxed, or low blast radius' },
     },
   };
+  if (catalog && catalog.length > 0) {
+    q.skill = {
+      type: 'choice',
+      instructions: 'Which skill, if any, best fits this request? Pick a single catalog skill, or no_match if none is a good fit.',
+      criteria: Object.fromEntries([...catalog, 'no_match'].map((c) => [c, null])),
+    };
+  }
+  return q;
+}
+
+/**
+ * Extract the advisory skill pick from the skill answer (bounds: privacy,
+ * confidence, no_match, membership). Never guesses.
+ */
+function answerSkills(answers, catalog, cfg = {}) {
+  if (!catalog || catalog.length === 0) return [];
+  const a = answers?.skill;
+  if (!a || typeof a.choice !== 'string' || a.choice === 'no_match') return [];
+  if (!catalog.includes(a.choice)) return [];
+  const conf = typeof a.confidence === 'number' ? a.confidence : cfg.min_confidence;
+  if (conf < (cfg.min_confidence ?? DEFAULT_TRIAGE.min_confidence)) return [];
+  return [a.choice];
 }
 
 /**
@@ -176,18 +212,22 @@ export async function triage(input = {}, deps = {}) {
   const bucket = contextBucket(input.contextChars ?? 0);
   const danger = isDangerous(input.text, cfg.danger_words);
   const featuresOnly = Boolean(input.features) || input.profile === 'sensitive';
+  // Skill catalog is advisory and never sent in privacy mode (only catalog
+  // names would go out, never the original text; [] keeps the surface clean).
+  const catalog = (!featuresOnly && Array.isArray(input.skills)) ? input.skills : [];
 
   const base = { cached: false, latency_ms: 0, failOpen: false, featuresOnly };
 
   // Free pre-gates: no text, pinned (fork inherits model — nothing to decide),
   // or an empty tier ladder -> keep status quo, spend no Jev call.
   if (!input.text || !input.text.trim() || input.pinned || !tiers || tiers.length === 0) {
-    return { ...base, unchanged: true, tier: null, specialty: null, confidence: null, notice: 'pre-gate' };
+    return { ...base, unchanged: true, tier: null, specialty: null, confidence: null, skills: [], notice: 'pre-gate', catalogFp: catalogFingerprint(catalog) };
   }
 
   const slice = sliceText(input.text, cfg.ask_chars);
   const fingerprint = configFingerprint(cfg);
-  const cacheKey = JSON.stringify([slice, bucket, fingerprint, Boolean(input.has_images), Boolean(input.pinned), input.profile ?? 'default']);
+  const catFp = catalogFingerprint(catalog);
+  const cacheKey = JSON.stringify([slice, bucket, fingerprint, Boolean(input.has_images), Boolean(input.pinned), input.profile ?? 'default', catFp]);
 
   const hit = cache.get(cacheKey);
   if (hit) {
@@ -195,9 +235,9 @@ export async function triage(input = {}, deps = {}) {
   }
 
   // A failing or absent transport fail-opens to status quo (never guesses up or down).
-  const res = await safeEvaluate(transport, { slice, featuresOnly, danger, bucket, hasCode: textFeatures(input.text).has_code });
+  const res = await safeEvaluate(transport, { slice, featuresOnly, danger, bucket, hasCode: textFeatures(input.text).has_code, catalog });
   if (res.error) {
-    return { ...base, unchanged: true, tier: null, specialty: null, confidence: null, failOpen: true, notice: 'transport-fail-open' };
+    return { ...base, unchanged: true, tier: null, specialty: null, confidence: null, skills: [], failOpen: true, notice: 'transport-fail-open' };
   }
 
   const decision = decideTier(res.answers, { cfg, tierNames: tiers, danger });
@@ -214,7 +254,9 @@ export async function triage(input = {}, deps = {}) {
     latency_ms: res.latency_ms ?? (Date.now() - t0),
     cached: false,
     unchanged: tier === null,
+    skills: answerSkills(res.answers, catalog, cfg),
     notice: decision.notice,
+    catalogFp: catFp,
   };
   if (tier !== null) cache.set(cacheKey, { ...out, cached: true });
   return out;
@@ -287,12 +329,12 @@ export function decideTier(answers, { cfg = {}, tierNames = DEFAULT_TRIAGE.tiers
 }
 
 /** Call the injected transport's evaluate; any reject -> { error } (fail-open). */
-async function safeEvaluate(transport, { slice, featuresOnly, danger, bucket, hasCode }) {
+async function safeEvaluate(transport, { slice, featuresOnly, danger, bucket, hasCode, catalog }) {
   const state = featuresOnly
     ? { features: { char_bucket: bucket, has_danger_word: danger, has_code: hasCode } }
     : { user_request: slice, char_bucket: bucket };
   try {
-    const res = await transport.evaluate({ state, questions: triageQuestions() });
+    const res = await transport.evaluate({ state, questions: triageQuestions(catalog) });
     return { answers: res?.answers ?? {}, latency_ms: res?.latency_ms };
   } catch (err) {
     return { error: { code: 'ERR_CLIENT', message: err instanceof Error ? err.message : String(err) } };

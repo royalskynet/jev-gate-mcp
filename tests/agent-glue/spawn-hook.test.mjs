@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnDecision, pickSkills, tierToModel } from '../../agent-glue/claude/spawn-hook.mjs';
+import { spawnDecision, tierToModel } from '../../agent-glue/claude/spawn-hook.mjs';
 
 // A fake triage-shaped transport that returns an easy, safe, confident verdict.
 function easyTransport() {
@@ -71,8 +71,59 @@ test('spawn hook: wired cheap model on a safe easy task changes the model', asyn
   assert.equal(d.model, 'haiku');
 });
 
-test('skill select: most prompts load zero skills; only a matching catalog entry is kept', () => {
-  assert.deepEqual(pickSkills('just fix the typo'), []);
-  assert.deepEqual(pickSkills('debug the failing test', ['debug', 'review']), ['debug']);
-  assert.deepEqual(pickSkills('x', []), []);
+test('skill select: a catalog pick is advisory and never changes the model', async () => {
+  // With a catalog answered as a skill, skills surfaces but the model (tier)
+  // decision is unaffected.
+  const d = await spawnDecision(
+    { prompt: 'debug the failing test', contextChars: 1000, skills: ['debug', 'review'] },
+    {
+      forceEnabled: true,
+      transport: {
+        async evaluate() {
+          return {
+            answers: {
+              difficulty: { type: 'score', score: 0.5, probabilities: { 0: 0.3, 1: 0.55, 2: 0.15, 3: 0 }, confidence: 0.92 },
+              kind: { type: 'choice', choice: 'coding', confidence: 0.9 },
+              costly_mistake: { type: 'noul', noul: 0.1 },
+              skill: { type: 'choice', choice: 'debug', confidence: 0.9 },
+            },
+            latency_ms: 5,
+          };
+        },
+      },
+      modelMap: { cheap: 'haiku', medium: 'sonnet', hard: 'opus' },
+    },
+  );
+  assert.equal(d.change, true, 'model choice still driven by triage tier');
+  assert.equal(d.model, 'haiku');
+  assert.deepEqual(d.skills, ['debug'], 'advisory skill surfaces on the decision');
+});
+
+test('skill select: no catalog -> zero skills, triage stays three questions', async () => {
+  const calls = [];
+  const d = await spawnDecision(
+    { prompt: 'quick tweak', contextChars: 1000 },
+    {
+      forceEnabled: true,
+      transport: {
+        calls,
+        async evaluate(input) {
+          calls.push(input);
+          return {
+            answers: {
+              difficulty: { type: 'score', score: 0.5, probabilities: { 0: 0.3, 1: 0.55, 2: 0.15, 3: 0 }, confidence: 0.92 },
+              kind: { type: 'choice', choice: 'coding', confidence: 0.9 },
+              costly_mistake: { type: 'noul', noul: 0.1 },
+            },
+            latency_ms: 5,
+          };
+        },
+      },
+      modelMap: { cheap: 'haiku' },
+    },
+  );
+  assert.equal(d.change, true);
+  assert.deepEqual(d.skills, []);
+  assert.equal(calls.length, 1);
+  assert.equal(Object.keys(calls[0].questions).length, 3, 'no catalog -> exactly three questions');
 });
