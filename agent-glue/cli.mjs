@@ -6,8 +6,9 @@
  * Reads one JSON document on stdin. The `judge`/`jev` observers are *not*
  * wired here: a bare CLI run has no live adapter, so every judgment fails open
  * (compact keeps verbatim, verify stays deterministic, review is advisory-free,
- * route returns no_match). Adapters that want live Jev call the core functions
- * directly with a real injected judge, not through this CLI.
+ * route runs the real judgment and fail-opens itself when no live model is present).
+ * Adapters that want live Jev call the core functions directly with a real injected
+ * judge, not through this CLI.
  *
  *   echo '<json>' | node agent-glue/cli.mjs compact
  *   echo '<json>' | node agent-glue/cli.mjs verify
@@ -47,8 +48,13 @@ switch (sub) {
     break;
   }
   case 'route': {
-    // No live scorer in the bare CLI: small model cannot pick -> fail-open.
-    respond({ no_match: true, top: [], dispatch: null, reason: 'cli-no-model' });
+    // Real route judgment; with no live Jev model `route` itself fail-opens.
+    // Empty/malformed candidates throw as EmptyCandidatesError -> bounded no-candidates.
+    try {
+      respond(await route(payload));
+    } catch {
+      respond({ no_match: true, top: [], dispatch: null, reason: 'no-candidates' });
+    }
     break;
   }
   default: {

@@ -11,7 +11,7 @@
  * every policy is shadow/uncalibrated and a decision must stay advisory.
  *
  * CLI: read one JSON on stdin, dispatch by argv[2], print bounded JSON.
- *    bridge.mjs route    -> deterministic route (fail-open no_match without a live scorer)
+ *    bridge.mjs route    -> real route judgment (no live model -> route itself fail-opens)
  *    bridge.mjs verify   -> verifyCompletion over provided evidence
  *    bridge.mjs review   -> reviewDiff over a provided git diff or parsed files
  *    bridge.mjs compact  -> compactMessages over provided messages
@@ -36,10 +36,13 @@ function respond(v) {
 
 switch (sub) {
   case 'route': {
-    // No live scorer in the bare bridge: a bare run fail-opens to no_match.
-    // A host that starts the gateway injects a real scorer (plugin/lib/route.js
-    // makeScorer) by calling the core directly instead.
-    respond({ no_match: true, top: [], dispatch: null, reason: 'cli-no-model' });
+    // Real route judgment; with no live Jev model `route` itself fail-opens.
+    // Empty/malformed candidates throw as EmptyCandidatesError -> bounded no-candidates.
+    try {
+      respond(await route(payload));
+    } catch {
+      respond({ no_match: true, top: [], dispatch: null, reason: 'no-candidates' });
+    }
     break;
   }
   case 'verify': {
