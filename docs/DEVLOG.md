@@ -773,3 +773,107 @@ plugin function hook 不在那條路徑上——本 deep session 丟 122KB Bash 
 `build-check OK`、`gateway acceptance OK` 不變。ledger 已有真 drop 一筆：
 `2026-09-21T07:09:48Z jev-prune(Bash): 44042 → 16027 chars, 573 lines dropped`。
 **單次 drop 不是品質校準**——判準仍是 `uncalibrated`，收標註才是唯一出路（§4）。
+
+## 14. Agent Glue：四項膠水，以及一個寫進 handoff 的誤診
+
+2026-09-21。把 Jev 的前四種用法（快速路由、原樣壓縮、完成驗證、分階段 diff review）
+做成 Claude 與 Codex 共用的純核心，兩端只留薄 adapter。
+
+### 14.1 接手時的三個紅測試都不是門檻問題
+
+停止點交下來 125 tests / 120 pass / **3 fail**。三個失敗長得像「fixture 跟實作門檻沒對齊」，
+改兩個常數就能綠。實際上每一個底下都壓著真缺陷：
+
+| 表面症狀 | 底下的真缺陷 |
+|---|---|
+| fixture 的 call arguments 只有 15 chars，小於 `MIN_STRIP_CHARS=48`，卻期待 marker | 同一 assistant message 有多個 tool call 時，pair/drop 只判第一個卻連坐 strip 全部——要按 call-site 聚合後整批判斷 |
+| 4-message fixture 用預設 `pinLast=8`，整段被 pin，卻期待 drop | 短 transcript 的 pin 行為從沒被明訂過，fixture 和實作各自假設 |
+| 測試把 200 additions 當 large，實作門檻是 `>300` | 真問題不是 300 還是 200，是「高 confidence 的 Jev 會把 severity 升一級」——那會動到 deterministic reviewer route |
+
+**教訓**：紅測試指向的常數，往往不是根因所在的那一層。第三個尤其危險——改門檻能讓它變綠，
+但綠的是一個違反 shadow/advisory 邊界的實作。
+
+修法（`agent-glue/src/`）：
+
+- `compact.js`：任一 judge throw 是**整次** fail-open（不是只保留該 pair）；
+  `reducedBy < minReductionChars` 時回**原** `messages`，不回已改寫的半成品
+  （`compacted:false` 卻交出改寫結果 = 半剝離 context 的風險）。
+- `review.js`：`deterministicSeverity()` 裡明寫 `void jevOpinion`。Jev 意見掛在結果上進 ledger，
+  **不參與** severity 與 route 的計算。policy 校準前這條不開。
+- `verify.js`：`pass` 必須附可稽核的 command/log evidence；`file:line` 只在真有位置時才給。
+  沒有執行證據一律 `unknown`，模型自述不是證據。
+
+### 14.2 `unrecognized_model` 是 banner，不是死因
+
+前一次 deep-run 沒有 commit 就停了，`.out` 開頭是：
+
+```text
+[claude-code:unrecognized_model] {"model":"deepseek-v4-flash-0731","query_source":"sdk"}
+```
+
+handoff 據此寫下「重派前要先修 `~/.deepclaude` 的 model alias，確認 backend 接受該模型」。
+這是假前置條件——**上一次成功的 run（rc=0 / verify=pass）開頭印的是同一行**。
+該行是 claude CLI 的 benign stderr（SDK 端模型名查表 miss），proxy 照樣送出、照樣回 200。
+真正沒有 `end` 的原因是使用者手動 kill 了 tmux session：`.rc` 檔是空的，`.out` 只有 6 行 banner。
+
+判 wrapper 子行程死因的順序（確定性由高到低）：
+
+1. `work/.deep/<epoch>.rc` 有沒有值——空 = 被 kill，非空 = 真 rc
+2. `~/Library/Logs/openclaw/wrappers.log` 的 `end rc= verify=`
+3. 同一支 wrapper 上一次**成功** run 的 `.out` 開頭拿來對照——兩邊都出現的行就是 benign banner
+
+沒改任何 model 設定直接重派，`18:16:06 deep-run end rc=0 verify=pass`。
+
+**教訓**：交接文件寫失敗原因時要標證據等級。rc/log 是確定性，stderr 字串是推測。
+把推測寫成結論，下一手會照著去修一個沒壞的東西。
+
+### 14.3 兩端能力差異（決定了 Codex 那半怎麼寫）
+
+| | Claude Code | OpenAI Codex |
+|---|---|---|
+| 改工具結果 | function hook `tool.call` 可在模型讀到前替換 | `PreToolUse` 才能擋；`PostToolUse` 副作用已發生，只能換 model-facing result |
+| 壓縮 | function hook 可替換內建 compaction | **不能**。只能 `PreCompact` snapshot ＋ `PostCompact` 追加 `additionalContext` |
+| 續跑 | — | `Stop` 用 `decision:block`，必讀 `stop_hook_active`，最多一次 |
+
+所以 Codex 那半的壓縮永遠標成「原文 restoration layer」，不宣稱改寫了 core transcript。
+manifest 也分檔：Claude 用 `hooks/hooks.json`，Codex 用 `.codex/hooks.json` /
+`.codex-plugin/hooks.json`，互不覆寫。
+
+### 14.4 壓縮互斥
+
+本 repo 的 compaction **不註冊自己的 `session.compact`**。本機另有外部 fast-jev plugin
+（`~/dev/fast-jev-compaction-openrouter`）已經註冊了一個。兩個 `session.compact` handler
+同時啟用的行為沒人驗過，文件直接寫「不要雙開」，切換方式見 `docs/agent-glue.md` §2。
+
+### 14.5 預防加固
+
+`tests/agent-glue/policy-shadow.test.js`：斷言五個 policy 永遠是
+`shadow` + `uncalibrated` + `rollout_percent 0`。任何人把其中一個翻成 active/calibrated/
+rolling out，這個測試就紅。§14.1 第三列那種「改門檻讓它綠」的修法，擋在這裡。
+
+### 14.6 測試與驗收對帳
+
+| | 接手基線 | 修後 |
+|---|---|---|
+| tests | 125 | 137 |
+| pass | 120 | 135 |
+| **fail** | **3** | **0** |
+| skipped | 2 | 2 |
+
+新增 `npm run agents:acceptance`（`scripts/agents-acceptance.mjs`）：依序跑 plugin validate
+（CLI 存在時）、完整 tests、build、gateway acceptance、Claude bridge smoke、Codex hooks smoke、
+injected client smoke。任何一步非零即整體失敗。實跑：
+
+```text
+[agents:acceptance] build: OK
+[agents:acceptance] gateway acceptance: OK
+[agents:acceptance] claude bridge smoke: OK
+  verify=pass
+[agents:acceptance] codex hooks smoke: OK
+  stop=block-once-then-allow
+[agents:acceptance] injected client smoke: OK
+[agents:acceptance] ALL OK
+```
+
+policy 檔零改動，MCP surface 仍只有 `jev_evaluate` / `jev_apply_policy`。
+**四項膠水全是 advisory**——五個 policy 還是 uncalibrated，收標註仍是唯一出路（§4）。

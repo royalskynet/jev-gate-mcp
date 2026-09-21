@@ -34,7 +34,7 @@
 ## 壓縮互斥／遷移
 
 - `agent-glue/src/compact.js` 是 fast-jev-compaction 的最小必要移植，但 **本 plug-in 不註冊自己的 `session.compact`**。
-- 外部 fast-jev plugin 已註冊 `session.compact`（`/Users/51mini/dev/fast-jev-compaction-openrouter`）。兩者**不可同時啟用**兩個 `session.compact` handler。
+- 外部 fast-jev plugin 已註冊 `session.compact`（`~/dev/fast-jev-compaction-openrouter`）。兩者**不可同時啟用**兩個 `session.compact` handler。
 - 遷移：要改用本移植，停用外部 fast-jev plugin，再於 Claude host 註冊本 plug-in 的 `session.compact`；反之亦然。文件化，勿雙開。
 
 ## 觀測

@@ -66,6 +66,45 @@ codex mcp list
 - 各工具設 `output_token_limit`，避免一次結果佔滿 context。
 - server initialization 帶短版 instructions；重要規則在前 512 chars 內。
 
+## Agent Glue：四項用法、兩端共用
+
+`agent-glue/src/` 是 Claude Code 與 Codex **共用的純判斷核心**，兩端只留薄 adapter。
+完整安裝／停用／觀測／四項成效指標見 [`docs/agent-glue.md`](../agent-glue.md)。
+
+| 用法 | 判什麼 | 契約 |
+|---|---|---|
+| route | 這一輪交給哪個候選 | 只能從給定候選挑；無匹配回 `no_match`；失敗保留目前模型 |
+| compact | 哪個 tool call/result 該刪或截斷 | user/assistant 文字**原樣**通過；call/result 成對；首筆與近期 pin |
+| verify | 完成宣稱回 `pass｜fail｜unknown` | `pass` 必附可稽核 command/log evidence；沒有執行證據一律 `unknown` |
+| review | 分階段 diff 審查 | risk filter → file profile → evidence → mechanism → severity → reviewer route |
+
+兩條撐住整套的規則：
+
+- **任一 judge throw 是整次 fail-open**，不是只保留丟出例外的那一對。壞掉的 judge 只能讓
+  context 沒被壓縮，不能讓它被剝一半。`reducedBy` 低於最小門檻時同理——host 拿回**原本**的 messages。
+- **Jev 永遠不改 deterministic 結果。** `deterministicSeverity()` 裡直接 `void jevOpinion`：
+  意見掛在結果上進 ledger，severity 與 reviewer route 只由 diff profile 算出。
+  五個 policy 還是 `shadow` + `uncalibrated` 的期間，未校準判斷不得授權也不得阻擋。
+  `tests/agent-glue/policy-shadow.test.js` 是這條的防回歸守門。
+
+兩端能力差異照實寫，不粉飾：
+
+| | Claude Code | Codex |
+|---|---|---|
+| 改工具結果 | function hook `tool.call` 可在模型讀到前替換 | `PreToolUse` 才擋得住；`PostToolUse` 副作用已發生 |
+| 壓縮 | 可替換內建 compaction | **不能**；只能 `PreCompact` snapshot ＋ `PostCompact` 追加 `additionalContext`（原文 **restoration layer**） |
+| 續跑 | — | `Stop` 用 `decision:block`，必讀 `stop_hook_active`，最多一次 |
+
+manifest 分檔互不覆寫：Claude 走 `hooks/hooks.json`，Codex 走 `.codex/hooks.json` 或
+`.codex-plugin/hooks.json`。
+
+**壓縮互斥**：本 plugin 不註冊自己的 `session.compact`。若本機同時裝了外部 fast-jev
+compaction plugin，**不要雙開**，切換方式見 [`docs/agent-glue.md`](../agent-glue.md) §2。
+
+```sh
+npm run agents:acceptance
+```
+
 ## 怎麼省 token 又不拖慢
 
 1. 日常 coding、解釋、規劃、算術、schema validation 不呼叫 Jev。
@@ -130,6 +169,7 @@ Policy 可在真實資料校準後加入 `quality_thresholds`；margin 太低、
 
 ```sh
 npm run gateway:replay
+npm run agents:acceptance
 ```
 
 policy digest 變更或 red-line outcome 漂移都會 non-pass，適合接 CI。
@@ -167,6 +207,7 @@ npm test
 npm run build
 npm run gateway:acceptance
 npm run gateway:replay
+npm run agents:acceptance
 ```
 
 - 本機 plugin 以 stdio 啟動（`node gateway/src/stdio.js` 或 `npm run gateway:stdio`）。
@@ -175,4 +216,7 @@ npm run gateway:replay
 - policy 先 shadow；未完成外部校準前，不宣稱「可自動放行」。
 - Host Adapter 對 `review` 的紅線測試必須證明 `execute()` 沒被呼叫。
 
-更完整營運細節見 [`gateway/operations/runbook.md`](../../gateway/operations/runbook.md)。
+- Agent glue 的四項全是 advisory；policy 未校準前不宣稱「Jev 決定了什麼」。
+
+更完整營運細節見 [`gateway/operations/runbook.md`](../../gateway/operations/runbook.md)、
+[`docs/agent-glue.md`](../agent-glue.md)、[`skills/jev-agent/SKILL.md`](../../skills/jev-agent/SKILL.md)。

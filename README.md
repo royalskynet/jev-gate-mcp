@@ -3,15 +3,17 @@
 > 繁中：若要把 Decision Gateway 接到 Claude Code 或 Codex，直接看
 > [繁中接線與 Codex 快速指南](docs/zh-TW/README.md)。
 
-## Two separate things live here
+## Three separate things live here
 
 | | what it is | entry point | status |
 |---|---|---|---|
 | **Prune plugin** | a Claude Code plugin that shrinks long tool output before the model reads it | `hooks/jev.js` | shipped, live-verified |
 | **Decision Gateway** | a local MCP server exposing exactly two governed decision tools | `gateway/src/stdio.js` | shipped as a **local stdio plugin**; policies run in shadow only |
+| **Agent glue** | one shared core for four Jev uses, thin adapters for Claude Code *and* Codex | `agent-glue/src/` | shipped; **advisory only** while the policies stay uncalibrated |
 
 They share a repo and a provider key, nothing else. The rest of this page is the
-prune plugin; the gateway has its own [README](gateway/README.md).
+prune plugin; the gateway has its own [README](gateway/README.md), and the glue
+has [`docs/agent-glue.md`](docs/agent-glue.md).
 
 ## Prune plugin
 
@@ -121,6 +123,44 @@ Provider settings live at the top of `hooks/jev.js`: endpoint
 `POST /api/alpha/decisions`), model `typesafe/jev-1.13`, key read from
 `~/.creds/kv/OPENROUTER_API_KEY.txt`.
 
+## Agent glue: four Jev uses, two hosts
+
+`agent-glue/src/` holds one testable core, shared verbatim by both hosts:
+
+| | what it decides | contract |
+|---|---|---|
+| route | which candidate handles this turn | picks only from the given candidates; `no_match` when none fit; failure keeps the current model |
+| compact | which tool call/result to drop or truncate | user/assistant prose passes through byte-for-byte; call/result stay paired; first and recent turns pinned |
+| verify | `pass` / `fail` / `unknown` on a completion claim | `pass` needs auditable command/log evidence; no execution evidence means `unknown`, never `pass` |
+| review | staged diff review | risk filter → file profile → evidence → mechanism → severity → reviewer route |
+
+Two rules hold the whole thing up:
+
+- **Any judge failure fails open for the whole pass**, not just the pair that threw.
+  A broken judge can only leak context, never silently half-strip it. Same for a
+  reduction below `minReductionChars`: the host gets the *original* messages back.
+- **Jev never moves a deterministic outcome.** `deterministicSeverity()` literally
+  does `void jevOpinion`. The opinion rides along on the result and lands in a
+  ledger; severity and reviewer route are computed from the diff profile alone.
+  While the five policies are `shadow` + `uncalibrated`, an uncalibrated judgment
+  is not allowed to authorize or block anything.
+  `tests/agent-glue/policy-shadow.test.js` turns red if anyone flips that.
+
+Host differences are real and documented rather than papered over: a Claude
+function hook can replace a tool result before the model reads it and can replace
+built-in compaction; Codex can only block in `PreToolUse`, and its compaction side
+is a **restoration layer** (`PreCompact` snapshot + `PostCompact` additionalContext),
+not a replacement. Manifests stay in separate files — `hooks/hooks.json` for Claude,
+`.codex/hooks.json` / `.codex-plugin/hooks.json` for Codex.
+
+This plugin does **not** register its own `session.compact`. If you also run the
+external fast-jev compaction plugin, do not enable both — see
+[`docs/agent-glue.md`](docs/agent-glue.md) for the migration.
+
+```sh
+npm run agents:acceptance   # plugin validate, full tests, build, gateway, both host smokes
+```
+
 ## Also in this repo, not mounted
 
 `plugin/` holds the Node-side experiments: `lib/judge.js`, `lib/route.js`
@@ -139,4 +179,6 @@ tested but deliberately not wired — see `docs/NEXT.md` for why.
 - [What is next](docs/NEXT.md)
 - [Handoff 2026-09-21（繁中）](docs/HANDOFF-20260921.md) — **start here if you have no prior context**
 - [Jev 十步操作手冊（繁中）](docs/zh-TW/PLAYBOOK.md) — the ten-step playbook mapped onto this repo, gaps included
+- [Agent glue（繁中）](docs/agent-glue.md) — install / disable / observability per host, and the four effectiveness metrics
+- [Agent skill](skills/jev-agent/SKILL.md) — the operating rules both hosts share
 - [Dev log](docs/DEVLOG.md) — how this got built, and the traps that cost time

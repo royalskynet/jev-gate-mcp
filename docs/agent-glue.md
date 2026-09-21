@@ -26,7 +26,7 @@ skills/jev-agent/   兩端共用操作規則
 - **停用**：移除/停用 `jev-gate` plugin。
 - **觀測**：`~/.openclaw/state/jev-prune.log`（每筆被判定的 prune，keep 也寫）。
 - **壓縮互斥**：本 plug-in 不註冊自己的 `session.compact`；外部 fast-jev plugin
-  （`/Users/51mini/dev/fast-jev-compaction-openrouter`）註冊了 `session.compact`。**不要雙開。**
+  （`~/dev/fast-jev-compaction-openrouter`）註冊了 `session.compact`。**不要雙開。**
   要改用本移植版本，停用外部 plugin 後再由 host 註冊。見 `skills/jev-agent/SKILL.md`。
 
 ## 3. Codex 端
@@ -59,4 +59,4 @@ npm run agents:acceptance
 ```
 
 依序跑：Claude plugin validate（CLI 存在時）、完整 tests、build、gateway acceptance、
-Claude bridge smoke、Codex hooks smoke、injected client smoke。任何一步非零即���次失敗。
+Claude bridge smoke、Codex hooks smoke、injected client smoke。任何一步非零即整體失敗。
