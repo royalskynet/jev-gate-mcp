@@ -18,8 +18,13 @@ function answerToSignal(q, a) {
     if (!a.probabilities || typeof a.probabilities !== 'object') {
       return ERR.malformed('choice answer lacks probabilities');
     }
-    const overKeys = Object.keys(a.probabilities).filter((k) => !keys.includes(k));
-    if (overKeys.length > 0) return ERR.badGate(`probabilities include foreign keys: ${overKeys.join(',')}`);
+    const foreign = Object.keys(a.probabilities).filter((key) => !keys.includes(key));
+    if (foreign.length > 0) return ERR.badGate(`probabilities include foreign keys: ${foreign.join(',')}`);
+    const invalid = validateDistribution(a.probabilities, keys);
+    if (invalid) return ERR.malformed(`choice probabilities ${invalid}`);
+    if (a.confidence != null && (!Number.isFinite(a.confidence) || a.confidence < 0 || a.confidence > 1)) {
+      return ERR.malformed('choice confidence outside 0..1');
+    }
     return a;
   }
   if (q.type === 'score') {
@@ -28,6 +33,11 @@ function answerToSignal(q, a) {
     // deterministic code owns the count check (PRD invariant 5)
     if (a.score < 0 || a.score > n - 1) return ERR.badGate(`score ${a.score} outside level range 0..${n - 1}`);
     if (a.legend && typeof a.legend !== 'object') return ERR.malformed('score legend malformed');
+    const invalid = validateDistribution(a.probabilities, q.criteria.map((_, i) => String(i)));
+    if (invalid) return ERR.malformed(`score probabilities ${invalid}`);
+    if (a.confidence != null && (!Number.isFinite(a.confidence) || a.confidence < 0 || a.confidence > 1)) {
+      return ERR.malformed('score confidence outside 0..1');
+    }
     return a;
   }
   if (q.type === 'noul') {
@@ -36,6 +46,20 @@ function answerToSignal(q, a) {
     return a;
   }
   return ERR.badRequest(`unknown question type ${q.type}`);
+}
+
+function validateDistribution(probabilities, keys) {
+  if (!probabilities || typeof probabilities !== 'object' || Array.isArray(probabilities)) return 'missing';
+  const actual = Object.keys(probabilities);
+  const missing = keys.filter((key) => !actual.includes(key));
+  const foreign = actual.filter((key) => !keys.includes(key));
+  if (missing.length > 0) return `missing keys: ${missing.join(',')}`;
+  if (foreign.length > 0) return `include foreign keys: ${foreign.join(',')}`;
+  const values = keys.map((key) => probabilities[key]);
+  if (values.some((p) => !Number.isFinite(p) || p < 0 || p > 1)) return 'must be finite numbers in 0..1';
+  const sum = values.reduce((total, p) => total + p, 0);
+  if (Math.abs(sum - 1) > 0.02) return `must sum to 1 (got ${sum})`;
+  return null;
 }
 
 // --- Real adapters (require credentials; only constructed when configured) ---

@@ -55,7 +55,7 @@ test('registry: shadow uncalibrated policy is allowed', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-cal-'));
   try {
     writePolicy(dir, {
-      ok: { versions: [{ version: 1, mode: 'shadow', model: 'typesafe/jev-1.13-20260917', evaluation_dataset_version: 'd-v1', calibration_status: 'uncalibrated', consequence: 'advisory', thresholds: { auto: 0.85, review: 0.6 }, questions: { q: { type: 'noul', instructions: '?', criteria: { true: 'y', false: 'n' } } }, mapping: { q: { true: 'accept', false: 'deny' } } }] },
+      ok: { versions: [{ version: 1, mode: 'shadow', model: 'typesafe/jev-1.13-20260917', evaluation_dataset_version: 'd-v1', calibration_status: 'uncalibrated', consequence: 'advisory', state_projection: ['state'], state_schema: { oneOf: [{ type: 'string' }, { type: 'object', properties: { state: {} }, additionalProperties: false }] }, activation: { allow_outcomes: ['review', 'escalate', 'deny'], rollout_percent: 0, salt: 'test' }, thresholds: { auto: 0.85, review: 0.6 }, questions: { q: { type: 'noul', instructions: '?', criteria: { true: 'y', false: 'n' } } }, mapping: { q: { true: 'accept', false: 'deny' } } }] },
     });
     const r = loadRegistry(dir);
     assert.deepEqual(r.ids(), ['ok']);

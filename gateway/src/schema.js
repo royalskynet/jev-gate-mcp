@@ -110,6 +110,12 @@ const reasonSchema = z.object({
     .enum(['accept', 'review', 'escalate', 'deny'])
     .nullable(),
   level: z.enum(['accept', 'review', 'escalate', 'deny']).nullable(),
+  decision_quality: z.object({
+    margin: z.number().nullable(),
+    entropy: z.number().nullable(),
+    variance: z.number().nullable(),
+  }),
+  quality_level: z.enum(['accept', 'review']).nullable(),
 });
 
 export const ApplyPolicyResultSchema = z.object({
@@ -121,6 +127,14 @@ export const ApplyPolicyResultSchema = z.object({
   // capped at 'review'; observation only, never an authorization. Optional so
   // the stable (non-capped) result shape is unchanged.
   shadow_outcome: z.enum(['accept', 'review', 'escalate', 'deny']).optional(),
+  raw_outcome: z.enum(['accept', 'review', 'escalate', 'deny']).optional(),
+  policy_digest: z.string(),
+  question_digest: z.string(),
+  activation: z.object({
+    reason: z.string().nullable(),
+    cohort: z.number().nullable(),
+    rollout_percent: z.number(),
+  }).optional(),
   gate_reasons: z.array(reasonSchema),
   coverage: z.enum(['complete', 'incomplete']),
   model: z.string().nullable(),

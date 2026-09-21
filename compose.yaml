@@ -1,0 +1,62 @@
+services:
+  jev-gateway:
+    build: .
+    restart: unless-stopped
+    environment:
+      JEV_PROVIDER: openrouter
+      JEV_MODEL: typesafe/jev-1.13
+      JEV_API_KEY_FILE: /run/secrets/openrouter_api_key
+      JEV_HTTP_AUTH_TOKEN_FILE: /run/secrets/http_bearer_token
+      JEV_HTTP_HOST: 0.0.0.0
+      JEV_HTTP_PORT: 3456
+      JEV_HTTP_ALLOWED_HOSTS: localhost,jev-gateway,${JEV_PUBLIC_HOST:?set JEV_PUBLIC_HOST}
+      JEV_HTTP_ALLOWED_ORIGINS: localhost,${JEV_PUBLIC_HOST:?set JEV_PUBLIC_HOST}
+      JEV_HTTP_RATE_LIMIT: ${JEV_HTTP_RATE_LIMIT:-60}
+      JEV_HTTP_RATE_WINDOW_SECONDS: ${JEV_HTTP_RATE_WINDOW_SECONDS:-60}
+      JEV_HTTP_MAX_IN_FLIGHT: ${JEV_HTTP_MAX_IN_FLIGHT:-16}
+      JEV_TELEMETRY: ${JEV_TELEMETRY:-on}
+      JEV_TELEMETRY_LEVEL: ${JEV_TELEMETRY_LEVEL:-info}
+    secrets:
+      - openrouter_api_key
+      - http_bearer_token
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      jev-gateway:
+        condition: service_healthy
+    environment:
+      JEV_PUBLIC_HOST: ${JEV_PUBLIC_HOST:?set JEV_PUBLIC_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+
+secrets:
+  openrouter_api_key:
+    file: ${OPENROUTER_API_KEY_FILE:?set OPENROUTER_API_KEY_FILE}
+  http_bearer_token:
+    file: ${JEV_HTTP_AUTH_TOKEN_FILE:?set JEV_HTTP_AUTH_TOKEN_FILE}
+
+networks:
+  internal:
+
+volumes:
+  caddy_data:
+  caddy_config:

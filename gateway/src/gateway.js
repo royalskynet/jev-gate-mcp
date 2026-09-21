@@ -5,11 +5,11 @@
 // Advisory evaluation can never produce a Gate that authorizes an action; only
 // applyPolicy composes a Gate, and even there an incomplete coverage, provider
 // failure, timeout, or low certainty never becomes `accept`.
-import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { answerToSignal } from './adapters.js';
-import { ERR, LIMITS, isKillSwitched, stateBytes } from './core.js';
-import { applyPolicyInputSchema, evaluateInputSchema, JsonSchema } from './schema.js';
+import { ERR, LIMITS, isKillSwitched } from './core.js';
+import { applyPolicyInputSchema, evaluateInputSchema } from './schema.js';
+import { applyActivation, decisionQuality, policyDigests, projectPolicyState } from './policy-controls.js';
 
 const GATE_ORDER = ['deny', 'escalate', 'review', 'accept']; // index 0 = most conservative
 
@@ -32,7 +32,8 @@ export function composeGate(perQuestion, policy) {
   for (const q of perQuestion) {
     const sem = q.map ? semanticLevel(q.map, q.answer) : null;
     const conf = confidenceLevel(q.confidence, thresholds);
-    const level = combineLevels(sem, conf, start);
+    const quality = qualityLevel(q.quality, policy.quality_thresholds);
+    const level = combineLevels(combineLevels(sem, conf, start), quality, start);
     if (rank(level) < rank(worst)) worst = level; // most conservative wins
   }
   return worst;
@@ -74,6 +75,15 @@ function combineLevels(sem, conf, start) {
   return rank(sem) <= rank(conf) ? sem : conf; // more conservative wins
 }
 
+function qualityLevel(quality, thresholds) {
+  if (!quality || !thresholds) return null;
+  const breached =
+    (Number.isFinite(thresholds.min_margin) && Number.isFinite(quality.margin) && quality.margin < thresholds.min_margin) ||
+    (Number.isFinite(thresholds.max_entropy) && Number.isFinite(quality.entropy) && quality.entropy > thresholds.max_entropy) ||
+    (Number.isFinite(thresholds.max_variance) && Number.isFinite(quality.variance) && quality.variance > thresholds.max_variance);
+  return breached ? 'review' : 'accept';
+}
+
 export class JevGateway {
   /**
    * @param {object} deps
@@ -84,7 +94,7 @@ export class JevGateway {
    * @param {string} [deps.provider] provider label for telemetry
    * @param {()=>string} [deps.breakerState] current breaker state for telemetry
    */
-  constructor({ evaluateAdapter, registry, killSwitch = isKillSwitched, policyAdapter, telemetry, provider, breakerState }) {
+  constructor({ evaluateAdapter, registry, killSwitch = isKillSwitched, policyAdapter, telemetry, provider, breakerState, metrics }) {
     this._eval = evaluateAdapter;
     this._policyEval = policyAdapter ?? evaluateAdapter;
     this._reg = registry;
@@ -92,6 +102,7 @@ export class JevGateway {
     this._tel = telemetry;
     this._provider = provider;
     this._breakerState = breakerState;
+    this._metrics = metrics;
   }
 
   // Structured, allowlisted telemetry for one request. correlation_id is always
@@ -146,6 +157,7 @@ export class JevGateway {
       resolved_model: result.model ?? null, coverage, gate: 'advisory',
       latency_ms: result.latency_ms ?? null,
     });
+    this._metrics?.recordDecision({ policy: 'advisory', outcome: 'advisory', coverage, latency_ms: result.latency_ms });
     return {
       outcome: 'advisory', // advisory can never authorize a consequential action
       model: result.model,
@@ -168,6 +180,11 @@ export class JevGateway {
       throw ERR.killSwitched(`kill-switched: ${policy}`);
     }
     const spec = this._reg.resolve(policy, version);
+    const digests = policyDigests(spec);
+    // Only the policy-declared state projection crosses the provider boundary.
+    // Validation occurs after projection, so undeclared caller fields are
+    // removed rather than accidentally becoming model context.
+    const projectedState = projectPolicyState(spec, state);
 
     const questions = spec.questions; // server-owned; caller cannot supply these
     if (!questions || Object.keys(questions).length === 0) {
@@ -180,7 +197,7 @@ export class JevGateway {
       // forwarded to the provider adapter; the caller cannot override it (the
       // strict input schema rejects a model field, and the resolved model is
       // recorded on the result so drift is observable).
-      result = await deadline(this._policyEval(state, questions, { model: spec.model }), LIMITS.deadlineMs);
+      result = await deadline(this._policyEval(projectedState, questions, { model: spec.model }), LIMITS.deadlineMs);
     } catch (e) {
       // Provider failure / timeout / rate limit / auth => an explicit typed
       // denial the host can branch on, never a fabricated accept.
@@ -190,9 +207,11 @@ export class JevGateway {
         calibration_status: spec.calibration_status ?? 'unknown',
         evaluation_dataset_version: spec.evaluation_dataset_version ?? null,
         gate: 'deny', coverage: 'incomplete', error_class: 'provider', error_code: e?.code ?? 'ERR_PROVIDER',
-        breaker_state: this._breakerState?.(),
+        breaker_state: this._breakerState?.(), ...digests,
       });
-      return failClosed(spec, correlation, null, { code: e?.code ?? 'ERR_PROVIDER', message: classified(e) });
+      const failed = failClosed(spec, correlation, null, { code: e?.code ?? 'ERR_PROVIDER', message: classified(e) }, digests);
+      this._metrics?.recordDecision({ policy: spec.id, outcome: 'deny', mode: spec.mode, coverage: 'incomplete' });
+      return failed;
     }
 
     // Fail-safe: an upstream error, malformed array, or missing answer is a
@@ -207,42 +226,60 @@ export class JevGateway {
           calibration_status: spec.calibration_status ?? 'unknown',
           evaluation_dataset_version: spec.evaluation_dataset_version ?? null,
           gate: 'deny', coverage: 'incomplete', error_class: sig.category ?? 'malformed', error_code: sig.code ?? 'ERR_MISSING_ANSWER',
-          breaker_state: this._breakerState?.(),
+          breaker_state: this._breakerState?.(), ...digests,
         });
-        return failClosed(spec, correlation, result, sig);
+        const failed = failClosed(spec, correlation, result, sig, digests);
+        this._metrics?.recordDecision({ policy: spec.id, outcome: 'deny', mode: spec.mode, coverage: 'incomplete', latency_ms: result.latency_ms });
+        return failed;
       }
       // map comes from the frozen policy spec (declarative answer->outcome),
       // read once per question; the caller cannot supply or weaken it.
-      perQuestion.push({ question: id, answer: sig, confidence: confOf(questions[id], sig), map: spec.mapping?.[id] });
+      perQuestion.push({
+        question: id,
+        answer: sig,
+        confidence: confOf(questions[id], sig),
+        quality: decisionQuality(questions[id], sig),
+        map: spec.mapping?.[id],
+      });
     }
 
     const gate = composeGate(perQuestion, spec);
-    // Fail-safe (item 4): a shadow or uncalibrated policy is never trusted to
-    // auto-accept — its public outcome is capped at `review`. The raw composed
-    // gate is reported separately (shadow_outcome) for observation only.
-    const shadowOrUncal = (spec.mode ?? 'active') === 'shadow' || spec.calibration_status === 'uncalibrated';
-    const capped = shadowOrUncal && rank(gate) > rank('review');
-    const outcome = capped ? 'review' : gate;
+    const activation = applyActivation(gate, spec, correlation?.request_id);
+    const outcome = activation.outcome;
+    const shadowCapped = activation.reason === 'shadow_or_uncalibrated';
+    const capped = outcome !== gate;
     const payload = {
       event: 'apply_policy', tool: 'jev_apply_policy', correlation_id: correlationId,
       policy: spec.id, policy_version: spec.version, mode: spec.mode ?? 'active',
       calibration_status: spec.calibration_status ?? 'unknown',
       evaluation_dataset_version: spec.evaluation_dataset_version ?? null,
-      resolved_model: result.model ?? null, gate: outcome, shadow_outcome: capped ? gate : null, coverage: 'complete',
+      resolved_model: result.model ?? null, gate: outcome, shadow_outcome: shadowCapped ? gate : null, coverage: 'complete',
       latency_ms: result.latency_ms ?? null,
       error_class: null,
       breaker_state: this._breakerState?.(),
+      activation_reason: activation.reason,
+      ...digests,
     };
     this._emit(payload);
+    this._metrics?.recordDecision({ policy: spec.id, outcome, mode: spec.mode, coverage: 'complete', latency_ms: result.latency_ms });
     return {
-      outcome, // shadow/uncalibrated is capped at 'review', never 'accept'
+      outcome,
       policy: { id: spec.id, version: spec.version },
       mode: spec.mode,
       consequence: spec.consequence,
-      shadow_outcome: capped ? gate : undefined, // raw composed gate, observation only
+      shadow_outcome: shadowCapped ? gate : undefined,
+      raw_outcome: capped ? gate : undefined,
+      activation: {
+        reason: activation.reason,
+        cohort: activation.cohort,
+        rollout_percent: spec.activation.rollout_percent,
+      },
+      ...digests,
       gate_reasons: perQuestion.map((p) => ({
         question: p.question,
         confidence: round(p.confidence),
+        decision_quality: p.quality,
+        quality_level: qualityLevel(p.quality, spec.quality_thresholds),
         semantic_level: p.map ? semanticLevel(p.map, p.answer) : null,
         level: confidenceLevel(p.confidence, spec.thresholds ?? { auto: 0.9, review: 0.6 }),
       })),
@@ -256,13 +293,14 @@ export class JevGateway {
   }
 }
 
-function failClosed(spec, correlation, result, sig) {
+function failClosed(spec, correlation, result, sig, digests = policyDigests(spec)) {
   // Provider failure / malformed / incomplete coverage => never accept.
   return {
     outcome: 'deny',
     policy: { id: spec.id, version: spec.version },
     mode: spec.mode,
     consequence: spec.consequence,
+    ...digests,
     gate_reasons: [],
     coverage: 'incomplete',
     unavailable: { code: sig.code, message: sig.message },

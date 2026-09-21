@@ -131,6 +131,9 @@ test('registry: incomplete semantic mappings fail at startup instead of falling 
         evaluation_dataset_version: 'synthetic-v1',
         calibration_status: 'calibrated',
         consequence: 'advisory',
+        state_projection: ['state'],
+        state_schema: { oneOf: [{ type: 'string' }, { type: 'object', properties: { state: {} }, additionalProperties: false }] },
+        activation: { allow_outcomes: ['accept', 'review', 'escalate', 'deny'], rollout_percent: 100, salt: 'test' },
         thresholds: { auto: 0.85, review: 0.6 },
         questions: { q: { type: 'choice', instructions: 'pick', criteria: { safe: 'safe', risky: 'risky' } } },
         mapping: { q: { safe: 'accept' } },
@@ -150,6 +153,8 @@ test('composeGate: most conservative signal wins', () => {
   // consequential policy starts at escalate; a confident signal can still only reach review
   const conc = { consequence: 'irreversible', thresholds: { auto: 0.9, review: 0.6 } };
   assert.equal(composeGate([{ confidence: 0.95 }], conc), 'review');
+  const qualityPolicy = { ...policy, quality_thresholds: { min_margin: 0.4, max_entropy: 0.7 } };
+  assert.equal(composeGate([{ confidence: 0.95, quality: { margin: 0.1, entropy: 0.9, variance: null } }], qualityPolicy), 'review');
 });
 
 // --- Helpers for deterministic answer injection (item 6/7: Gate must look at
@@ -207,6 +212,30 @@ test('applyPolicy: immutable spec.model is forwarded to the adapter and recorded
   assert.deepEqual(seen, ['typesafe/jev-1.13-20260917'], 'adapter receives exactly the server-owned pinned model');
   // the caller can never override the model (strict input schema rejects it)
   await assert.rejects(() => g.applyPolicy({ policy: 'completion-claims', state: 'x', model: 'caller/forge' }), (e) => e.code === 'ERR_BAD_REQUEST');
+});
+
+test('applyPolicy: undeclared state is removed before provider egress', async () => {
+  let seen;
+  const spy = async (state, questions, opts) => {
+    seen = state;
+    return { model: opts.model, answers: { supported: { type: 'noul', noul: 1 } }, latency_ms: 1 };
+  };
+  const g = new JevGateway({ evaluateAdapter: spy, registry });
+  const r = await g.applyPolicy({
+    policy: 'completion-claims',
+    state: { claims: ['done'], evidence: 'tests pass', secret: 'must-not-egress' },
+  });
+  assert.deepEqual(seen, { claims: ['done'], evidence: 'tests pass' });
+  assert.equal(r.gate_reasons[0].decision_quality.margin, 1);
+  assert.match(r.policy_digest, /^sha256:[0-9a-f]{64}$/);
+});
+
+test('applyPolicy: state projection that leaves no policy evidence is rejected', async () => {
+  const g = gw(makeFakeAdapter(FakeMode.SUCCESS));
+  await assert.rejects(
+    () => g.applyPolicy({ policy: 'completion-claims', state: { secret_only: 'x' } }),
+    (error) => error.code === 'ERR_BAD_REQUEST' && /state/.test(error.message),
+  );
 });
 
 // --- Item 6/7: declarative Gate composition (answer semantics + confidence) ---

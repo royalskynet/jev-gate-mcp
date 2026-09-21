@@ -16,6 +16,17 @@ const CAPABILITY = [
   'jev_evaluate is advisory; jev_apply_policy runs server-owned, versioned policies.',
 ].join(' ');
 
+// Codex and other MCP clients receive this during initialize. Keep the first
+// 512 characters self-contained: clients may use that prefix while deciding
+// whether a tool belongs in context.
+export const SERVER_INSTRUCTIONS = [
+  'Use jev_evaluate only for a narrow, batched Choice/Score/Noul judgment; it is advisory.',
+  'Use jev_apply_policy for server-owned routing, content screening, action-risk, or completion-claim policies.',
+  'Send only the smallest relevant state. Never send secrets or whole files.',
+  'A non-accept outcome stops execution; MCP availability alone is not enforcement.',
+  'Do deterministic math, schema checks, authorization, planning, coding, and prose without Jev.',
+].join(' ');
+
 function wrap(gateway, method) {
   return async (args) => {
     try {
@@ -37,7 +48,10 @@ function wrap(gateway, method) {
 }
 
 export function buildServer(gateway) {
-  const server = new McpServer({ name: 'jev-gate-mcp', version: '0.1.0' });
+  const server = new McpServer(
+    { name: 'jev-gate-mcp', version: '0.1.0' },
+    { instructions: SERVER_INSTRUCTIONS },
+  );
 
   server.registerTool(
     'jev_evaluate',
@@ -45,6 +59,7 @@ export function buildServer(gateway) {
       title: 'Jev advisory evaluation',
       description:
         'Advisory, caller-defined batched Choice/Score/Noul judgments over supplied state. Returns typed answers, resolved model, usage, latency, coverage, and typed errors. Cannot authorize any action.',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       inputSchema: evaluateInputSchema,
       outputSchema: EvaluateOutputSchema,
     },
@@ -57,6 +72,7 @@ export function buildServer(gateway) {
       title: 'Jev governed policy',
       description:
         'Runs a server-owned, versioned Decision Policy. The caller supplies state only; questions, thresholds, model, and composition cannot be overridden. Returns a deterministic accept/review/escalate/deny Gate with reasons.',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       inputSchema: applyPolicyInputSchema,
       outputSchema: ApplyPolicyOutputSchema,
     },

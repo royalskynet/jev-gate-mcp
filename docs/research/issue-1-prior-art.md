@@ -1,10 +1,11 @@
 # Issue #1 Prior Art & Wheel Selection
 
 Scope: production hardening for the Jev Decision Gateway MCP (circuit breaker,
-telemetry, benchmark, tool-selection eval, drift, smoke matrix). Wheels were
-verified against stars, activity, and Node >=20 compatibility before adoption.
-Node runtime in use: v26.8.1; the declared project floor is Node >=20, so every
-adopted wheel must carry `engines` allowing ^20 (or be engine-agnostic).
+telemetry, benchmark, tool-selection eval, drift, smoke matrix). In the original
+Issue #1 phase, wheels were verified against stars, activity, and its then-current
+Node >=20 floor. The 2026-09-21 deployment extension below adopts the renamed
+Prometheus package and raises the supported production runtime to Node 22/24;
+the reference container pins Node 22.
 
 ## Circuit breaker
 
@@ -111,3 +112,22 @@ Rejected after verification: `cockatiel`, `opentelemetry-js`, `autocannon`,
 - `gh repo view nodeshift/opossum|connor4312/cockatiel|tinylibs/tinybench|simple-statistics/simple-statistics|promptfoo/promptfoo` (stars + activity)
 - opossum `main` vs `v9` `package.json` `engines` (Node20 compatibility check)
 - `npm view autocannon` (why not adopted)
+
+## 2026-09-21 deployment / decision-control extension
+
+Current stars and package activity were rechecked before adding dependencies:
+
+| concern | wheel | stars | decision |
+|---|---|---:|---|
+| JSON Schema + minimum-state validation | `ajv-validator/ajv` / `ajv@8.20` | 14,837 | Adopted. Policy-owned JSON Schema; a tiny deterministic top-level allowlist performs projection before Ajv validation and before provider egress. |
+| request rate limit | `animir/node-rate-limiter-flexible@11.2` | 3,586 | Adopted. In-memory limiter fits the single-process container; switch its store for horizontal replicas. |
+| Prometheus metrics | `prometheus/client_js` / `@prometheus-io/client@0.16` | 3,489 | Adopted current package. The former `prom-client` name is deprecated, so it was removed before commit. Current package requires Node 22/24/26+, and the production image pins Node 22. |
+| TLS / reverse proxy | `caddyserver/caddy` | 75,893 | Adopted as deployment glue: automatic HTTPS, upstream health checks, compression, security headers. Gateway remains the auth/rate/concurrency enforcement point. |
+| stable digest | third-party stringify/hash packages | <=1,474 | Rejected. Node `crypto` plus a small key-sorted JSON encoder is less supply chain for a narrow, fully tested policy digest. |
+| in-flight rejection / canary cohort | generic queues | — | Rejected. These are short safety invariants (reject, never queue; deterministic SHA-256 cohort), not general scheduling problems. |
+
+OpenTelemetry was reconsidered (~3,472 stars), but a collector/back-end is still
+not part of this repo. Prometheus metrics plus the existing Pino allowlisted
+JSONL cover immediate deployment and can be scraped/shipped by any platform.
+Adding OTel without a collector contract would add configuration surface rather
+than operational evidence.

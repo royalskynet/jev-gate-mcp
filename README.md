@@ -1,5 +1,8 @@
 # Jev Gate
 
+> 繁中：若要把 Decision Gateway 接到 Codex 或正式部署，直接看
+> [繁中上線與 Codex 快速指南](docs/zh-TW/README.md)。
+
 A Claude Code plugin that prunes long tool output with a Jev (System One)
 keep/drop judgment **before it reaches the model's context**.
 

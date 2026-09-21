@@ -182,3 +182,62 @@ error), tool-eval config validation (no key), calibration CLI fixtures
 provenance→provenance hard error, synthetic→harness-only, invalid→parse hard
 error, never mutates a policy), and the processing-overhead p95 <50ms benchmark
 (direct core + transport, deterministic no-I/O provider).
+
+## 7. HTTP production controls
+
+Loopback remains the safe default. Binding `JEV_HTTP_HOST` to a non-loopback
+address fails startup unless both `JEV_HTTP_AUTH_TOKEN_FILE` and
+`JEV_HTTP_ALLOWED_HOSTS` are configured. The token is read from a file and is
+never logged. `/mcp`, `/ready`, and `/metrics` require Bearer auth when enabled;
+`/health` exposes only `{ "status": "alive" }`.
+
+| env | default | purpose |
+|---|---:|---|
+| `JEV_HTTP_RATE_LIMIT` | 60 | requests per token/IP window |
+| `JEV_HTTP_RATE_WINDOW_SECONDS` | 60 | rate window |
+| `JEV_HTTP_MAX_IN_FLIGHT` | 16 | reject excess MCP concurrency with 503; do not queue |
+| `JEV_MAX_BODY_BYTES` | 262144 | transport body cap |
+| `JEV_HTTP_SHUTDOWN_MS` | 10000 | graceful drain deadline |
+
+`/ready` returns 503 when the provider breaker is open. `/metrics` uses bounded
+labels only. Horizontal replicas need a shared limiter store or an equivalent
+edge rate limit because the default limiter is process-local.
+
+Production reference:
+
+```sh
+docker compose --env-file deploy/.env config
+docker compose --env-file deploy/.env up -d --build
+```
+
+Caddy owns public 80/443 and automatic TLS. The gateway has no host-published
+port in Compose and runs read-only with `no-new-privileges`.
+
+## 8. State minimization, activation, and replay
+
+Each policy must declare `state_projection`, `state_schema`, and `activation`.
+The gateway copies only allowlisted top-level fields, validates the projected
+value, and sends that reduced value to the provider. Caller extras are never
+provider context.
+
+Every result includes `policy_digest` and `question_digest`; each reason also
+contains margin, normalized entropy, and Score variance. These are observation
+signals, not accuracy claims. Add policy thresholds only after target-domain
+calibration.
+
+An active/calibrated policy may accept only when `activation.allow_outcomes`
+contains `accept` and the deterministic cohort is inside `rollout_percent`.
+Canaries require a stable `correlation.request_id`; without one, accept is
+capped at review.
+
+```sh
+npm run gateway:replay
+```
+
+Replay recomposes recorded typed answers without provider I/O or original raw
+state. Digest mismatch or outcome drift is non-pass. The shipped fixture
+contains an explicit denial red line.
+
+`gateway/src/host-adapter.js` is the reference enforcement point. Its metrics
+cover workflow resolution, retry cost, and false-accept severity; callers must
+use `recordResolution` when later human/external feedback arrives.

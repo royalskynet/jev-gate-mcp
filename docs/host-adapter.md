@@ -1,5 +1,10 @@
 # Host Adapter contract
 
+Concrete reference implementation: `gateway/src/host-adapter.js`. It supports
+in-process `applyPolicy` and an initialized MCP Client (`createMcpHostAdapter`),
+maps the three lifecycle boundaries below, executes only on literal `accept`,
+and emits workflow-resolution/retry/false-accept metrics when a metrics sink is supplied.
+
 An MCP registration alone does not make a guarantee: it exposes a tool, and an
 agent can decline to call it. **Mandatory** invocation is the responsibility of
 the **Host Adapter** — integration code that maps application or agent lifecycle

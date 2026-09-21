@@ -9,6 +9,19 @@
         "calibration_status": "uncalibrated",
         "consequence": "consequential",
         "coverage": "complete",
+        "state_projection": ["action", "arguments", "authorization", "reversibility", "target"],
+        "state_schema": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 2048 },
+            {
+              "type": "object",
+              "minProperties": 1,
+              "properties": { "action": {}, "arguments": {}, "authorization": {}, "reversibility": {}, "target": {} },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "activation": { "allow_outcomes": ["review", "escalate", "deny"], "rollout_percent": 0, "salt": "proposed-action-risk-v1" },
         "thresholds": { "auto": 0.85, "review": 0.6 },
         "mapping": {
           "blast_radius": { "0": "accept", "1": "review", "2": "deny" },

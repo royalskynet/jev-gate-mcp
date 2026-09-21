@@ -22,6 +22,7 @@ const ALLOWLIST = new Set([
   'ts', 'level', 'event', 'correlation_id',
   'tool', 'provider', 'resolved_model',
   'policy', 'policy_version', 'mode', 'calibration_status', 'evaluation_dataset_version',
+  'policy_digest', 'question_digest', 'activation_reason',
   'latency_ms', 'usage_tokens_input', 'usage_tokens_output', 'estimated_cost',
   'coverage', 'gate', 'shadow_outcome', 'error_class', 'error_code', 'breaker_state',
   'eval_id', 'eval_dataset', 'eval_correct', 'eval_duration_ms',

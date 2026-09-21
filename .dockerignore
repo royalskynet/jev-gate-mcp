@@ -1,0 +1,10 @@
+.git
+.github
+.codex
+node_modules
+plugin
+hooks
+tests
+docs
+*.log
+.env*

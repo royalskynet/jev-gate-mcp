@@ -9,6 +9,19 @@
         "calibration_status": "uncalibrated",
         "consequence": "advisory",
         "coverage": "complete",
+        "state_projection": ["task", "available_handlers", "context"],
+        "state_schema": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 2048 },
+            {
+              "type": "object",
+              "minProperties": 1,
+              "properties": { "task": {}, "available_handlers": {}, "context": {} },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "activation": { "allow_outcomes": ["review", "escalate", "deny"], "rollout_percent": 0, "salt": "intent-routing-v1" },
         "thresholds": { "auto": 0.85, "review": 0.6 },
         "mapping": {
           "target": { "main": "accept", "deep": "accept", "review": "review", "no_match": "escalate" }

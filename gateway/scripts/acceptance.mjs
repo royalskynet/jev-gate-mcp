@@ -13,6 +13,7 @@ import { benchCore, benchTransport } from '../lib/bench.mjs';
 import { buildDataset, validateEvalConfig } from './tool-eval.mjs';
 import { driftReport } from '../lib/evalkit.mjs';
 import { runCalibration } from './calibrate.mjs';
+import { runDecisionReplay } from '../lib/replay.mjs';
 
 const LIMIT_MS = 50;
 let failed = false;
@@ -86,6 +87,16 @@ const fail = (m) => { failed = true; process.stderr.write('ACCEPTANCE FAIL: ' + 
 }
 
 // --- 9. processing-overhead benchmark ---
+// --- 8. deterministic decision replay (digest + one red-line denial) ---
+{
+  const fs = await import('node:fs');
+  const records = JSON.parse(fs.readFileSync(new URL('../fixtures/replay-baseline.json', import.meta.url), 'utf8'));
+  const replay = await runDecisionReplay({ registry: loadRegistry(), records });
+  if (replay.status !== 'pass') fail('decision replay: ' + JSON.stringify(replay.results.filter((row) => !row.pass)));
+  if (!replay.results.some((row) => row.actual_outcome === 'deny')) fail('decision replay: red-line denial missing');
+}
+
+// --- 9. processing-overhead benchmark ---
 {
   const core = await benchCore(300, 40);
   const transport = await benchTransport(150, 20);
@@ -97,4 +108,4 @@ if (failed) {
   process.stderr.write('gateway acceptance: FAIL\n');
   process.exit(1);
 }
-process.stderr.write('gateway acceptance: OK (eval, drift, tool-eval config, bench offline)\n');
+process.stderr.write('gateway acceptance: OK (eval, drift, replay, tool-eval config, bench offline)\n');

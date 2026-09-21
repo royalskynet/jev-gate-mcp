@@ -1,0 +1,20 @@
+# Codex 專案級 MCP 設定；repo 被標記 trusted 後生效。
+# 只暴露兩個 read-only 判斷工具，並限制單次工具輸出，避免工具描述與結果膨脹 context。
+[mcp_servers.jev_gate]
+command = "node"
+args = ["gateway/src/stdio.js"]
+cwd = "."
+enabled = true
+required = false
+enabled_tools = ["jev_evaluate", "jev_apply_policy"]
+default_tools_approval_mode = "approve"
+startup_timeout_sec = 10
+tool_timeout_sec = 20
+
+[mcp_servers.jev_gate.tools.jev_evaluate]
+approval_mode = "approve"
+output_token_limit = 1800
+
+[mcp_servers.jev_gate.tools.jev_apply_policy]
+approval_mode = "approve"
+output_token_limit = 1400

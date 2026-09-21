@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ERR } from './core.js';
+import { validateStateSchema } from './policy-controls.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const GATES = new Set(['accept', 'review', 'escalate', 'deny']);
@@ -68,6 +69,37 @@ function validatePolicyVersion(id, v) {
     throw new Error(`policy ${id}@${v.version}: active policy must be calibrated (uncalibrated cannot auto-accept)`);
   }
   if (typeof v.consequence !== 'string' || v.consequence === '') throw new Error(`policy ${id}@${v.version}: consequence required`);
+  if (!v.state_schema || typeof v.state_schema !== 'object') throw new Error(`policy ${id}@${v.version}: state_schema required`);
+  try { validateStateSchema(v.state_schema); } catch (e) {
+    throw new Error(`policy ${id}@${v.version}: invalid state_schema: ${e.message}`);
+  }
+  if (!Array.isArray(v.state_projection) || v.state_projection.length === 0 || v.state_projection.some((x) => typeof x !== 'string' || x === '')) {
+    throw new Error(`policy ${id}@${v.version}: non-empty state_projection required`);
+  }
+  if (new Set(v.state_projection).size !== v.state_projection.length) throw new Error(`policy ${id}@${v.version}: state_projection contains duplicates`);
+  const activation = v.activation;
+  if (!activation || !Number.isFinite(activation.rollout_percent) || activation.rollout_percent < 0 || activation.rollout_percent > 100) {
+    throw new Error(`policy ${id}@${v.version}: activation.rollout_percent must be 0..100`);
+  }
+  if (!Array.isArray(activation.allow_outcomes) || activation.allow_outcomes.some((gate) => !GATES.has(gate))) {
+    throw new Error(`policy ${id}@${v.version}: activation.allow_outcomes contains an invalid Gate`);
+  }
+  if (typeof activation.salt !== 'string' || activation.salt.length < 1) throw new Error(`policy ${id}@${v.version}: activation.salt required`);
+  if (v.quality_thresholds != null) {
+    const { min_margin, max_entropy, max_variance } = v.quality_thresholds;
+    if (min_margin != null && (!Number.isFinite(min_margin) || min_margin < 0 || min_margin > 1)) {
+      throw new Error(`policy ${id}@${v.version}: quality_thresholds.min_margin must be 0..1`);
+    }
+    if (max_entropy != null && (!Number.isFinite(max_entropy) || max_entropy < 0 || max_entropy > 1)) {
+      throw new Error(`policy ${id}@${v.version}: quality_thresholds.max_entropy must be 0..1`);
+    }
+    if (max_variance != null && (!Number.isFinite(max_variance) || max_variance < 0)) {
+      throw new Error(`policy ${id}@${v.version}: quality_thresholds.max_variance must be >= 0`);
+    }
+    if ([min_margin, max_entropy, max_variance].every((x) => x == null)) {
+      throw new Error(`policy ${id}@${v.version}: quality_thresholds must declare at least one threshold`);
+    }
+  }
   const { auto, review } = v.thresholds ?? {};
   if (![auto, review].every((x) => Number.isFinite(x) && x >= 0 && x <= 1) || review > auto) {
     throw new Error(`policy ${id}@${v.version}: thresholds must satisfy 0 <= review <= auto <= 1`);

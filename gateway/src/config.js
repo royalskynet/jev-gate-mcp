@@ -9,6 +9,7 @@ import { makeFakeAdapter, FakeMode, makeOpenrouterAdapter, makeTypesafeAdapter }
 import { JevGateway } from './gateway.js';
 import { makeBreaker } from './breaker.js';
 import { makeTelemetry } from './telemetry.js';
+import { makeMetrics } from './metrics.js';
 
 export const DEFAULTS = Object.freeze({
   provider: process.env.JEV_PROVIDER ?? 'openrouter',
@@ -69,6 +70,7 @@ export function buildGateway(cfg = {}) {
   const telemetry = cfg.telemetry
     ? makeTelemetry({ level: cfg.telemetryLevel, destination: process.stderr })
     : undefined;
+  const metrics = cfg.metrics ?? makeMetrics();
   const gw = new JevGateway({
     evaluateAdapter: breaker.fire,
     policyAdapter: breaker.fire,
@@ -76,9 +78,18 @@ export function buildGateway(cfg = {}) {
     telemetry,
     provider: cfg.provider,
     breakerState: breaker.state,
+    metrics,
   });
   // Wire a global control handle for operators/admins via env at startup.
-  return { gateway: gw, registry, cfg, breaker, telemetry };
+  return {
+    gateway: gw, registry, cfg, breaker, telemetry, metrics,
+    readiness: () => ({
+      ready: breaker.state() !== 'open',
+      provider: cfg.provider,
+      breaker_state: breaker.state(),
+      policy_count: registry.ids().length,
+    }),
+  };
 }
 
 export { FakeMode };

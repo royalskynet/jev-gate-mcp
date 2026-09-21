@@ -12,6 +12,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { buildGateway } from '../src/config.js';
 import { createHttpServer } from '../src/http.js';
+import { SERVER_INSTRUCTIONS } from '../src/server.js';
 
 const root = fileURLToPath(new URL('../src/', import.meta.url));
 
@@ -97,7 +98,10 @@ test('conformance: server advertises exactly two tools with outputSchema', async
   assert.deepEqual(tools.map((x) => x.name).sort(), ['jev_apply_policy', 'jev_evaluate']);
   for (const tool of tools) {
     assert.ok(tool.outputSchema, `${tool.name} must advertise outputSchema`);
+    assert.equal(tool.annotations?.readOnlyHint, true);
+    assert.equal(tool.annotations?.destructiveHint, false);
   }
+  assert.ok(SERVER_INSTRUCTIONS.length < 512, 'critical Codex instructions must fit the first 512 chars');
 });
 
 test('http: /health answers 200, unknown path answers 404', async (t) => {
@@ -144,6 +148,42 @@ test('http: non-localhost Host and Origin are rejected 403', async (t) => {
     'content-length': String(Buffer.byteLength(JSON.stringify(SUITE[1].args))),
   }, JSON.stringify(SUITE[1].args));
   assert.notEqual(okOrigin, 403, 'request without Origin must pass the guard');
+});
+
+test('http: auth protects ready/metrics while health stays secret-free', async (t) => {
+  const { server, port } = await createHttpServer({
+    authToken: 'test-bearer-token',
+    gatewayFactory: () => buildGateway({ provider: 'fake', telemetry: false }).gateway,
+  });
+  t.after(() => new Promise((r) => server.close(r)));
+  const base = `http://127.0.0.1:${port}`;
+  assert.deepEqual(await (await fetch(`${base}/health`)).json(), { status: 'alive' });
+  assert.equal((await fetch(`${base}/ready`)).status, 401);
+  const headers = { authorization: 'Bearer test-bearer-token' };
+  assert.equal((await fetch(`${base}/ready`, { headers })).status, 200);
+  const metrics = await fetch(`${base}/metrics`, { headers });
+  assert.equal(metrics.status, 200);
+  assert.match(await metrics.text(), /jev_http_requests_total/);
+});
+
+test('http: rate limit rejects excess protected requests with 429', async (t) => {
+  const { server, port } = await createHttpServer({
+    rateLimit: 1,
+    authToken: 'rate-token',
+    gatewayFactory: () => buildGateway({ provider: 'fake', telemetry: false }).gateway,
+  });
+  t.after(() => new Promise((r) => server.close(r)));
+  const opts = { headers: { authorization: 'Bearer rate-token' } };
+  assert.equal((await fetch(`http://127.0.0.1:${port}/ready`, opts)).status, 200);
+  const limited = await fetch(`http://127.0.0.1:${port}/metrics`, opts);
+  assert.equal(limited.status, 429);
+  assert.ok(Number(limited.headers.get('retry-after')) >= 1);
+});
+
+test('http: non-loopback bind fails loud without auth and explicit hosts', () => {
+  assert.throws(() => createHttpServer({ host: '0.0.0.0' }), /requires JEV_HTTP_AUTH_TOKEN_FILE/);
+  assert.throws(() => createHttpServer({ host: '0.0.0.0', authToken: 'x' }), /at least 32 characters/);
+  assert.throws(() => createHttpServer({ host: '0.0.0.0', authToken: 'x'.repeat(32) }), /requires JEV_HTTP_ALLOWED_HOSTS/);
 });
 
 /** Issue a raw request so Host/Origin headers can be set arbitrarily. */

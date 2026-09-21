@@ -1,10 +1,14 @@
 # Jev Decision Gateway MCP (v2)
 
+繁中快速上手、Codex 設定、Docker/Caddy 上線與 policy 啟用流程：
+[`docs/zh-TW/README.md`](../docs/zh-TW/README.md)。
+
 A governed MCP server exposing **exactly two tools** over the same Gateway Core,
 served by both **stdio** and **Streamable HTTP**, built on the official
 `modelcontextprotocol/typescript-sdk` **v2** (`@modelcontextprotocol/server`,
 `@modelcontextprotocol/node`, `@modelcontextprotocol/client`; the legacy
-monolithic SDK package is not used). Schemas use **Zod v4**; requires **Node >= 20**.
+monolithic SDK package is not used). Schemas use **Zod v4**; production runtime
+is **Node 22 or 24** (the container pins Node 22).
 
 - `jev_evaluate` — advisory, caller-defined batched Choice/Score/Noul judgments. Cannot authorize any action.
 - `jev_apply_policy` — server-owned, versioned Decision Policy returning a deterministic `accept`/`review`/`escalate`/`deny` Gate. The caller supplies state only.
@@ -21,7 +25,10 @@ monolithic SDK package is not used). Schemas use **Zod v4**; requires **Node >= 
 | `src/server.js` | v2 `McpServer` tool surface (`outputSchema` + `structuredContent`) |
 | `src/config.js` | deployment wiring and provider/keys |
 | `src/stdio.js` | v2 `serveStdio(factory)` entry |
-| `src/http.js` | v2 `createMcpHandler` + Node adapter: `/mcp` only, `/health`, Host/Origin guards, body limit |
+| `src/http.js` | `/mcp` transport + auth, Host/Origin guards, limits, readiness, metrics, graceful drain |
+| `src/policy-controls.js` | state projection/schema, digests, quality signals, deterministic canary |
+| `src/host-adapter.js` | concrete lifecycle enforcement for in-process or MCP clients |
+| `src/metrics.js` | low-cardinality Prometheus decision/HTTP/workflow metrics |
 | `policies/*.json` | the four starter Policy Packs (data, not code) |
 | `test/` | unit, conformance (stdio+HTTP equivalence, edge guards), opt-in smoke |
 
@@ -64,11 +71,20 @@ cannot override it — the strict input schema rejects any model field.
 
 ## HTTP surface
 
-`src/http.js` mounts **only `/mcp`** (other paths → 404) and answers **`/health`**
-(200, no provider round-trip, no secrets). In front of the handler it applies
-the official `localhost` **Host/Origin guards** (DNS rebinding protection → 403)
-and a transport-level **request body limit** (→ 413). The same Gateway Core
-serves stdio and HTTP.
+`src/http.js` mounts `/mcp` plus operational `/health`, `/ready`, and `/metrics`
+(other paths → 404). It applies official SDK Host/Origin guards, Bearer auth,
+request-body/rate/in-flight limits, and graceful signal-driven draining. A
+non-loopback bind refuses startup without auth and an explicit host allowlist.
+The same Gateway Core serves stdio and HTTP. Caddy/Docker production assets are
+at repo root; see the Traditional Chinese deployment guide linked above.
+
+## Codex
+
+Project-scoped `.codex/config.toml` starts the stdio server and enables exactly
+the two read-only tools with bounded output-token budgets. The server advertises
+short initialization instructions so Codex can decide when *not* to spend a
+tool call. Remote Codex clients can connect to the HTTPS `/mcp` endpoint with
+`bearer_token_env_var`.
 
 ## Run
 
@@ -94,6 +110,7 @@ node gateway/scripts/eval.mjs                 # per-policy eval report (no key)
 node gateway/scripts/drift.mjs <base.json> <current.json>   # drift report
 node gateway/scripts/bench.mjs                # processing-overhead p95 benchmark
 node gateway/scripts/calibrate.mjs <external-labels.jsonl>  # calibration report; EXTERNAL labels only, never mutates a policy or marks it calibrated
+npm run gateway:replay                        # digest + safe/red-line deterministic replay
 ```
 
 Calibration input accepts a single JSON object (`{ samples, ...provenance }`), a

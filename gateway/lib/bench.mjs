@@ -60,7 +60,12 @@ export async function benchTransport(n, warmup) {
   const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/client');
   const { createHttpServer } = await import('../src/http.js');
   const { buildGateway } = await import('../src/config.js');
-  const http = await createHttpServer({ gatewayFactory: () => buildGateway({ provider: 'fake', telemetry: false }).gateway });
+  // Keep production middleware in the path, but raise its quota so the
+  // benchmark measures request overhead rather than intentionally tripping 429.
+  const http = await createHttpServer({
+    rateLimit: (n ?? 200) + (warmup ?? 30) + 10,
+    gatewayFactory: () => buildGateway({ provider: 'fake', telemetry: false }).gateway,
+  });
   const client = new Client({ name: 'bench', version: '0' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${http.port}/mcp`)));
   try {
