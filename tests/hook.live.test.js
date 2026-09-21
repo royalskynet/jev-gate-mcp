@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { CONFIG, TARGETS, TARGET_NAMES, judgeChunk, pruneText, register, userRequestOf } from '../hooks/jev.js';
+import { CONFIG, TARGETS, TARGET_NAMES, appendLedger, judgeChunk, pruneText, register, userRequestOf } from '../hooks/jev.js';
 
 // The hook module carries its own wire code (it runs with no Node, so it cannot
 // share plugin/lib/judge.js). That duplicate is exactly where a wrong model id
@@ -138,4 +138,54 @@ test('pruneText fails open when the judge throws', async () => {
   const { kept, droppedLines } = await pruneText(text, async () => { throw new Error('boom'); });
   assert.equal(kept, text);
   assert.equal(droppedLines, 0);
+});
+
+// --- ledger observability regression (the path that stayed silent in §5.3) ---
+
+/** A `$` with a working clock.now and an in-memory ledger, so appendLedger is
+ * deterministic without touching the real file or the live provider. */
+function ledgerHost(seed = '') {
+  const writes = [];
+  const $ = {
+    clock: { now: async () => Date.parse('2026-09-21T00:00:00.000Z') },
+    fs: {
+      read: async () => seed,
+      write: async (path, text) => { assert.equal(path, '/Users/51mini/.openclaw/state/jev-prune.log'); writes.push(text); },
+    },
+  };
+  return { $, writes };
+}
+
+test('appendLedger records an ISO-timestamped line for every judged outcome', async () => {
+  const { $, writes } = ledgerHost('2026-09-21T00:00:00.000Z\tOLD line\n');
+  await appendLedger($, 'jev-prune(Bash): 100 → 40 chars, 60 lines dropped');
+  assert.equal(writes.length, 1);
+  // previous content is preserved, then an ISO `\t` line is appended
+  assert.ok(writes[0].startsWith('2026-09-21T00:00:00.000Z\tOLD line\n'),
+    'ledger must append, not replace');
+  assert.ok(/^2026-09-21T00:00:00\.000Z\tjev-prune\(Bash\): /.test(writes[0].split('\n')[1]),
+    'new line must be ISO-timestamped with a jev-prune(Bash) token');
+});
+
+test('appendLedger never throws: a broken ledger cannot break its caller', async () => {
+  const $ = {
+    clock: { now: async () => { throw new Error('clock dead'); } },
+    fs: { read: async () => { throw new Error('ENOENT'); }, write: async () => { throw new Error('EACCES'); } },
+  };
+  await assert.doesNotReject(appendLedger($, 'jev-prune(Grep): 100 → 100 chars, 0 lines dropped'));
+});
+
+test('live: a real drop writes a ledger-style line', { skip: !hasKey && 'no api key' }, async () => {
+  // Same live Bash prune as above, but with a full host (clock + fs.write) so
+  // the ledger path is exercised end to end, not just the prune logic.
+  const $ = makeHost();
+  $.__writes = [];
+  $.clock = { now: async () => Date.now() };
+  $.fs.write = async (path, text) => { if (path === '/Users/51mini/.openclaw/state/jev-prune.log') $.__writes.push(text); };
+  const out = noisyLog();
+  const core = { ref: 7, text: out, result: { stdout: out, stderr: '', interrupted: false } };
+  const r = await hooksByTool().Bash($, { tool: 'Bash', command: 'run-app' }, async () => core);
+  assert.ok(r.result.stdout.length < out.length, `expected pruning, got ${r.result.stdout.length}/${out.length}`);
+  assert.ok($.__writes.length >= 1, 'a drop must write at least one ledger line');
+  assert.match($.__writes.at(-1), /jev-prune\(Bash\): /, 'ledger line must carry the jev-prune(Bash) token');
 });
