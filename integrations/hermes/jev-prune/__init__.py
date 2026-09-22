@@ -107,18 +107,17 @@ def prune_text(tool: str, request: str, text: str, run=None) -> Dict[str, Any]:
 def _request_of(kwargs: Dict[str, Any]) -> str:
     """The user's request, or "" — and "" means the judge declines, not that it guesses.
 
-    Hermes' real call sites (``model_tools.handle_function_call``,
-    ``agent_runtime_helpers._execute``) pass ``original_args`` plus the id fields and
-    nothing else, so today this returns "" in production and the shared judge answers
-    ``no-request``. The tool's own arguments used to stand in here. They are not a
-    substitute: judged for relevance against ``cat log``, a 40 KB file the task was
-    entirely about came back 99.8% dropped (DEVLOG §22.3).
+    ``run_tool_execution_middleware`` binds ``user_request`` from the turn the tool call
+    belongs to. It is ``user_request`` and not ``request`` because ``_run_execution_chain``
+    treats a ``request`` kwarg as the execution PAYLOAD — a middleware chain carrying one
+    would dispatch the tool with the request string in place of its arguments.
 
-    ``request`` is read anyway because ``run_tool_execution_middleware`` forwards its
-    ``**context`` verbatim — the day a Hermes call site passes one, pruning starts
-    working with no change here.
+    "" happens: a subagent thread starts with an empty context, and an older Hermes has no
+    binding at all. Both must decline. The tool's own arguments used to stand in here and
+    they are not a substitute: judged for relevance against ``cat log``, a 40 KB file the
+    task was entirely about came back 99.8% dropped (DEVLOG §22.3).
     """
-    value = kwargs.get("request")
+    value = kwargs.get("user_request")
     return value.strip()[:2000] if isinstance(value, str) and value.strip() else ""
 
 
@@ -180,7 +179,7 @@ def _selfcheck() -> None:
     )
 
     # a bare-string terminal result is replaced by the pruned text
-    assert _prune_result("terminal", {"request": "r"}, big, run=lambda _p: _Proc(dropped)) == (
+    assert _prune_result("terminal", {"user_request": "r"}, big, run=lambda _p: _Proc(dropped)) == (
         "[jev-prune: dropped 1 lines]"
     )
     # a dict result keeps its shape, only the text field changes
@@ -194,8 +193,11 @@ def _selfcheck() -> None:
     kept = json.dumps({"text": big, "dropped_lines": 0, "judged": True, "reason": "judged"})
     assert _prune_result("terminal", {}, big, run=lambda _p: _Proc(kept)) is big
     # the request comes from the middleware context, never from the tool arguments
-    assert _request_of({"request": "why is the worker slow?"}) == "why is the worker slow?"
+    assert _request_of({"user_request": "why is the worker slow?"}) == "why is the worker slow?"
     assert _request_of({"args": {"command": "ls -la"}}) == ""
+    # `request` is the execution payload key, not the user's request: reading it would
+    # both miss the real binding and couple this plugin to a kwarg that breaks dispatch
+    assert _request_of({"request": {"command": "ls -la"}}) == ""
     print("jev-prune selfcheck OK")
 
 

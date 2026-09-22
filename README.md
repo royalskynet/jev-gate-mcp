@@ -57,7 +57,12 @@ measured to be wrong:
   task, so with no task there is nothing to judge against and `pruneCommand`
   answers `no-request` instead of guessing. The Hermes middleware used to pass
   the tool's own shell command as a stand-in; judged against `cat log`, a 40 KB
-  file the task was entirely about came back 99.8% dropped.
+  file the task was entirely about came back 99.8% dropped. Hermes now binds the
+  turn's real request into the middleware context as `user_request` — not
+  `request`, which `_run_execution_chain` treats as the dispatch *payload*, so a
+  `request=` kwarg would hand the tool the user's sentence in place of its
+  arguments. A subagent thread starts with an empty context and therefore
+  declines rather than judging against the main agent's task.
 * **Keyword veto** (`vetoOnTerms`). A `drop` is held as `unsure` when the chunk
   carries a *discriminating* term from the request — one that some but not all
   chunks contain. A term every chunk shares says nothing about which to keep, so
@@ -67,17 +72,39 @@ measured to be wrong:
 
 | tool | field pruned | threshold | criteria drop |
 |---|---|---|---|
-| `Bash` | `stdout` | 4,000 chars | noise, boilerplate, anything off-task |
-| `Grep` | `content` (content mode) | 4,000 chars | matches from vendored, generated or fixture files |
-| `Read` | `file.content` (text branch) | 12,000 chars | mechanical bulk only — minified code, base64, lock bodies |
+| `Bash` | `stdout` | 16,000 chars | noise, boilerplate, anything off-task |
+| `Grep` | `content` (content mode) | 16,000 chars | matches from vendored, generated or fixture files |
+| `Read` | `file.content` (text branch) | 16,000 chars | mechanical bulk only — minified code, base64, lock bodies |
 
-Read is the cautious one on purpose: a Bash or Grep result is a *report about*
-files, but a Read result *is* the file the model asked for by name, so its
-criteria drop only bulk that carries no meaning to read, and say "when in doubt,
-keep". Its threshold is 12,000 rather than something larger because core
-token-caps a Read before the hook sees it — measured, 8,000 chars delivered for
-a 207 KB log and 16,571 for a 114 KB base64 blob. A threshold above that cap is
-a hook that can never fire, and fail-open would hide it.
+Every threshold is `CONFIG.chunkChars`, and that is the ledger's verdict rather
+than a tidy number. `~/.openclaw/state/jev-prune.log` holds 19 real prune calls
+on this machine: **one** of them dropped anything — a 44 KB Bash dump that
+produced all 28,015 saved chars — and the other 18, including three Reads of
+12-13 KB, dropped nothing at all. Below one chunk the judge is asked to drop the
+whole output or keep it, and an output that fits in one chunk usually does hold
+the answer, so `keep` is the right answer. Replaying those real sizes:
+
+| threshold | calls | chars saved |
+|---|---|---|
+| 4,000 | 19 | 28,015 |
+| 12,000 | 8 | 28,015 |
+| **16,000** | **3** | **28,015** |
+| 32,000 | 1 | 28,015 |
+
+16,000 cuts Jev calls by 84% for 0% of the measured savings. 32,000 costs no
+more on this corpus but is one call wide — no margin the day output lands
+between the two — so the threshold sits on the structural boundary instead: one
+chunk is the smallest output in which a partial drop can exist.
+`tests/jev.test.mjs` pins `thresholdChars >= chunkChars`.
+
+Read is still the cautious one: a Bash or Grep result is a *report about* files,
+but a Read result *is* the file the model asked for by name, so its criteria
+drop only bulk that carries no meaning to read, and say "when in doubt, keep".
+It now lives in a thin band, squeezed from both sides by measurement — at least
+one chunk below, and core's own token cap above (measured delivery: 8,000 chars
+for a 207 KB log, 16,571 for a 114 KB base64 blob). A threshold above that cap
+is a hook that can never fire, and fail-open would hide it, so
+`tests/hook.live.test.js` pins both edges.
 
 What the model actually received, measured end to end in a real session:
 

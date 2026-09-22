@@ -16,6 +16,11 @@ import path from 'node:path';
 
 import { pruneCommand } from '../agent-glue/src/prune.js';
 import ocPlugin, { decideTurn, DEFAULT_CHEAP, DEFAULT_MIN_CHARS } from '../integrations/openclaw/index.mjs';
+import { TARGETS } from '../hooks/jev.js';
+
+// Sized off the live threshold, not a literal: raising `thresholdChars` used to
+// turn these fixtures into `below-threshold` passes that still went green.
+const BIG = TARGETS.Bash.thresholdChars + 1000;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -33,7 +38,7 @@ test('prune: below threshold passes through verbatim, without a judge', async ()
 
 test('prune: a drop verdict replaces the chunk with a visible marker', async () => {
   const text = Array.from({ length: 400 }, (_, i) => `line ${i} ${'y'.repeat(40)}`).join('\n');
-  assert.ok(text.length > 4000, 'fixture must clear the Bash threshold');
+  assert.ok(text.length > TARGETS.Bash.thresholdChars, 'fixture must clear the Bash threshold');
   const r = await pruneCommand(
     { tool: 'Bash', request: 'why is it slow?', text },
     { key: 'k', judge: async (chunks) => chunks.map(() => 'drop') },
@@ -51,17 +56,17 @@ test('prune: no request means no prune, not a prune against a stand-in', async (
   // without one there is nothing to judge against — refuse, never guess.
   let judged = false;
   const r = await pruneCommand(
-    { tool: 'Bash', text: 'x'.repeat(9000) },
+    { tool: 'Bash', text: 'x'.repeat(BIG) },
     { key: 'k', judge: async (chunks) => { judged = true; return chunks.map(() => 'drop'); } },
   );
   assert.equal(r.reason, 'no-request');
   assert.equal(r.judged, false);
-  assert.equal(r.text.length, 9000);
+  assert.equal(r.text.length, BIG);
   assert.equal(judged, false, 'no request must not spend a Jev request either');
 });
 
 test('prune: a throwing judge keeps the output (fail-open)', async () => {
-  const text = 'z'.repeat(9000);
+  const text = 'z'.repeat(BIG);
   const r = await pruneCommand(
     { tool: 'Bash', request: 'why is it slow?', text },
     { key: 'k', judge: async () => { throw new Error('boom'); } },

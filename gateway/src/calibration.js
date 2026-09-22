@@ -30,6 +30,11 @@ export function calibrationPath(env = process.env) {
   return v || DEFAULT_CALIBRATION_LOG;
 }
 
+/** Fixture-produced, by either channel the fake adapter stamps. */
+function isFakeSample(sample) {
+  return sample?.provider === 'fake' || String(sample?.model ?? '').startsWith('fake/');
+}
+
 /**
  * Append one decision sample as a JSONL line. Never throws: a corpus write must
  * not be able to fail a decision.
@@ -44,6 +49,16 @@ export function calibrationPath(env = process.env) {
  */
 export function recordSample(sample, path = calibrationPath()) {
   if (!path) return false;
+  // A fake adapter's answers are its fixtures read back, so they are evidence
+  // about the fixtures and not about the model — yet they land in the same file
+  // and outvote real traffic by orders of magnitude. `gateway/lib/bench.mjs`
+  // wrote 10,200 `fake/jev-1.13` samples into the live corpus, 1,615 of them in
+  // one minute, against 1,553 real ones; calibrating on that file would have
+  // been calibrating on the fixtures. Only the DEFAULT sink is protected: a
+  // named path is somebody deliberately collecting (harness tests do exactly
+  // that), while the default is the live evidence corpus and nothing should be
+  // able to seed it by forgetting an env var.
+  if (path === DEFAULT_CALIBRATION_LOG && isFakeSample(sample)) return false;
   try {
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify({ ...sample, label: null })}\n`);

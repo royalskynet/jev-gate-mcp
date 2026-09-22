@@ -14,16 +14,33 @@ import { FakeMode, makeFakeAdapter } from '../src/adapters.js';
 import { JevGateway } from '../src/gateway.js';
 import { loadRegistry } from '../src/registry.js';
 
-const sample = (gate) => ({
+const sample = (gate, over = {}) => ({
   policy: 'completion-claims',
   policy_version: 1,
-  model: 'fake/jev-1.13',
-  provider: 'fake',
+  model: 'typesafe/jev-1.13',
+  provider: 'openrouter',
   dataset_version: 'synthetic-harness-claims-v1',
   gate,
   coverage: 'complete',
   confidence: 0.8,
   state: { claims: 'done', evidence: 'none' },
+  ...over,
+});
+
+test('corpus: a fake adapter\'s answers never enter the corpus', () => {
+  // The bench harness drives the FakeMode adapter and wrote 10,200 samples into
+  // the live sink against 1,553 real ones — calibrating on that file would be
+  // calibrating on the fixtures. The sink refuses them, so no harness has to
+  // remember an env var.
+  // Refused for the live sink only, so nothing here can write to the real file.
+  assert.equal(recordSample(sample('review', { provider: 'fake' }), DEFAULT_CALIBRATION_LOG), false);
+  assert.equal(
+    recordSample(sample('review', { provider: 'unknown', model: 'fake/jev-1.13' }), DEFAULT_CALIBRATION_LOG),
+    false,
+  );
+  // A named path is a deliberate collection — harness tests below rely on it.
+  const path = join(mkdtempSync(join(tmpdir(), 'jev-corpus-')), 'corpus.jsonl');
+  assert.equal(recordSample(sample('review', { provider: 'fake' }), path), true);
 });
 
 test('corpus: the sink ships on, and `off` is the only way to stop it', () => {

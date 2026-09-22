@@ -49,7 +49,11 @@ confidence 0.25——門檻掛 confidence 會否決掉每一個真 drop，看起
 * **沒有 request 就不剪。** 每一條 criteria 都是相對使用者的任務寫的，沒有任務就
   沒有判斷基準，`pruneCommand` 回 `no-request` 而不是用猜的。Hermes middleware 以前
   拿 tool 自己的 shell 指令頂替：用 `cat log` 當基準去判，一個整個任務都在講它的
-  40 KB 檔案被判 99.8% 該丟。
+  40 KB 檔案被判 99.8% 該丟。現在 Hermes 會把該回合真正的請求綁進 middleware
+  context，欄位叫 `user_request`——不是 `request`，因為 `_run_execution_chain` 把
+  `request` kwarg 當成 dispatch **payload**，傳 `request=` 會讓 tool 拿到使用者那
+  句話去當參數。子代理執行緒的 context 是空的，於是拒判，而不是拿主代理的任務當
+  基準去剪。
 * **關鍵字否決**（`vetoOnTerms`）。塊裡含有請求中**有鑑別力**的詞——有些塊有、不是
   每塊都有——就把 `drop` 壓成 `unsure`。每塊都有的詞說不出該留哪塊，忽略；只有一塊
   時任何命中都算。這條專治模型唯一可重現的盲點（問「哪幾個 commit 改過這條路徑」，
@@ -57,16 +61,34 @@ confidence 0.25——門檻掛 confidence 會否決掉每一個真 drop，看起
 
 | 工具 | 剪哪個欄位 | 門檻 | drop 準則 |
 |---|---|---|---|
-| `Bash` | `stdout` | 4,000 字元 | 雜訊、樣板、與任務無關的東西 |
-| `Grep` | `content`（content mode） | 4,000 字元 | vendored／generated／fixture 檔案的命中 |
-| `Read` | `file.content`（text 分支） | 12,000 字元 | 只剪機械性堆量——minified code、base64、lock 檔內容 |
+| `Bash` | `stdout` | 16,000 字元 | 雜訊、樣板、與任務無關的東西 |
+| `Grep` | `content`（content mode） | 16,000 字元 | vendored／generated／fixture 檔案的命中 |
+| `Read` | `file.content`（text 分支） | 16,000 字元 | 只剪機械性堆量——minified code、base64、lock 檔內容 |
 
-Read 故意最保守：Bash 或 Grep 的結果是**關於**檔案的報告，而 Read 的結果
+三個門檻都是 `CONFIG.chunkChars`，這是 ledger 量出來的，不是湊整數。
+`~/.openclaw/state/jev-prune.log` 有 19 次真實呼叫，其中**只有 1 次**剪掉東西
+——一包 44 KB 的 Bash 輸出，省下全部 28,015 字元；其餘 18 次（含三次 12–13 KB 的
+Read）一行都沒剪。低於一個 chunk 時，題目變成「整包丟掉還是整包留著」，而塞得進
+一個 chunk 的輸出通常就是有答案，判 keep 是對的。拿那些真實大小重跑：
+
+| 門檻 | 呼叫次數 | 省下字元 |
+|---|---|---|
+| 4,000 | 19 | 28,015 |
+| 12,000 | 8 | 28,015 |
+| **16,000** | **3** | **28,015** |
+| 32,000 | 1 | 28,015 |
+
+16,000 換到的是 Jev 呼叫 −84%、實測節省 −0%。32,000 在這份語料上一樣省，但它
+只有一次呼叫寬，沒有 margin——下次輸出落在 16–32 KB 就整個失效；所以門檻放在
+**結構邊界**：一個 chunk 是「部分丟棄」這件事能存在的最小單位。
+`tests/jev.test.mjs` 釘住 `thresholdChars >= chunkChars`。
+
+Read 仍然最保守：Bash 或 Grep 的結果是**關於**檔案的報告，而 Read 的結果
 **就是**模型指名要的那個檔案，所以它的 drop 準則只剪讀起來沒有意義的堆量，
-並明寫「不確定就留」。門檻設 12,000 而不是更大，是因為 core 在 hook 看到之前
-就已經對 Read 做 token cap——實測 207 KB 的 log 只送到 8,000 字元、114 KB 的
-base64 送到 16,571。門檻若高過那個 cap，就是一個永遠不會觸發的 hook，而
-fail-open 會把這件事藏起來。
+並明寫「不確定就留」。它現在被兩邊夾成一條窄帶：下限是一個 chunk，上限是 core
+自己的 token cap——實測 207 KB 的 log 只送到 8,000 字元、114 KB 的 base64 送到
+16,571。門檻若高過那個 cap，就是一個永遠不會觸發的 hook，而 fail-open 會把這件事
+藏起來，所以 `tests/hook.live.test.js` 兩個邊界都釘。
 
 模型實際收到多少，真實 session 端到端量測：
 

@@ -1627,3 +1627,138 @@ clear-cut pair  noul: c0(noise)=0.85  c1(needle)=0.05
    Choice 給不了的東西。
 5. 踩到的坑：Score 的 legend 要放在 `criteria`（陣列），寫成 `legend` 會被擋
    `expected "array" ... path questions.c0.criteria`。
+
+## 23. 補 request 接線、調用頻率實測降頻、語料 sink 防汙染（2026-09-22）
+
+### 23.1 補 request：Hermes 真的把使用者請求傳進 middleware 了
+
+§22.3 量到的缺陷是「host 沒傳使用者請求，plugin 拿 tool 自己的參數頂替」。
+當時的止血是**拒判**（`no-request`），這一輪補上真的接線。
+
+三個 call site（`model_tools.py:773`、`agent/agent_runtime_helpers.py:2257`、
+子代理路徑）都要拿到同一份請求，逐個穿 kwarg 會漏。改用 turn-scoped ContextVar，
+在 turn 開頭綁一次：
+
+```python
+# ~/.hermes/hermes-agent/hermes_cli/middleware.py
+_CURRENT_USER_REQUEST: ContextVar[str] = ContextVar("hermes_current_user_request", default="")
+
+def run_tool_execution_middleware(...):
+    # `user_request`，不是 `request`：`_run_execution_chain` 把 `request` kwarg
+    # 當成 THE PAYLOAD（`payload_key = "request" if "request" in kwargs else "args"`），
+    # 傳 `request=` 會讓 tool 拿到使用者請求字串當參數去 dispatch。
+    context.setdefault("user_request", current_user_request())
+```
+
+```python
+# ~/.hermes/hermes-agent/agent/turn_context.py
+set_current_user_request(persist_user_message if persist_user_message is not None else user_message)
+```
+
+兩個設計點都有代價才這樣選：
+
+- **叫 `user_request` 不叫 `request`**：這個坑差點上線。早先的量測探針之所以
+  「看起來會動」，只是因為它的 terminal callback 根本沒讀 `args`。現在
+  `tests/hermes_cli/test_plugins.py` 直接釘死 `dispatched is args` 與
+  `"request" not in seen`。
+- **ContextVar 而非 module global**：子代理執行緒晚起，context 是空的 → 拿到 `""`
+  → plugin 拒判。這是刻意的：寧可子代理不剪，也不要它拿主代理的任務當基準剪。
+
+實測（真 `discover_plugins` ＋ 真 middleware ＋ 真 Jev，5 個本機真實輸出，
+沒有任何手傳 kwarg）：
+
+```
+has tool_execution middleware: True
+  27063 ->   11134  ( 58.9% saved,  0.98s)  worker log 有沒有噴錯？是什麼錯？
+  40000 ->   40000  (  0.0% saved,  0.89s)  統計 jev-calibration.jsonl 最近樣本的 gat
+  30000 ->   14063  ( 53.1% saved,  0.79s)  最近哪幾個 commit 改過 prune 這條路徑？
+  32025 ->   16062  ( 49.8% saved,  0.82s)  hooks/jev.js 裡 minDropProbability
+  17440 ->   17440  (  0.0% saved,  0.75s)  這個專案裝了哪些套件、鎖在什麼版本？
+
+total 146528 -> 98699 chars, 32.6% saved, 4.2s judging
+~tokens (chars/4): 36632 -> 24674, saved ~11957
+```
+
+### 23.2 調用頻率：現在太高，而且高出來的部分一個字都沒省
+
+問題不是感覺，是可以數的。生產 ledger `~/.openclaw/state/jev-prune.log`：
+
+```
+calls 19 total before 218113 saved 28015
+calls that saved anything: [('Bash', 44042, 28015)]
+
+threshold   calls  saved_chars   judged_chars
+     4000     19        28015         218113
+     8000     10        28015         167847
+    12000      8        28015         148645
+    16000      3        28015          81135
+    20000      2        28015          64552
+    32000      1        28015          44042
+```
+
+19 次呼叫，**有效的只有 1 次**——那唯一一次 44 KB 的 Bash 輸出，省下全部 28,015 字元。
+其餘 18 次（含 3 次 Read，12.5／13.4／13.3 KB）通通 0 lines dropped。
+
+不是模型笨，是**結構**：`chunkChars: 16000`，輸出不到一個 chunk 時，
+判斷題目就變成「整包丟掉還是整包留著」，而一個只有一塊的輸出裡通常就是有答案，
+判 keep 是對的。低於一個 chunk 的門檻買到的是延遲與花費，買不到節省。
+
+所以 `thresholdChars` 從 Bash/Grep 4000、Read 12000 全部改成 `CONFIG.chunkChars`
+（16000）：**呼叫數 −84%（19 → 3），實測節省 −0%**。
+
+為什麼不乾脆 32000（呼叫剩 1 次、一樣省 28,015）？因為那條線在這份語料上只有
+一次呼叫寬，沒有 margin——下次輸出落在 16–32 KB 之間就整個失效。16000 是**結構邊界**
+（一個 chunk 是「部分丟棄」這件事能存在的最小單位），不是曲線上挑出來的點。
+`tests/jev.test.mjs` 釘 `thresholdChars >= chunkChars`。
+
+Read 被兩邊夾成一條窄帶：下限是一個 chunk，上限是 core 自己的 token cap（實測
+207 KB 日誌只送 8,000 字元、114 KB base64 送 16,571）。也就是 Read 之後只在
+blob 那一端開火——那本來就是它 `drop` criteria 唯一針對的情況。
+`tests/hook.live.test.js` 同時釘兩個邊界，免得哪天 Read 變成永遠不會觸發的裝飾。
+
+Hermes 那邊不用改：plugin 不帶 `threshold_chars`，吃的就是 `TARGETS.Bash` 的預設，
+降頻自動生效。
+
+### 23.3 順手抓到的：bench 把語料 sink 灌爆
+
+`~/.openclaw/state/jev-calibration.jsonl` 6.5 MB／11,753 行，其中 10,200 行是
+`gateway/lib/bench.mjs` 跑 FakeMode adapter 產生的 `fake/jev-1.13`
+（一分鐘寫進 1,615 筆），真實流量只有 1,553 筆。fake adapter 的答案是 fixture
+讀回來的，拿這份檔去 `scripts/calibrate.mjs` 校準＝**拿 fixture 校準模型**。
+
+修在 sink，不是修在 bench：
+
+```js
+// gateway/src/calibration.js
+if (path === DEFAULT_CALIBRATION_LOG && isFakeSample(sample)) return false;
+```
+
+只擋**預設 sink**。指定路徑是有人刻意在收（harness 測試就是這樣用），預設檔才是
+活的證據語料，不該被「某個 harness 忘了設環境變數」種進假資料。要求每個 harness
+記得 `JEV_CALIBRATION_LOG=off` 是把規則交給記性。
+
+現存的汙染也清掉了（先備份）：
+
+```
+kept 1455 dropped 12444 backup /Users/51mini/.openclaw/state/jev-calibration.jsonl.pre-fake-purge.bak
+```
+
+### 23.4 驗收
+
+```
+ℹ tests 218
+ℹ pass 216
+ℹ fail 0
+ℹ skipped 2
+[agents:acceptance] gateway acceptance: OK
+[agents:acceptance] claude bridge smoke: OK
+[agents:acceptance] codex hooks smoke: OK
+[agents:acceptance] injected client smoke: OK
+[agents:acceptance] triage + spawn-hook smoke: OK
+[agents:acceptance] ALL OK
+```
+
+gateway 自己的套件 `tests 86 / pass 84 / fail 0`；Hermes plugin
+`jev-prune selfcheck OK`；Hermes `tests/hermes_cli/test_plugins.py`
+`1 failed, 76 passed`，唯一那個 fail 是沙箱 PermissionError 的
+`TestForceReloadSymmetry`，`git stash` 後照樣 fail，與本次改動無關。

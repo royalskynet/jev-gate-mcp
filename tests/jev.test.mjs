@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { requestTerms, vetoOnTerms, verdictOf, CONFIG } from '../hooks/jev.js';
+import { requestTerms, vetoOnTerms, verdictOf, CONFIG, TARGETS } from '../hooks/jev.js';
 
 test('requestTerms keeps the searchable words only', () => {
   const t = requestTerms('Which commits touched prune? 有改到嗎');
@@ -40,4 +40,18 @@ test('verdictOf gates on probabilities.drop, not confidence', () => {
   assert.equal(verdictOf({ choice: 'drop', probabilities: { drop: t }, confidence: 0.05 }), 'drop');
   assert.equal(verdictOf({ choice: 'drop', probabilities: { drop: t - 0.01 }, confidence: 0.99 }), 'unsure');
   assert.equal(verdictOf({ choice: 'drop' }), 'drop', 'a missing probabilities cannot silently disable pruning');
+});
+
+test('every target only judges output at least one chunk long', () => {
+  // Below `chunkChars` the judge is asked to drop the whole output or nothing,
+  // and it answers "keep" essentially every time: in 19 real prune calls on this
+  // machine, every call under 20 KB dropped 0 chars while the single 44 KB call
+  // produced all 28,015 saved. A sub-chunk threshold therefore buys latency and
+  // spend and no savings (DEVLOG §23).
+  for (const [name, t] of Object.entries(TARGETS)) {
+    assert.ok(
+      t.thresholdChars >= CONFIG.chunkChars,
+      `${name}: thresholdChars ${t.thresholdChars} is under one chunk (${CONFIG.chunkChars})`,
+    );
+  }
 });

@@ -103,11 +103,10 @@ test('live: Grep hook shrinks content-mode matches and fixes numLines', { skip: 
   assert.equal(r.ref, undefined);
 });
 
-test('Read is left alone below its own (higher) threshold', async () => {
+test('Read is left alone below the threshold', async () => {
   const $ = makeHost();
-  const out = noisyLog().slice(0, 8000);
-  // Long enough for Bash, deliberately not for Read.
-  assert.ok(out.length > TARGETS.Bash.thresholdChars && out.length < TARGETS.Read.thresholdChars);
+  const out = noisyLog().slice(0, TARGETS.Read.thresholdChars - 1);
+  assert.ok(out.length < TARGETS.Read.thresholdChars);
   const core = { ref: 1, text: out, result: { type: 'text', file: { filePath: '/a.js', content: out, numLines: 401, startLine: 1, totalLines: 401 } } };
   const r = await hooksByTool().Read($, { tool: 'Read', file_path: '/a.js' }, async () => core);
   assert.equal(r, core, 'Read under its threshold must pass through untouched');
@@ -140,11 +139,15 @@ test('userRequestOf prefers the newest real user turn over the call', async () =
   assert.equal(await userRequestOf(broken, { file_path: '/a.js' }), '/a.js');
 });
 
-// Core token-caps a Read before the hook sees it: measured delivery was 8,000
-// chars for a 207 KB log and 16,571 for a 114 KB base64 blob. A threshold above
-// that cap is a hook that can never fire, which fail-open makes invisible.
-test('Read threshold sits under the core token cap that precedes the hook', () => {
-  assert.ok(TARGETS.Read.thresholdChars < 16000, 'Read would never be reached');
+// Read lives in a thin band, squeezed from both sides by measurement. Below one
+// chunk the judge can only answer all-or-nothing and does not drop: all three
+// real Read prunes in this machine's ledger were 12-13 KB and dropped 0 lines.
+// Above core's token cap the hook can never fire at all — core caps a Read
+// before the hook sees it, and measured delivery was 8,000 chars for a 207 KB
+// log and 16,571 for a 114 KB base64 blob, which fail-open would hide.
+test('Read threshold sits between one chunk and the core token cap', () => {
+  assert.ok(TARGETS.Read.thresholdChars >= CONFIG.chunkChars, 'sub-chunk Read prunes measured 0 yield');
+  assert.ok(TARGETS.Read.thresholdChars <= 16571, 'Read would never be reached');
 });
 
 test('pruneText never truncates chunks past the judged window', async () => {

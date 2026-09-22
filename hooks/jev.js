@@ -44,22 +44,34 @@ export const CONFIG = {
  * The tools worth pruning, how to reach the long string in each one's result
  * record, and how to put a pruned one back.
  *
- * Read's threshold is higher than the others'. Bash and Grep output is a
- * report about files; a Read result *is* the file, and the model usually asked
- * for it by name to act on it. Pruning a 5 KB source file would trade a few
- * hundred tokens for the risk of reasoning about a file it only half saw, so
- * only big reads are judged, and Read's criteria drop mechanical bulk only.
- * The `[jev-prune: ...]` marker stays inline either way, so a removal is
- * visible to the model rather than silent.
+ * Every threshold is `CONFIG.chunkChars`, and that is a measurement rather
+ * than symmetry for its own sake. Below one chunk the judge is asked an
+ * all-or-nothing question — drop the entire output or keep it — and it
+ * correctly almost never drops. The production ledger
+ * `~/.openclaw/state/jev-prune.log` holds 19 real prune calls: every call under
+ * 20 KB dropped nothing at all, and the one 44 KB call produced all 28,015
+ * saved chars. Replaying those real sizes at each threshold:
+ *    4000 -> 19 calls, 28015 chars saved
+ *   12000 ->  8 calls, 28015 chars saved
+ *   16000 ->  3 calls, 28015 chars saved
+ *   32000 ->  1 call,  28015 chars saved
+ * 16000 buys a 84% cut in Jev calls — latency and spend on every Bash and
+ * Grep — for 0% of the measured savings. 32000 costs no more on this corpus
+ * but is one call wide, so it has no margin the day output lands between the
+ * two; the threshold sits at the structural boundary instead, because one
+ * chunk is the smallest output a partial drop can exist in at all.
+ * `tests/jev.test.mjs` pins `thresholdChars >= chunkChars` (DEVLOG §23).
  *
- * 12000 rather than the 20000 this started at: core token-caps a Read before
- * the hook sees it, and measured delivery is 8,000 chars for a 207 KB log and
- * 16,571 for a 114 KB base64 blob. At 20000 the hook could never fire — the
- * threshold has to sit under core's cap or Read is decoration.
+ * Read keeps its row even though core token-caps a Read before the hook sees
+ * it (measured delivery: 8,000 chars for a 207 KB log, 16,571 for a 114 KB
+ * base64 blob), so it now fires only at the blob end — which is the only end
+ * its `drop` criteria were ever written for. The `[jev-prune: ...]` marker
+ * stays inline either way, so a removal is visible to the model rather than
+ * silent.
  */
 const TARGETS = {
   Bash: {
-    thresholdChars: 4000,
+    thresholdChars: CONFIG.chunkChars,
     get: (r) => (typeof r?.stdout === 'string' ? r.stdout : undefined),
     set: (r, text) => ({ ...r, stdout: text }),
     criteria: {
@@ -68,7 +80,7 @@ const TARGETS = {
     },
   },
   Grep: {
-    thresholdChars: 4000,
+    thresholdChars: CONFIG.chunkChars,
     get: (r) => (typeof r?.content === 'string' ? r.content : undefined),
     set: (r, text) => ({ ...r, content: text, numLines: countLines(text) }),
     criteria: {
@@ -77,7 +89,7 @@ const TARGETS = {
     },
   },
   Read: {
-    thresholdChars: 12000,
+    thresholdChars: CONFIG.chunkChars,
     get: (r) => (r?.type === 'text' && typeof r?.file?.content === 'string' ? r.file.content : undefined),
     set: (r, text) => ({ ...r, file: { ...r.file, content: text, numLines: countLines(text) } }),
     criteria: {
