@@ -13,6 +13,16 @@ import { makeFakeAdapter, FakeMode } from '../src/adapters.js';
 import { loadRegistry } from '../src/registry.js';
 import { JevGateway } from '../src/gateway.js';
 
+// Belt and braces with the sink's own refusal (src/calibration.js): a bench run
+// is a measurement OF the gateway, never evidence ABOUT the model, so none of
+// its ~1,600 decisions a minute belong in the calibration corpus. Importing this
+// module is already a declaration of intent to run fixtures, so the opt-out is
+// unconditional — which also covers the one case the sink guard deliberately
+// does not, a bench pointed at a NAMED corpus path. Process-wide is safe here:
+// the test runner gives each file its own process, and the only other importer
+// (scripts/acceptance.mjs) is a harness too.
+process.env.JEV_CALIBRATION_LOG = 'off';
+
 export function percentile(values, p) {
   if (!Array.isArray(values) || values.length === 0) return null;
   return quantileSorted([...values].sort((a, b) => a - b), p);

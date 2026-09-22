@@ -1737,6 +1737,11 @@ if (path === DEFAULT_CALIBRATION_LOG && isFakeSample(sample)) return false;
 活的證據語料，不該被「某個 harness 忘了設環境變數」種進假資料。要求每個 harness
 記得 `JEV_CALIBRATION_LOG=off` 是把規則交給記性。
 
+bench 自己也補上第二道（`gateway/lib/bench.mjs` 模組載入即 opt out）。兩道防線
+守的範圍不同：sink 那道擋「任何 harness 忘了設」，bench 這道多擋一種——**bench 被
+指到具名語料路徑**，那是 sink 刻意放行的自由區。`gateway/test/bench.test.mjs`
+釘住 import 後 `calibrationPath() === null`。
+
 現存的汙染也清掉了（先備份）：
 
 ```
