@@ -8,20 +8,25 @@
  * line to the runtime ledger. Every policy is shadow/uncalibrated, so this
  * hook never blocks and never rewrites the user prompt.
  *
- * Fail-open: with no live transport injected (a bare CLI has no gateway), the
- * triage fail-opens to "retain status quo" and the notice says so. A wired host
- * can inject a transport by importing the core directly; the hook itself stays
- * transport-free so it can never guess a tier without a Jev answer.
+ * Fail-open: the in-process gateway is built lazily and yields `null` when the
+ * provider key file is absent, in which case the triage fail-opens to "retain
+ * status quo" and the notice says so. It never guesses a tier without a Jev
+ * answer.
  */
 import { readEvent, respond, appendLedger, boundedSummary } from './io.mjs';
 import { triage } from '../src/triage.js';
+import { liveTransport } from '../src/live.js';
 
 const event = await readEvent();
 const prompt = typeof event?.prompt === 'string' ? event.prompt : '';
 
-// Bare CLI: no live transport, so this fail-opens to status quo. A wired host
-// runs the core with a real (injected) transport instead of this hook.
-const decision = await triage({ text: prompt, contextChars: Number(process.env.JEV_CTX_CHARS ?? 0) });
+// The live gateway when the provider is configured, otherwise undefined -> the
+// triage's own fail-open path (status quo, one ledger line saying so).
+const transport = (await liveTransport()) ?? undefined;
+const decision = await triage(
+  { text: prompt, contextChars: Number(process.env.JEV_CTX_CHARS ?? 0) },
+  { transport },
+);
 
 const notice =
   decision.failOpen

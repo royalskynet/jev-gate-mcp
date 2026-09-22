@@ -81,6 +81,13 @@ export async function compactMessages(opts = {}) {
     pinFirst = 1,
     pinLast = 8,
     maxDroppedChars = Infinity,
+    // How many characters of each payload the judge is shown. 0 (the default)
+    // keeps the original contract: the judge sees tool names and sizes only,
+    // and no payload ever leaves the process. A host that wants the judgment
+    // to be about *content* rather than about shape opts in with a bound —
+    // "is this npm ls output still needed" is not answerable from the tool
+    // name alone.
+    judgeHeadChars = 0,
   } = opts;
   if (!Array.isArray(messages) || messages.length === 0) {
     return { messages, compacted: false, reason: 'empty', reducedBy: 0 };
@@ -114,11 +121,16 @@ export async function compactMessages(opts = {}) {
     if (pinned(p.callIdx) || drop.has(p.callIdx)) continue;
     let keep = false;
     try {
+      const head = (s) => (judgeHeadChars > 0 && typeof s === 'string' ? s.slice(0, judgeHeadChars) : undefined);
       keep = (await judge({
-        calls: callSummary(messages[p.callIdx]),
+        calls: callSummary(messages[p.callIdx]).map((c, k) => ({
+          ...c,
+          argsHead: head(messages[p.callIdx]?.tool_calls?.[k]?.function?.arguments),
+        })),
         results: p.resultIdxs.map((i) => ({
           tool_call_id: messages[i].tool_call_id,
           chars: textLength(messages[i]),
+          resultHead: head(messages[i]?.content),
         })),
       })) === 'drop';
     } catch {

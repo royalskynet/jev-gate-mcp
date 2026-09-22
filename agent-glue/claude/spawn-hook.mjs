@@ -15,8 +15,7 @@
  * list is advisory only and never affects model choice.
  */
 import { triage, DEFAULT_TRIAGE } from '../src/triage.js';
-
-export const ENABLED = process.env.JEV_TRIAGE_ENABLED === '1';
+import { liveTransport } from '../src/live.js';
 
 // Optional per-tier model override, e.g. JEV_TRIAGE_MODEL_HARD=opus. Undefined
 // tiers keep the engine default (the parent's own model via `inherit`).
@@ -25,6 +24,28 @@ export const TIER_MODELS = {
   medium: process.env.JEV_TRIAGE_MODEL_MEDIUM || undefined,
   hard: process.env.JEV_TRIAGE_MODEL_HARD || undefined,
 };
+
+/**
+ * Activation by situation, not by a flag the user has to remember.
+ *
+ *   JEV_TRIAGE_ENABLED=0  -> off, always (the escape hatch)
+ *   JEV_TRIAGE_ENABLED=1  -> on, always (even with no model map: the decision
+ *                            is then observable in the ledger but changes nothing)
+ *   unset                 -> ON exactly when a tier model is configured.
+ *
+ * The auto rule is the whole point: with no `JEV_TRIAGE_MODEL_*` set, the hook
+ * could not change the subagent's model whatever Jev answered, so spending a
+ * request would buy nothing. Configure one tier and it starts deciding — no
+ * second switch to find.
+ */
+export function triageEnabled(env = process.env, models = TIER_MODELS) {
+  const flag = env.JEV_TRIAGE_ENABLED;
+  if (flag === '0') return false;
+  if (flag === '1') return true;
+  return Object.values(models).some(Boolean);
+}
+
+export const ENABLED = triageEnabled();
 
 /** Map a triage tier onto a model alias; undefined tiers stay inherit/default. */
 export function tierToModel(tier) {
@@ -38,7 +59,7 @@ export function tierToModel(tier) {
  * request (no second Jev call); a catalog comes from `input.skills ?? deps.skillCatalog`.
  */
 export async function spawnDecision(input = {}, deps = {}) {
-  const enabled = deps.forceEnabled === true || ENABLED;
+  const enabled = deps.forceEnabled === true || triageEnabled();
   if (!enabled) {
     return { change: false, model: undefined, skills: [], decision: null, reason: 'disabled' };
   }
@@ -47,6 +68,11 @@ export async function spawnDecision(input = {}, deps = {}) {
     return { change: false, model: undefined, skills: [], decision: null, reason: 'fork' };
   }
   const catalog = input.skills ?? deps.skillCatalog ?? [];
+  // A missing transport is the silent failure this hook shipped with: triage
+  // fail-opens to status quo and an enabled hook looks identical to a disabled
+  // one. Tests inject their own; production gets the in-process gateway (null
+  // when there is no credential, which still fail-opens — but on purpose).
+  const transport = deps.transport ?? (await liveTransport()) ?? undefined;
   const decision = await triage(
     {
       text: input.prompt ?? '',
@@ -55,7 +81,7 @@ export async function spawnDecision(input = {}, deps = {}) {
       has_images: input.has_images ?? false,
       skills: catalog,
     },
-    deps,
+    { ...deps, transport },
   );
   if (decision.unchanged || decision.failOpen) {
     return { change: false, model: undefined, skills: decision.skills, decision, reason: 'status-quo' };

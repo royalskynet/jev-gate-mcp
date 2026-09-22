@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnDecision, tierToModel } from '../../agent-glue/claude/spawn-hook.mjs';
+import { spawnDecision, tierToModel, triageEnabled } from '../../agent-glue/claude/spawn-hook.mjs';
 
 // A fake triage-shaped transport that returns an easy, safe, confident verdict.
 function easyTransport() {
@@ -126,4 +126,42 @@ test('skill select: no catalog -> zero skills, triage stays three questions', as
   assert.deepEqual(d.skills, []);
   assert.equal(calls.length, 1);
   assert.equal(Object.keys(calls[0].questions).length, 3, 'no catalog -> exactly three questions');
+});
+
+// Activation by situation, not by a flag nobody remembers: with no tier model
+// configured the hook could not change anything whatever Jev answered, so it
+// stays off; configure one and it turns itself on. `=0` always wins.
+test('spawn-hook: auto-enables only when a tier model is configured', () => {
+  assert.equal(triageEnabled({}, { cheap: undefined, medium: undefined, hard: undefined }), false);
+  assert.equal(triageEnabled({}, { cheap: undefined, medium: undefined, hard: 'opus' }), true);
+  assert.equal(triageEnabled({ JEV_TRIAGE_ENABLED: '0' }, { hard: 'opus' }), false, 'explicit off wins');
+  assert.equal(triageEnabled({ JEV_TRIAGE_ENABLED: '1' }, {}), true, 'explicit on needs no model map');
+});
+
+// Regression: the hook used to call triage with deps={}, so the core fell back
+// to `defaultNoTransport` and fail-opened on every live turn — an enabled hook
+// was indistinguishable from a disabled one. An injected transport must still
+// win over the live one, and the hook must pass *something*.
+test('spawn-hook: an injected transport is the one triage uses', async () => {
+  let asked = 0;
+  const transport = {
+    async evaluate() {
+      asked++;
+      return {
+        answers: {
+          difficulty: { type: 'score', score: 0.1, probabilities: { 0: 0.95, 1: 0.05, 2: 0, 3: 0 }, confidence: 0.95 },
+          kind: { choice: 'coding', probabilities: { coding: 0.9 } },
+          costly_mistake: { type: 'noul', noul: 0.02 },
+        },
+        coverage: 'complete',
+      };
+    },
+  };
+  const d = await spawnDecision(
+    { prompt: 'rename a local variable' },
+    { forceEnabled: true, transport, modelMap: { cheap: 'haiku' } },
+  );
+  assert.equal(asked, 1, 'the injected transport was actually called');
+  assert.equal(d.change, true);
+  assert.equal(d.model, 'haiku');
 });
