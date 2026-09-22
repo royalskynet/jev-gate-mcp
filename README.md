@@ -306,6 +306,55 @@ transport had the shape the real one did not.
 node scripts/live-probe.mjs   # needs a provider key; costs a few cents
 ```
 
+## Other hosts: openclaw and Hermes
+
+Both are installed and live on this machine. What is portable is decided by what
+each host's hook contract lets a plugin *change*, not by what the capability is:
+
+| capability | Claude Code | openclaw | Hermes |
+|---|---|---|---|
+| prune (rewrite a tool result) | `tool.call` | ✗ — `tool_result_persist` is synchronous (an async handler's result is logged and discarded), `after_tool_call` observes | `tool_execution` middleware |
+| fast compaction | `session.compact` | ✗ — `before_compaction` / `after_compaction` observe only | not wired (an `llm_request` middleware could carry it) |
+| triage (model routing) | `agent.spawn` | `before_model_resolve` → `providerOverride` / `modelOverride` | not wired (`llm_request`) |
+| gate (block a call) | `PreToolUse` | `before_tool_call` | `pre_tool_call` — blocking contradicts shadow mode, so not wired |
+
+### openclaw: `integrations/openclaw/` (plugin id `jev-gate`)
+
+One triage per turn on `before_model_resolve`, **downgrade-only**: only the
+`cheap` rung is wired into the model map, so a `medium`/`hard` verdict resolves
+to `no-model-map` → status quo. A wrong downgrade costs one weak answer; a wrong
+upgrade silently bills the expensive model on every ambiguous turn.
+
+```sh
+openclaw plugins install --link ./integrations/openclaw --force --accept-capabilities
+openclaw plugins enable jev-gate --accept-capabilities
+# Non-bundled plugins may not touch conversation hooks until this is granted:
+openclaw config set plugins.entries.jev-gate.hooks.allowConversationAccess true
+openclaw plugins inspect jev-gate --runtime --json   # hookCount must be 1, not 0
+```
+
+Escape hatch `JEV_OPENCLAW_TRIAGE=off`. Every decision — change or not — appends
+one line to `~/.openclaw/logs/jev-gate.jsonl`.
+
+### Hermes: `integrations/hermes/jev-prune/`
+
+A `tool_execution` middleware that wraps the real tool call and answers with a
+pruned result. The judge is not reimplemented in Python: it shells out to
+`agent-glue/cli.mjs prune`, the same judge the Claude Code hook uses.
+
+```sh
+ln -s "$PWD/integrations/hermes/jev-prune" ~/.hermes/profiles/<profile>/plugins/jev-prune
+hermes -p <profile> plugins enable jev-prune
+hermes plugins doctor ./integrations/hermes/jev-prune
+python3 integrations/hermes/live-probe.py    # real loader + real middleware chain
+```
+
+Plugins live under the *profile's* home (`~/.hermes/profiles/<profile>/plugins`),
+not `~/.hermes/plugins`; `~/.hermes/active_profile` names the default one. The
+manifest declares no `provides_hooks`: a middleware is a different surface from
+`VALID_HOOKS`, and declaring it as a hook fails `plugins doctor`. Ledger:
+`<profile home>/logs/jev-prune.jsonl`.
+
 ## Also in this repo, not mounted
 
 `plugin/` holds the Node-side experiments: `lib/judge.js`, `lib/route.js`

@@ -14,8 +14,15 @@
  *   echo '<json>' | node agent-glue/cli.mjs verify
  *   echo '<json>' | node agent-glue/cli.mjs review
  *   echo '<json>' | node agent-glue/cli.mjs route
+ *   echo '<json>' | node agent-glue/cli.mjs prune
+ *
+ * `prune` is the exception to the paragraph above: it wires a real Jev judge
+ * over `globalThis.fetch`, because it exists for hosts that cannot run this
+ * repo's in-process hooks (Hermes' Python `tool_execution` middleware). One
+ * judge, two runtimes — the alternative was a second judge in Python.
  */
 import { compactMessages, verifyCompletion, reviewDiff, route, describeCandidates } from './src/index.js';
+import { pruneCommand } from './src/prune.js';
 
 const sub = process.argv[2];
 
@@ -63,8 +70,12 @@ switch (sub) {
     }
     break;
   }
+  case 'prune': {
+    respond(await pruneCommand(payload));
+    break;
+  }
   default: {
-    process.stderr.write('agent-glue: unknown subcommand (compact|verify|review|route)\n');
+    process.stderr.write('agent-glue: unknown subcommand (compact|verify|review|route|prune)\n');
     process.exit(2);
   }
 }

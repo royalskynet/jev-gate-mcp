@@ -1234,3 +1234,100 @@ endpoint＋model＋provider＋金鑰路徑現在是活的**，07:55 那次 401 �
 `node --test` 全綠、`agents:acceptance` 8 段 ALL OK、`claude plugin validate` 通過。
 政策檔零改動，五個 policy 仍 `shadow` + `uncalibrated`；本輪唯一的行為變更是
 「開始收樣」與「樣本的 provenance 改成 live」，沒有任何 accept 被放行。
+
+## §20 openclaw 與 Hermes 實裝上線（2026-09-22）
+
+上一節（§19.5）的結論是「jev 只在 Claude Code 跑」。本節把它推翻：兩個 host 都
+接上去、都實跑驗證過了。順序是先確定**契約允許改什麼**，再決定移植哪一項能力。
+
+### 20.1 移植矩陣（以 hook 契約為準，不是以能力為準）
+
+| 能力 | Claude Code | openclaw | Hermes |
+|---|---|---|---|
+| prune | `tool.call` | ✗ `tool_result_persist` 宣告同步（async handler 的回傳被 runner 記 log 後丟棄）、`after_tool_call` 只能觀察 | ✓ `tool_execution` middleware |
+| 快速壓縮 | `session.compact` | ✗ `before_compaction`／`after_compaction` 只能觀察 | 未接（`llm_request` 可承載） |
+| triage | `agent.spawn` | ✓ `before_model_resolve`（`providerOverride`／`modelOverride`） | 未接（`llm_request`） |
+| gate | `PreToolUse` | ✓ `before_tool_call` | ✓ `pre_tool_call`（與 shadow 矛盾，不接） |
+
+原本的計畫是拿 openclaw 的 `tool_result_persist` 做 prune——假設被文件與 runner
+行為推翻（"Must be synchronous"，async 結果被丟掉並留一行 warning）。所以
+openclaw 只接 triage，Hermes 只接 prune；judge 沒有在 Python 重寫，而是新增
+`agent-glue/cli.mjs prune` 子命令，Python 側 shell out 過來——一個 judge、兩個
+runtime。
+
+### 20.2 宣告 ≠ 生效，本輪又中兩次
+
+1. **openclaw**：`plugins install --link` ＋ `plugins enable` 之後
+   `plugins inspect jev-gate --runtime --json` 回 `status: loaded`、
+   `activated: true`，但 `hookCount: 0`，diagnostics 寫著
+   `typed hook "before_model_resolve" blocked because non-bundled plugins must set
+   plugins.entries.jev-gate.hooks.allowConversationAccess=true`。
+   授權後 `hookCount: 1`、`typedHooks: [{"name":"before_model_resolve"}]`、
+   `diagnostics: []`。**驗收必須看 hookCount，不是看 status。**
+2. **Hermes**：manifest 寫 `provides_hooks: [tool_execution]` →
+   `hermes plugins doctor` 報 `unknown hook 'tool_execution' in provides_hooks`。
+   middleware（`hermes_cli/middleware.py` 的 `VALID_MIDDLEWARE`）跟 hook
+   （`hermes_cli/plugins.py` 的 `VALID_HOOKS`）是**兩個不同介面**，manifest 沒有
+   middleware 宣告欄位，正解是不宣告。另外 plugin 要放在 **profile 的 home**
+   （`~/.hermes/profiles/koko/plugins/`），放 `~/.hermes/plugins/` 不會被掃到——
+   `hermes plugins list --plain --no-bundled` 完全沒有那一筆，沒有任何報錯。
+
+### 20.3 沙箱裡怎麼實證（兩條路都試過）
+
+- `openclaw agent --local` 走不通：embedded agent 要拿 gateway state 所有權
+  （`GatewayLockError: failed to acquire gateway state ownership`），而
+  `openclaw daemon restart` 被沙箱擋（`launchctl kickstart failed: ... Operation
+  not permitted`）。`OPENCLAW_STATE_DIR` 在 dist 裡搜不到，環境變數隔離無效；
+  `--profile <name>` 會寫 `~/.openclaw-<name>`，不在可寫白名單。
+  **改走 gateway**：`openclaw agent --agent main --session-id ... -m '<240 字的
+  機械改名任務>'`。多 agent 設定下沒有 `--agent` 會被拒
+  （"agent command session creation has no explicit owner"）。
+- Hermes 的一次性 turn（`hermes -p koko --yolo -z ...`）撞
+  `HTTP 401: [openrouter] All 1 connection(s) authentication expired`——provider
+  憑證問題，與 plugin 無關。**改用 `integrations/hermes/live-probe.py`**：真
+  loader（`discover_plugins(force=True)`）＋真 middleware chain
+  （`run_tool_execution_middleware`）＋真 Jev judge，只有 tool 本身是假的。
+
+### 20.4 實測結果（原始輸出）
+
+openclaw，一次真回合：
+
+```
+{"at":"2026-09-22T04:28:25.776Z","chars":240,"outcome":"cheap","tier":"cheap",
+ "confidence":0.96,"model":"omniroute/Deepseek cheap"}
+```
+
+同一回合的 gateway 回傳 `"provider": "omniroute", "model": "Deepseek cheap",
+"result": "success"`——agent `main` 的預設模型是
+`cheaperinference/deepseek-v4-flash`，所以模型確實被 hook 換掉了，不只是
+ledger 自說自話。
+
+Hermes：
+
+```
+has tool_execution middleware: True
+middleware callbacks: ['hermes_plugins.jev_prune._on_tool_execution']
+tool output chars: 19889
+result chars: 60
+result tail: '[jev-prune: dropped 322 lines]\n[jev-prune: dropped 78 lines]'
+{"tool": "terminal", "outcome": "judged", "chars_before": 19889,
+ "chars_after": 60, "dropped_lines": 400}
+```
+
+19889 → 60 字（-99.7%）。這筆語料是 400 行填充文字，全丟是合理判決，但
+**全丟**本身是值得盯的訊號：middleware 沒有 conversation，只能用 tool 的參數
+當 request（`_request_of`，有 `ponytail:` 註明天花板），判斷本來就比 Claude
+hook 弱。ledger 每筆都記 `chars_before`／`chars_after`，過度修剪會在那裡現形。
+
+### 20.5 預防加固
+
+- `tests/integrations.test.mjs`（9 條）守的是「載得起來但永遠改不動任何東西」
+  這一族：cheap 階一定非空、cheap 判決真的產出 override、hard 判決一定落
+  `no-model-map`、短回合與 `off` 不花 request、transport 壞掉維持原狀、prune
+  未過門檻不呼叫 judge、drop 判決留可見標記、judge 拋錯保住輸出、CLI 退出 0 且
+  不吐憑證。
+- `integrations/hermes/jev-prune/__init__.py` 的 `_selfcheck()`：str／dict 兩種
+  結果形狀、未知 tool／未知形狀／judge 失敗全部原樣通過、沒丟東西時回傳
+  **同一個物件**。
+- `integrations/hermes/live-probe.py`：把「middleware 真的註冊了嗎、真的改了
+  結果嗎」變成可重跑的一行，不用再手搭。

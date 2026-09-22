@@ -1,0 +1,9 @@
+name: jev-prune
+version: 0.1.0
+description: "Judge long tool output with Jev (System One) and drop the chunks that cannot help the current task, before the result re-enters the model's context."
+author: "royalskynet"
+manifest_version: 2
+# No `provides_hooks`: this plugin registers a `tool_execution` MIDDLEWARE, which is a
+# different surface from VALID_HOOKS (hermes_cli/middleware.py vs hermes_cli/plugins.py).
+# Declaring it as a hook makes `hermes plugins doctor` fail with
+# "unknown hook 'tool_execution' in provides_hooks".

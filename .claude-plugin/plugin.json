@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "jev-gate",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Jev decision gateway for Claude Code: prunes long tool output, compacts context verbatim on a percentage trigger, and tiers subagent models by situation, over a shared agent-glue core (route / compact / triage / verify / review). Advisory only while the five policies stay shadow/uncalibrated.",
   "author": {
     "name": "royalskynet"

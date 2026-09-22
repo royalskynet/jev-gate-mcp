@@ -277,6 +277,53 @@ npm run agents:acceptance   # plugin validate、全測試、build、gateway、�
 node scripts/live-probe.mjs   # 需要 provider key，花幾美分
 ```
 
+## 其他 host：openclaw 與 Hermes
+
+兩邊都已實裝上線。能不能移植不看能力本身，看該 host 的 hook 契約允許 plugin
+**改動**什麼：
+
+| 能力 | Claude Code | openclaw | Hermes |
+|---|---|---|---|
+| prune（改寫 tool 結果） | `tool.call` | ✗ — `tool_result_persist` 是同步的（async handler 的回傳被記 log 然後丟掉），`after_tool_call` 只能觀察 | `tool_execution` middleware |
+| 快速壓縮 | `session.compact` | ✗ — `before_compaction` / `after_compaction` 只能觀察 | 未接（未來可用 `llm_request` middleware） |
+| triage（模型路由） | `agent.spawn` | `before_model_resolve` → `providerOverride` / `modelOverride` | 未接（`llm_request`） |
+| gate（阻斷呼叫） | `PreToolUse` | `before_tool_call` | `pre_tool_call` — 阻斷與 shadow 模式矛盾，故不接 |
+
+### openclaw：`integrations/openclaw/`（plugin id `jev-gate`）
+
+每輪一次 triage，掛在 `before_model_resolve`，**只降不升**：model map 只接
+`cheap` 那一階，所以 `medium`／`hard` 判決會落到 `no-model-map` → 維持原狀。
+降錯只賠一個弱答案；升錯會在每個模稜兩可的回合無聲計費貴模型。
+
+```sh
+openclaw plugins install --link ./integrations/openclaw --force --accept-capabilities
+openclaw plugins enable jev-gate --accept-capabilities
+# 非 bundled plugin 在授權前碰不到 conversation hook：
+openclaw config set plugins.entries.jev-gate.hooks.allowConversationAccess true
+openclaw plugins inspect jev-gate --runtime --json   # hookCount 要是 1，不是 0
+```
+
+逃生開關 `JEV_OPENCLAW_TRIAGE=off`。每次決策——不論有沒有改——都往
+`~/.openclaw/logs/jev-gate.jsonl` 寫一行。
+
+### Hermes：`integrations/hermes/jev-prune/`
+
+`tool_execution` middleware：包住真正的 tool 呼叫，回傳修剪過的結果。judge 沒有
+在 Python 重寫一份，而是 shell out 到 `agent-glue/cli.mjs prune`——Claude Code
+hook 用的同一個 judge。
+
+```sh
+ln -s "$PWD/integrations/hermes/jev-prune" ~/.hermes/profiles/<profile>/plugins/jev-prune
+hermes -p <profile> plugins enable jev-prune
+hermes plugins doctor ./integrations/hermes/jev-prune
+python3 integrations/hermes/live-probe.py    # 真 loader ＋ 真 middleware chain
+```
+
+plugin 放在**該 profile 的 home** 底下（`~/.hermes/profiles/<profile>/plugins`），
+不是 `~/.hermes/plugins`；預設 profile 看 `~/.hermes/active_profile`。manifest 刻意
+不寫 `provides_hooks`：middleware 跟 `VALID_HOOKS` 是兩個不同介面，當成 hook 宣告
+會讓 `plugins doctor` 直接報錯。Ledger：`<profile home>/logs/jev-prune.jsonl`。
+
 ## 也在這個 repo，但沒掛上
 
 `plugin/` 放 Node 側的實驗：`lib/judge.js`、`lib/route.js`
