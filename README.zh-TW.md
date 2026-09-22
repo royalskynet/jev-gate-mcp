@@ -130,6 +130,16 @@ model `typesafe/jev-1.13`、key 讀 `~/.creds/kv/OPENROUTER_API_KEY.txt`。
 candidate list 缺漏或為空會被 catch 成有界的 `no-candidates` 結果（exit 0）。
 skill 選擇騎同一趟 triage 請求，永不多開一次 Jev。
 
+**route 會自己去磁碟把 candidate 的描述讀出來。** 讓 Jev 對一堆裸 id
+（`graphify`、`to-issues`、`diagnose`）做 Choice 就是在猜：實測 2/4；同樣四題，
+每個 candidate 補一句話就是 4/4。那句話本來就存在——skill 的 SKILL.md
+frontmatter 裡的 `description:`——所以 `agent-glue/src/catalog.js` 去讀它，
+兩個 CLI 進入點會替呼叫端沒描述的 candidate 自動補上 `descriptions`。
+呼叫端照舊只傳 id，route 不必再猜。明確給的 `descriptions` 永遠優先，
+給 `null` 強制用裸標籤，查不到文件的 id 就維持裸的。搜尋路徑：
+`./skills`、`./.claude/skills`、`~/.claude/skills`、`~/.claude/plugins/*/skills`
+——用 `JEV_ROUTE_CATALOG_DIRS`（冒號分隔）覆寫。
+
 撐住整件事的是兩條規則：
 
 - **任何 judge 失敗都是整趟 fail-open**，不是只有丟例外的那一對。壞掉的 judge
@@ -155,10 +165,25 @@ Manifest 分檔放——Claude 用 `hooks/hooks.json`，Codex 用 `.codex/hooks.
 cheap→medium→hard tier。skill 的挑選騎同一趟請求，不多花一次 Jev 呼叫，
 而且純 advisory（絕不改變模型選擇）。
 
-**它依情境自動啟用，不靠開關。** 只要任一 tier model 有設
-（`JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`），`triageEnabled()` 就是 true——
-設了 tier model 本身就是「我要分層」的意思；多一個 opt-in flag 只換來
-「看起來開著但什麼都不做」這種狀態。`JEV_TRIAGE_ENABLED=1` 強制開，`=0` 強制關。
+**它依情境自動啟用，不靠開關，而且 ladder 已內建。** 只要任一 tier model 有設，
+`triageEnabled()` 就是 true；而 `DEFAULT_TIER_MODELS` 開箱就把三層都設好：
+
+| tier | 預設模型 | 什麼會落在這層 |
+|---|---|---|
+| `cheap` | `haiku` | 機械性工作：改名、找檔案、讀狀態 |
+| `medium` | `sonnet` | 一般實作：寫程式、改程式、除錯 |
+| `hard` | `opus` | 架構決策、跨檔深度分析、任何有風險的 |
+
+這跟社群 model-routing hook 收斂出來的分法一樣
+（[tzachbon/claude-model-router-hook](https://github.com/tzachbon/claude-model-router-hook)、
+[AqueGen/model-routing](https://github.com/AqueGen/model-routing)），差別在於
+tier 是一趟 Jev 判斷出來的，不是本地關鍵字啟發式。要覆寫就用
+`JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`；填字面值 `off` 讓該層退回父層模型，
+三層都 `off` 依同一條規則把 hook 關掉。`JEV_TRIAGE_ENABLED=1` 強制開，
+`=0` 是逃生門。
+
+這層以前出貨時 map 是空的，於是自動規則在每台機器上都解析成「關」——
+一個看起來啟用、但不管 Jev 答什麼都動不了模型的 hook。是預設值把它接上線的。
 
 - **Claude**：`agent-glue/claude/spawn-hook.mjs` 註冊 `agent.spawn`，依 tier 設
   subagent 的 `model`。transport 由 hook 自己注入（`agent-glue/src/live.js`）；
@@ -216,15 +241,22 @@ npm run agents:acceptance   # plugin validate、全測試、build、gateway、�
 
 | 能力 | 有打到 | 正確 | ms | 量到的程度 |
 |---|---|---|---|---|
-| prune（`hooks/jev.js`） | 是 | 2/2 | 1412 | 混合塊 39,418 → 16,028（剪 59%，訊號行保住）；純雜訊 39,379 → 92（剪 100%） |
-| route（裸標籤） | 是 | 2/4 | 2006 | 光有標籤不夠 |
-| route（＋descriptions） | 是 | 4/4 | 2523 | 補一張 `descriptions` 表就 4/4 |
-| triage | 是 | 3/3 | 1570 | 3/3 tier 正確、0/3 退回現狀、cache 有進資料 |
-| compact | 是 | 1/1 | 664 | 29,117 → 15,262 字元（47%），文字逐字保留 |
-| verify | 是 | 3/3 | 317 | 判決仍由 deterministic 決定，Jev 只是 advisory |
-| review | 是 | 1/1 | 374 | severity `medium`／route `peer`，而 Jev 說 `high`——deterministic 沒被移動 |
+| prune（`hooks/jev.js`） | 是 | 2/2 | 468 | 混合塊 39,418 → 16,028（剪 59%，訊號行保住）；純雜訊 39,379 → 92（剪 100%） |
+| route（裸標籤） | 是 | 2/4 | 2383 | 光有標籤不夠 |
+| route（＋descriptions） | 是 | 4/4 | 2773 | 手寫一張 `descriptions` 表就 4/4 |
+| route（裸 skill id） | 是 | 2/4 | 2141 | 換成真的 skill id、沒 catalog，一樣卡在 2/4 |
+| route（自動 catalog） | 是 | 4/4 | 2453 | 4/4 個 id 直接從 SKILL.md 讀到描述——呼叫端零改動，2/4 → 4/4 |
+| triage | 是 | 3/3 | 1592 | 3/3 tier 正確、0/3 退回現狀、cache 有進資料 |
+| spawn hook（環境原樣） | 是 | 3/3 | 1283 | 3/3 次 spawn 的模型都被改掉：`cheap→haiku`、`hard→opus`、危險題 `hard→opus` |
+| compact | 是 | 1/1 | 727 | 29,117 → 1,407 字元（95%），文字逐字保留 |
+| verify | 是 | 3/3 | 348 | 判決仍由 deterministic 決定，Jev 只是 advisory |
+| review | 是 | 1/1 | 415 | severity `medium`／route `peer`，而 Jev 說 `high`——deterministic 沒被移動 |
 | gateway `jev_evaluate` | 是 | 2/2 | 343 | coverage `complete`，382 in／66 out token |
-| gateway `jev_apply_policy` | 是 | 5/5 | 1759 | 五個 policy 都會答，全部釘在 `shadow` + `uncalibrated` |
+| gateway `jev_apply_policy` | 是 | 5/5 | 1869 | 五個 policy 都會答，全部釘在 `shadow` + `uncalibrated` |
+
+`spawn hook（環境原樣）`那列才是「這層真的開著」的證據：沒有注入 transport、
+沒有強制旗標，只用環境原樣——跟現在真的 spawn 一個 subagent 拿到的一樣。
+在 tier ladder 出貨之前，這列讀出來是 `3/3 status-quo／inherit`。
 
 這支 probe 正是三個接線缺陷被修掉而不是繼續潛伏的原因：gateway transport
 用陣列索引當 key，導致 `triage` 從來沒看到答案；`makeScorer` 送給 Jev 的是

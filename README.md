@@ -141,6 +141,17 @@ missing/empty candidate list is caught into a bounded `no-candidates` result
 (exit 0). Skill selection rides the same single triage request — it never spawns
 a second Jev call.
 
+**Route reads the candidate descriptions off disk.** A Jev Choice over bare ids
+(`graphify`, `to-issues`, `diagnose`) is a guessing game: measured at 2/4, the
+same four cases score 4/4 once each candidate carries one sentence. The sentence
+already exists — it is the `description:` in a skill's SKILL.md frontmatter — so
+`agent-glue/src/catalog.js` reads it and both CLI entry points fill
+`descriptions` for any candidate the caller did not describe. A caller keeps
+passing ids; route stops guessing. Explicit `descriptions` still win, `null`
+forces bare labels, and an id with no doc simply stays bare. Search path:
+`./skills`, `./.claude/skills`, `~/.claude/skills`, `~/.claude/plugins/*/skills`
+— override with `JEV_ROUTE_CATALOG_DIRS` (colon-separated).
+
 Two rules hold the whole thing up:
 
 - **Any judge failure fails open for the whole pass**, not just the pair that threw.
@@ -169,11 +180,28 @@ deterministic code maps them onto a cheap→medium→hard tier. The skill pick
 rides the same request, so it never costs an extra Jev call and is advisory
 only (never changes the model choice).
 
-**It activates on situation, not on a flag.** `triageEnabled()` is true as soon
-as any per-tier model is configured (`JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`) —
-configuring a tier *is* the request for tiering, and a second opt-in flag only
-bought a state where the hook looked enabled and did nothing.
-`JEV_TRIAGE_ENABLED=1` forces it on, `=0` forces it off.
+**It activates on situation, not on a flag, and the ladder ships.**
+`triageEnabled()` is true as soon as any per-tier model is configured, and
+`DEFAULT_TIER_MODELS` configures all three out of the box:
+
+| tier | default model | what lands here |
+|---|---|---|
+| `cheap` | `haiku` | mechanical work: a rename, a file search, a status read |
+| `medium` | `sonnet` | ordinary implementation: write code, edit, debug |
+| `hard` | `opus` | architecture, deep multi-file analysis, anything risky |
+
+That is the same split the community model-routing hooks converged on
+([tzachbon/claude-model-router-hook](https://github.com/tzachbon/claude-model-router-hook),
+[AqueGen/model-routing](https://github.com/AqueGen/model-routing)); the
+difference is that the tier comes from one Jev judgment rather than local
+keyword heuristics. Override a tier with `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`;
+the literal `off` drops that tier back to the parent's model, and all three
+`off` turns the hook off by the same rule. `JEV_TRIAGE_ENABLED=1` forces it on,
+`=0` is the escape hatch.
+
+The layer used to ship with an empty map, which made the auto rule resolve to
+"off" on every machine: an enabled-looking hook that could not move a model
+whatever Jev answered. Defaults are what put it on the wire.
 
 - **Claude**: `agent-glue/claude/spawn-hook.mjs` registers `agent.spawn` and
   picks the subagent `model` by tier. It injects the live gateway itself
@@ -239,15 +267,23 @@ much it changed the outcome. Last run, 2026-09-22:
 
 | capability | live | correct | ms | measured degree |
 |---|---|---|---|---|
-| prune (`hooks/jev.js`) | yes | 2/2 | 1412 | mixed chunk 39,418 → 16,028 (59% cut, signal line kept); pure noise 39,379 → 92 (100% cut) |
-| route (bare labels) | yes | 2/4 | 2006 | labels alone are not enough |
-| route (+ descriptions) | yes | 4/4 | 2523 | one `descriptions` map took it to 4/4 |
-| triage | yes | 3/3 | 1570 | 3/3 tiers right, 0/3 fell back to status quo, cache populating |
-| compact | yes | 1/1 | 664 | 29,117 → 15,262 chars (47%), prose verbatim |
-| verify | yes | 3/3 | 317 | verdict stays deterministic; Jev is advisory |
-| review | yes | 1/1 | 374 | severity `medium`/route `peer` while Jev said `high` — deterministic unmoved |
+| prune (`hooks/jev.js`) | yes | 2/2 | 468 | mixed chunk 39,418 → 16,028 (59% cut, signal line kept); pure noise 39,379 → 92 (100% cut) |
+| route (bare labels) | yes | 2/4 | 2383 | labels alone are not enough |
+| route (+ descriptions) | yes | 4/4 | 2773 | a hand-written `descriptions` map took it to 4/4 |
+| route (bare skill ids) | yes | 2/4 | 2141 | same 2/4 ceiling with real skill ids and no catalog |
+| route (auto catalog) | yes | 4/4 | 2453 | 4/4 ids described straight out of SKILL.md — 2/4 → 4/4 with no caller change |
+| triage | yes | 3/3 | 1592 | 3/3 tiers right, 0/3 fell back to status quo, cache populating |
+| spawn hook (ambient) | yes | 3/3 | 1283 | 3/3 spawns had their model changed: `cheap→haiku`, `hard→opus`, risky `hard→opus` |
+| compact | yes | 1/1 | 727 | 29,117 → 1,407 chars (95%), prose verbatim |
+| verify | yes | 3/3 | 348 | verdict stays deterministic; Jev is advisory |
+| review | yes | 1/1 | 415 | severity `medium`/route `peer` while Jev said `high` — deterministic unmoved |
 | gateway `jev_evaluate` | yes | 2/2 | 343 | coverage `complete`, 382 in / 66 out tokens |
-| gateway `jev_apply_policy` | yes | 5/5 | 1759 | all five policies answer, all pinned `shadow` + `uncalibrated` |
+| gateway `jev_apply_policy` | yes | 5/5 | 1869 | all five policies answer, all pinned `shadow` + `uncalibrated` |
+
+The `spawn hook (ambient)` row is the one that says the layer is *on*: no
+injected transport, no forced flag, ambient environment only — exactly what a
+subagent spawned right now gets. It read `3/3 status-quo / inherit` until the
+tier ladder shipped.
 
 The probe is the reason three live-wiring defects are fixed rather than latent:
 the gateway transport keyed its answers by array index so `triage` never saw

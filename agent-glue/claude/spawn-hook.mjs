@@ -2,8 +2,9 @@
 /**
  * Claude `agent.spawn` hook — pick the subagent model from a Jev triage.
  *
- * Opt-in and fail-open by default. `enabled:false` (env `JEV_TRIAGE_ENABLED=1`
- * opts in); a disabled or broken hook never changes the subagent's model.
+ * On by situation, fail-open always. It activates because a tier ladder ships
+ * (`DEFAULT_TIER_MODELS`); `JEV_TRIAGE_ENABLED=0` is the escape hatch. A
+ * disabled or broken hook never changes the subagent's model.
  * Risky, low-confidence and large-context cases never downgrade (those floors
  * live in `src/triage.js`). With no injected transport the triage fail-opens
  * to "retain status quo", so the default wiring here is a no-op — the value a
@@ -17,13 +18,33 @@
 import { triage, DEFAULT_TRIAGE } from '../src/triage.js';
 import { liveTransport } from '../src/live.js';
 
-// Optional per-tier model override, e.g. JEV_TRIAGE_MODEL_HARD=opus. Undefined
-// tiers keep the engine default (the parent's own model via `inherit`).
-export const TIER_MODELS = {
-  cheap: process.env.JEV_TRIAGE_MODEL_CHEAP || undefined,
-  medium: process.env.JEV_TRIAGE_MODEL_MEDIUM || undefined,
-  hard: process.env.JEV_TRIAGE_MODEL_HARD || undefined,
-};
+// The shipped tier ladder, cheapest first. Same mapping the community
+// model-routing hooks converged on — haiku for mechanical work, sonnet for
+// ordinary implementation, opus for architecture and deep multi-file analysis —
+// and the same one this repo's tests have always used.
+//
+// These are defaults, not policy: any tier can be overridden, and the floors in
+// `src/triage.js` still forbid a downgrade on a risky, low-confidence or
+// large-context spawn. Shipping them is what makes the hook decide by default;
+// with an empty map it could not change the model whatever Jev answered, so it
+// stayed off and the whole layer was dead weight.
+export const DEFAULT_TIER_MODELS = { cheap: 'haiku', medium: 'sonnet', hard: 'opus' };
+
+/**
+ * Per-tier model override, e.g. `JEV_TRIAGE_MODEL_HARD=opus`. The literal
+ * `off` drops that tier back to the engine default (the parent's own model via
+ * `inherit`); all three `off` turns the hook off, by the rule below.
+ */
+export function tierModels(env = process.env, defaults = DEFAULT_TIER_MODELS) {
+  const pick = (v, d) => (v === 'off' ? undefined : (v || d));
+  return {
+    cheap: pick(env.JEV_TRIAGE_MODEL_CHEAP, defaults.cheap),
+    medium: pick(env.JEV_TRIAGE_MODEL_MEDIUM, defaults.medium),
+    hard: pick(env.JEV_TRIAGE_MODEL_HARD, defaults.hard),
+  };
+}
+
+export const TIER_MODELS = tierModels();
 
 /**
  * Activation by situation, not by a flag the user has to remember.
@@ -31,12 +52,14 @@ export const TIER_MODELS = {
  *   JEV_TRIAGE_ENABLED=0  -> off, always (the escape hatch)
  *   JEV_TRIAGE_ENABLED=1  -> on, always (even with no model map: the decision
  *                            is then observable in the ledger but changes nothing)
- *   unset                 -> ON exactly when a tier model is configured.
+ *   unset                 -> ON exactly when a tier model is configured, which
+ *                            the shipped `DEFAULT_TIER_MODELS` makes true out
+ *                            of the box.
  *
- * The auto rule is the whole point: with no `JEV_TRIAGE_MODEL_*` set, the hook
- * could not change the subagent's model whatever Jev answered, so spending a
- * request would buy nothing. Configure one tier and it starts deciding — no
- * second switch to find.
+ * The auto rule is the whole point: a hook with nowhere to move the model could
+ * not change anything whatever Jev answered, so spending a request would buy
+ * nothing. Set every tier to `off` and it turns itself back off — no second
+ * switch to find.
  */
 export function triageEnabled(env = process.env, models = TIER_MODELS) {
   const flag = env.JEV_TRIAGE_ENABLED;

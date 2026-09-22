@@ -107,9 +107,16 @@ criteria＝catalog＋`no_match`，**騎同一趟請求、不另開一次**）—
 deterministic code 映射到 cheap→medium→hard tier。route 已接真線（`cli.mjs`/
 `bridge.mjs` 不再回寫死 stub）：無 live model 時 `route` 自身 fail-open 到
 `no_match`，candidates 缺漏則 catch 成有界 `no-candidates`（exit 0）。
-兩端都接、都純 advisory，且**依情境自動啟用**：`triageEnabled()` 只要
-`JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD` 任一有設就是 true——設了 tier model 本身
-就是「我要分層」的意思。`JEV_TRIAGE_ENABLED=1/0` 可強制覆寫。
+route 也不再只拿到裸 id：`agent-glue/src/catalog.js` 會去
+`./skills`、`~/.claude/skills`、`~/.claude/plugins/*/skills` 把每個 candidate 的
+SKILL.md frontmatter `description:` 讀出來自動補成 `descriptions`（實測 2/4 → 4/4，
+呼叫端零改動；`JEV_ROUTE_CATALOG_DIRS` 可覆寫路徑）。
+
+兩端都接、都純 advisory，且**依情境自動啟用**：`triageEnabled()` 只要任一 tier
+model 有設就是 true，而 `DEFAULT_TIER_MODELS`（`cheap: haiku`／`medium: sonnet`／
+`hard: opus`）開箱就把三層設好，所以預設是**開**的。`JEV_TRIAGE_MODEL_*` 逐層
+覆寫，字面值 `off` 退回父層模型，三層都 `off` 就把 hook 關掉；
+`JEV_TRIAGE_ENABLED=1/0` 強制覆寫。
 
 - **Claude**：`agent-glue/claude/spawn-hook.mjs` 註冊 `agent.spawn`，依 tier 設
   subagent 的 `model`。transport 由 hook 自己注入（`agent-glue/src/live.js`）：

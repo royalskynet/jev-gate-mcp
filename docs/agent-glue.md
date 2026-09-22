@@ -86,9 +86,12 @@ cheap→medium→hard tier。skill 選擇是 advisory 的 `skills` 陣列，不�
 - large context（bucket `l`）→ 永不降級到 cheapest。
 
 **Claude 端**：`claude/spawn-hook.mjs` 註冊 `agent.spawn`，**依情境自動啟用**：
-`triageEnabled()` 只要 `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD` 任一有設就是 true——
-設了 tier model 本身就是「我要分層」的意思，再多一個 opt-in flag 只會多出
-「看起來開著但什麼都不做」的狀態。`JEV_TRIAGE_ENABLED=1/0` 可強制覆寫。
+`triageEnabled()` 只要任一 tier model 有設就是 true，而 `DEFAULT_TIER_MODELS`
+（`cheap: haiku`／`medium: sonnet`／`hard: opus`）開箱就把三層都設好，所以預設是**開**的。
+以前 map 是空的，自動規則於是在每台機器上都解析成「關」——一個看起來啟用、
+卻不管 Jev 答什麼都動不了模型的 hook。`JEV_TRIAGE_MODEL_*` 可逐層覆寫，
+字面值 `off` 讓該層退回父層模型，三層都 `off` 依同一條規則把 hook 關掉；
+`JEV_TRIAGE_ENABLED=1/0` 強制覆寫。
 transport 由 hook 自己注入（`agent-glue/src/live.js`）：沒有 provider key 時
 transport 是 `null`，triage fail-open 回原狀。skill 選擇併進同趟 triage 的 `skill`
 第 4 題（`pickSkills` 的關鍵字啟發式已刪除），catalog 來源

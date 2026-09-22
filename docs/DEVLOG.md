@@ -1051,3 +1051,73 @@ enabled 就 stand down 並在 ledger 寫明原因。要用本版得先停用外�
 live-probe 九項能力全部 `live=YES`。政策檔零改動、MCP surface 仍兩支、
 五個 policy 仍 `shadow` + `uncalibrated`。文件改成中英對照：`README.md` ⇄
 `README.zh-TW.md`，深入的繁中文件留在 `docs/zh-TW/`。
+
+---
+
+## 18. 上線：descriptions 自動接線＋tier ladder 出貨（2026-09-22）
+
+§17 量出兩個「能力在、但沒上線」：route 拿裸 id 只有 2/4，spawn hook 因為
+tier model map 是空的而整台機器都關著。這一節把兩個都接上真線。
+
+### 18.1 route 的 descriptions：不是叫呼叫端寫，是去磁碟讀
+
+原本的選項是「請呼叫端手寫一張 `descriptions` 表」。沒人會寫，所以 production
+一直跑在半準。真正的事實是：那句話早就存在——skill 的 SKILL.md frontmatter
+`description:` 就是「這個 candidate 是幹嘛的，一句話」。
+
+新增 `agent-glue/src/catalog.js`：`describeCandidates(ids)` 依序找
+`./skills`、`./.claude/skills`、`~/.claude/skills`、`~/.claude/plugins/*/skills`
+底下的 `<id>/SKILL.md`，解析 frontmatter 取 `description:`。
+`JEV_ROUTE_CATALOG_DIRS`（冒號分隔）可覆寫。全程 fail-soft：讀不到就沒有那一條，
+等於該 candidate 維持原本的裸標籤行為。
+
+接線只在兩個真實呼叫端各兩行（`agent-glue/cli.mjs`、`agent-glue/claude/bridge.mjs`）：
+`descriptions === undefined` 才自動補，明確給的永遠優先，給 `null` 強制裸標籤。
+`plugin/lib/route.js` 保持純函式，沒有被塞進檔案系統。
+
+實測（`scripts/live-probe.mjs`，真 skill id）：
+
+| | 正確 | 描述取得 |
+|---|---|---|
+| route（裸 skill id） | 2/4 | 0/4 |
+| route（自動 catalog） | **4/4** | **4/4** |
+
+### 18.2 tier ladder 出貨，triage 才真的開著
+
+`triageEnabled()` 的自動規則（§17.4）本身沒錯，錯在 `TIER_MODELS` 出貨時是空的，
+於是規則在每台機器上都解析成「關」。這是 §17.2 那類缺陷的同一個形狀：
+**一個看起來啟用、但不管模型答什麼都動不了任何東西的 hook**。
+
+`DEFAULT_TIER_MODELS = { cheap: 'haiku', medium: 'sonnet', hard: 'opus' }`。
+社群的 model-routing hook（tzachbon/claude-model-router-hook、AqueGen/model-routing）
+收斂出來的也是這個分法，差別在我們的 tier 來自一趟 Jev 判斷而不是本地關鍵字。
+`tierModels(env)` 逐層覆寫，字面值 `off` 退回父層模型，三層都 `off` 依同一條
+規則把 hook 關回去——逃生門還在，但不再需要為了「開」而設任何東西。
+
+`src/triage.js` 的樓地板沒有動：risky／低信心／大 context 一律不降級。
+
+### 18.3 probe 加一列「環境原樣」
+
+`spawn hook (ambient)`：不注入 transport、不強制旗標，直接用環境原樣跑
+`spawnDecision`。這列才回答「現在 spawn 一個 subagent 會不會真的換模型」。
+ladder 出貨前讀出來是 `3/3 status-quo / inherit`，出貨後：
+
+```
+spawn hook (ambient)   YES  3/3  1283ms  3/3 spawns had their model changed;
+                                          cheap->haiku, hard->opus, hard->opus
+```
+
+### 18.4 對帳
+
+| | 承接 §17 | 本節 |
+|---|---|---|
+| tests | 193 | 199 |
+| pass | 191 | 197 |
+| **fail** | **0** | **0** |
+| skipped | 2 | 2 |
+| live-probe 列數 | 9 | 12（全 `live=YES`） |
+
+改掉一條舊測試：`spawn hook: DISABLED by default` 描述的是舊契約，改寫成
+`JEV_TRIAGE_ENABLED=0 disables it`——逃生門仍被釘住，而且 `=0` 必須在任何
+provider 呼叫之前短路。政策檔零改動，五個 policy 仍 `shadow` + `uncalibrated`。
+plugin 版本 0.4.0 → 0.5.0。

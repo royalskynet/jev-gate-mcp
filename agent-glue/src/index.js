@@ -17,4 +17,5 @@ export * from './verify.js';
 export * from './review.js';
 export * from './client.js';
 export * from './triage.js';
+export * from './catalog.js';
 export { route, makeScorer, EmptyCandidatesError } from '../../plugin/lib/route.js';

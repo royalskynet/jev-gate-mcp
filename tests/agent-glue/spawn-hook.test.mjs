@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnDecision, tierToModel, triageEnabled } from '../../agent-glue/claude/spawn-hook.mjs';
+import {
+  spawnDecision, tierToModel, triageEnabled, tierModels, TIER_MODELS, DEFAULT_TIER_MODELS,
+} from '../../agent-glue/claude/spawn-hook.mjs';
 
 // A fake triage-shaped transport that returns an easy, safe, confident verdict.
 function easyTransport() {
@@ -19,11 +21,22 @@ function easyTransport() {
   };
 }
 
-test('spawn hook: DISABLED by default — never changes the subagent model', async () => {
-  const d = await spawnDecision({ prompt: 'do a big risky redesign' });
-  assert.equal(d.change, false);
-  assert.equal(d.model, undefined);
-  assert.equal(d.reason, 'disabled');
+// The hook now ships a tier ladder and is on by situation, so the thing worth
+// pinning is the escape hatch — and that it still never changes a model when it
+// is off. (No transport is injected here on purpose: `=0` must short-circuit
+// before any provider call.)
+test('spawn hook: JEV_TRIAGE_ENABLED=0 disables it — never changes the subagent model', async () => {
+  const prev = process.env.JEV_TRIAGE_ENABLED;
+  process.env.JEV_TRIAGE_ENABLED = '0';
+  try {
+    const d = await spawnDecision({ prompt: 'do a big risky redesign' });
+    assert.equal(d.change, false);
+    assert.equal(d.model, undefined);
+    assert.equal(d.reason, 'disabled');
+  } finally {
+    if (prev === undefined) delete process.env.JEV_TRIAGE_ENABLED;
+    else process.env.JEV_TRIAGE_ENABLED = prev;
+  }
 });
 
 test('spawn hook: risky/large-context/low-confidence never downgrades the model', async () => {
@@ -136,6 +149,22 @@ test('spawn-hook: auto-enables only when a tier model is configured', () => {
   assert.equal(triageEnabled({}, { cheap: undefined, medium: undefined, hard: 'opus' }), true);
   assert.equal(triageEnabled({ JEV_TRIAGE_ENABLED: '0' }, { hard: 'opus' }), false, 'explicit off wins');
   assert.equal(triageEnabled({ JEV_TRIAGE_ENABLED: '1' }, {}), true, 'explicit on needs no model map');
+});
+
+// The layer used to ship with an empty map, so the auto rule above resolved to
+// "off" on every machine and nothing was ever decided. A ladder ships now.
+test('spawn-hook: the tier ladder ships, so the hook is on out of the box', () => {
+  assert.deepEqual(tierModels({}), { cheap: 'haiku', medium: 'sonnet', hard: 'opus' });
+  assert.deepEqual(TIER_MODELS, DEFAULT_TIER_MODELS, 'no env set -> the shipped ladder');
+  assert.equal(triageEnabled({}, tierModels({})), true);
+  assert.equal(
+    tierModels({ JEV_TRIAGE_MODEL_HARD: 'opus-4-1' }).hard, 'opus-4-1', 'one tier overridden',
+  );
+  const allOff = tierModels({
+    JEV_TRIAGE_MODEL_CHEAP: 'off', JEV_TRIAGE_MODEL_MEDIUM: 'off', JEV_TRIAGE_MODEL_HARD: 'off',
+  });
+  assert.deepEqual(allOff, { cheap: undefined, medium: undefined, hard: undefined });
+  assert.equal(triageEnabled({}, allOff), false, 'all tiers off turns the hook back off');
 });
 
 // Regression: the hook used to call triage with deps={}, so the core fell back

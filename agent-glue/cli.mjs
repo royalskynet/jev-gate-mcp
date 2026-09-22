@@ -15,7 +15,7 @@
  *   echo '<json>' | node agent-glue/cli.mjs review
  *   echo '<json>' | node agent-glue/cli.mjs route
  */
-import { compactMessages, verifyCompletion, reviewDiff, route } from './src/index.js';
+import { compactMessages, verifyCompletion, reviewDiff, route, describeCandidates } from './src/index.js';
 
 const sub = process.argv[2];
 
@@ -50,8 +50,14 @@ switch (sub) {
   case 'route': {
     // Real route judgment; with no live Jev model `route` itself fail-opens.
     // Empty/malformed candidates throw as EmptyCandidatesError -> bounded no-candidates.
+    // Bare ids score 2/4 where the same candidates with one sentence each score
+    // 4/4, so fill the map from the skill catalog unless the caller said what
+    // its candidates are (or passed `descriptions: null` to force bare labels).
     try {
-      respond(await route(payload));
+      const descriptions = payload.descriptions === undefined
+        ? await describeCandidates(payload.candidates)
+        : payload.descriptions;
+      respond(await route({ ...payload, descriptions }));
     } catch {
       respond({ no_match: true, top: [], dispatch: null, reason: 'no-candidates' });
     }

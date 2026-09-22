@@ -21,6 +21,8 @@ import { makeJudge, getModel } from '../plugin/lib/judge.js';
 import { makeScorer } from '../plugin/lib/route.js';
 import { route } from '../plugin/lib/route.js';
 import { triage } from '../agent-glue/src/triage.js';
+import { describeCandidates } from '../agent-glue/src/catalog.js';
+import { spawnDecision, TIER_MODELS } from '../agent-glue/claude/spawn-hook.mjs';
 import { compactMessages } from '../agent-glue/src/compact.js';
 import { verifyCompletion } from '../agent-glue/src/verify.js';
 import { reviewDiff } from '../agent-glue/src/review.js';
@@ -106,6 +108,36 @@ async function probeRoute(descriptions) {
     `${correct}/${ROUTE_CASES.length} correct`, ms, `${c.n} jev calls`);
 }
 
+// ------------------------------------------- 2b. route, descriptions from disk
+// The row above proves descriptions help when a caller writes them by hand.
+// Nobody does. This one uses real skill ids and lets `describeCandidates` pull
+// the sentences out of their SKILL.md frontmatter — the wiring an actual caller
+// gets for free, measured against the same bare-label baseline.
+const CATALOG_CASES = [
+  { req: 'the telegram bot went silent and stopped replying', want: 'telegram-channels-debug' },
+  { req: 'which modules depend on the config loader', want: 'graphify' },
+  { req: 'split this plan into implementation tickets', want: 'to-issues' },
+  { req: 'what is the weather in Taipei tomorrow', want: 'no_match' },
+];
+const CATALOG_CANDIDATES = ['telegram-channels-debug', 'graphify', 'to-issues', 'diagnose'];
+async function probeRouteCatalog(auto) {
+  const descriptions = auto ? await describeCandidates(CATALOG_CANDIDATES) : null;
+  const found = descriptions ? Object.keys(descriptions).length : 0;
+  const [scorer, c] = counted(makeScorer());
+  let correct = 0;
+  const t0 = t();
+  for (const k of CATALOG_CASES) {
+    const r = await route({ candidates: CATALOG_CANDIDATES, userRequest: k.req, scorer, descriptions });
+    const got = r.no_match ? 'no_match' : (r.top?.[0]?.candidate ?? null);
+    if (got === k.want) correct++;
+    else console.error(`  catalog route miss${auto ? '' : ' (bare ids)'}: "${k.req.slice(0, 40)}" want=${k.want} got=${got}`);
+  }
+  const ms = t() - t0;
+  row(auto ? 'route (auto catalog)' : 'route (bare skill ids)', c.n > 0, CATALOG_CASES.length, correct,
+    `${correct}/${CATALOG_CASES.length} correct; ${found}/${CATALOG_CANDIDATES.length} ids described from SKILL.md`,
+    ms, `${c.n} jev calls`);
+}
+
 // --------------------------------------------------------------- 3. triage
 const TRIAGE_CASES = [
   { text: 'fix the typo in the README heading', want: 'cheap', why: 'trivial' },
@@ -138,6 +170,34 @@ async function probeTriage() {
   row('triage', calls > 0, TRIAGE_CASES.length, correct,
     `${correct}/${TRIAGE_CASES.length} tiers right; ${statusQuo}/${TRIAGE_CASES.length} fell back to status-quo; cache=${cacheWorked ? 'ok' : 'BROKEN'}`,
     ms, `${calls} jev calls`);
+}
+
+// ------------------------------------------------- 3b. the agent.spawn hook
+// End to end through the hook a host actually mounts: no injected transport, no
+// forced flag, ambient environment only. This is the row that separates "the
+// triage core works" from "a subagent spawned right now gets a model".
+const SPAWN_CASES = [
+  { prompt: 'fix the typo in the README heading', want: 'cheap' },
+  { prompt: 'design a sharding strategy for a 40-node write-heavy cluster and prove the rebalance is safe', want: 'hard' },
+  { prompt: 'deploy the migration to production and delete the old table', wantNot: 'cheap' },
+];
+async function probeSpawn() {
+  let correct = 0;
+  let changed = 0;
+  const seen = [];
+  const t0 = t();
+  for (const k of SPAWN_CASES) {
+    const d = await spawnDecision({ prompt: k.prompt, contextChars: 1000 }, {});
+    const tier = d.decision?.tier ?? null;
+    if (d.change) changed++;
+    if (k.want ? tier === k.want : tier !== k.wantNot) correct++;
+    else console.error(`  spawn miss: "${k.prompt.slice(0, 40)}" want=${k.want ?? `not ${k.wantNot}`} got=${tier} reason=${d.reason}`);
+    seen.push(`${tier ?? 'status-quo'}->${d.model ?? 'inherit'}`);
+  }
+  const ms = t() - t0;
+  row('spawn hook (ambient)', changed > 0, SPAWN_CASES.length, correct,
+    `${changed}/${SPAWN_CASES.length} spawns had their model changed; ${seen.join(', ')}`,
+    ms, `ladder ${JSON.stringify(TIER_MODELS)}`);
 }
 
 // -------------------------------------------------------------- 4. compact
@@ -277,7 +337,10 @@ const PROBES = {
   prune: probePrune,
   route: () => probeRoute(null),
   'route-described': () => probeRoute(ROUTE_DESCRIPTIONS),
+  'route-bare-skills': () => probeRouteCatalog(false),
+  'route-catalog': () => probeRouteCatalog(true),
   triage: probeTriage,
+  spawn: probeSpawn,
   compact: probeCompact,
   verify: probeVerify,
   review: probeReview,

@@ -98,10 +98,16 @@ stage('triage + spawn-hook smoke', () => {
      const t = { async evaluate(){ return { answers:{ difficulty:easy(), kind:{type:'choice',choice:'coding',confidence:0.9}, costly_mistake:{type:'noul',noul:0.1} }, latency_ms:5 }; } };
      const r = await triage({ text:'quick rename', contextChars:1000 }, { transport:t });
      if (r.tier !== 'cheap') throw new Error('expected cheap on safe easy task, got '+r.tier);
-     // spawn hook is off by default and must not change the model
-     const d = await spawnDecision({ prompt:'do a big risky redesign' });
-     if (d.change !== false) throw new Error('spawn hook must be off by default');
-     process.stdout.write('triage=cheap spawn=disabled-by-default');`,
+     // the shipped ladder is what makes the hook decide: no modelMap passed here,
+     // so a 'cheap' verdict must land on the default cheap model.
+     const on = await spawnDecision({ prompt:'quick rename', contextChars:1000 }, { forceEnabled:true, transport:t });
+     if (on.model !== 'haiku') throw new Error('default tier ladder not applied, got '+on.model);
+     // and the escape hatch must short-circuit before any provider call
+     process.env.JEV_TRIAGE_ENABLED = '0';
+     const off = await spawnDecision({ prompt:'do a big risky redesign' });
+     delete process.env.JEV_TRIAGE_ENABLED;
+     if (off.change !== false) throw new Error('JEV_TRIAGE_ENABLED=0 must disable the hook');
+     process.stdout.write('triage=cheap spawn=haiku escape-hatch=ok');`,
   ]);
   return out.trim() || 'triage+spawn ok';
 });
