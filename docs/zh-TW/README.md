@@ -107,12 +107,13 @@ criteria＝catalog＋`no_match`，**騎同一趟請求、不另開一次**）—
 deterministic code 映射到 cheap→medium→hard tier。route 已接真線（`cli.mjs`/
 `bridge.mjs` 不再回寫死 stub）：無 live model 時 `route` 自身 fail-open 到
 `no_match`，candidates 缺漏則 catch 成有界 `no-candidates`（exit 0）。
-兩端都接、但都純 advisory 且預設 **opt-in（`enabled:false`）**：
+兩端都接、都純 advisory，且**依情境自動啟用**：`triageEnabled()` 只要
+`JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD` 任一有設就是 true——設了 tier model 本身
+就是「我要分層」的意思。`JEV_TRIAGE_ENABLED=1/0` 可強制覆寫。
 
-- **Claude**：`agent-glue/claude/spawn-hook.mjs` 註冊 `agent.spawn`。開啟
-  （`JEV_TRIAGE_ENABLED=1`）**且**注入 transport 時才依 tier 設 subagent 的 `model`；
-  預設接線什麼都不改，所以副 agent 的模型不會被動。要改可設
-  `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD` 對應各 tier。
+- **Claude**：`agent-glue/claude/spawn-hook.mjs` 註冊 `agent.spawn`，依 tier 設
+  subagent 的 `model`。transport 由 hook 自己注入（`agent-glue/src/live.js`）：
+  沒有 provider key 時 transport 是 `null`，triage fail-open 回原狀，什麼都不改。
 - **Codex**：`UserPromptSubmit` 跑同一套 triage 但換不了模型，只吐一行 advisory
   `additionalContext` notice，並在 `codex-route.log` 寫一行 bounded 記錄。
 
@@ -122,8 +123,30 @@ decision cache key 含 **context bucket**（小 context 的答案不會被大 co
 `features` 隱私模式（敏感 profile 自動開啟）只送統計特徵、原文不出機器。全程 fail-open：
 transport 掛了就保留現狀，絕不往上或往下猜。每筆決策記一行 bounded ledger，不記原文不記 secret。
 
-**壓縮互斥**：本 plugin 不註冊自己的 `session.compact`。若本機同時裝了外部 fast-jev
-compaction plugin，**不要雙開**，切換方式見 [`docs/agent-glue.md`](../agent-glue.md) §2。
+### 快速壓縮（已併入本 plugin）
+
+`agent-glue/claude/compact-hook.mjs` 註冊 `session.compact` 與 `turn.complete`。
+「快」是兩件事：壓縮在 **context 百分比**（`JEV_COMPACT_AT_PERCENT`，預設 60）就觸發，
+不是撞牆才做；每個 tool call／result 對只問一次 System One（約 350 in／35 out token、
+約 500 ms）決定去留，**沒有摘要 pass**，留下來的是逐字原文。
+
+| 旋鈕 | env | 預設 |
+|---|---|---|
+| 觸發點 | `JEV_COMPACT_AT_PERCENT` | 60（% context） |
+| 縮減門檻 | `JEV_COMPACT_MIN_REDUCTION` | 4000 字元 |
+| 釘住最近 turn | `JEV_COMPACT_PIN_LAST` | 6 |
+| 給 judge 看的 payload 開頭 | `JEV_COMPACT_ASK_CHARS` | 1200 |
+| 關閉 | `JEV_COMPACT_ENABLED=0` | 開啟 |
+
+契約在 `agent-glue/src/compact.js`，不是調參：user/assistant 文字逐字保留、
+call 與其 result 成對刪、首尾 turn 釘住；judge 失敗或縮減未達門檻就把**原始** messages
+還給 host 走內建壓縮。這裡的 fail-open 方向是「保留 context」。
+觀測：`~/.openclaw/state/jev-compact.log`。
+
+**壓縮互斥**：外部 fast-jev compaction plugin 也註冊 `session.compact`，**不要雙開**。
+本 plugin 會讓路：`session.start` 讀 `~/.claude/settings.json`，發現
+`fast-jev-compaction@…` 仍 enabled 就 stand down 並在 ledger 寫明。詳見
+[`docs/agent-glue.md`](../agent-glue.md) §2。
 
 ```sh
 npm run agents:acceptance

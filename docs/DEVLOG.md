@@ -990,3 +990,64 @@ catalog 來源：`input.skills ?? deps.skillCatalog ?? []`。skills 純 advisory
 
 `npm run agents:acceptance` 全綠（`ALL OK` exit 0）。政策檔零改動、MCP surface 仍兩支、
 `gateway/` 零 diff。route 與 skills 皆 advisory，**不改變 model 選擇、不設任何硬阻斷**。
+
+## 17. 實測 → 三個接線缺陷 → 快速壓縮併入 gate（2026-09-22）
+
+### 17.1 為什麼要寫 live-probe
+
+181 個測試全綠，但沒有一個能回答「這項能力在真線上**到底有沒有打到 Jev**」。
+fail-open 從外面看跟成功長得一模一樣：triage 退回現狀、prune 回原文、verify 回
+deterministic 判決——全部都是合法輸出。所以寫了 `scripts/live-probe.mjs`，
+每項能力對真 provider 跑一遍，回報三件事：`live`（有沒有發出請求）、
+`correct/cases`、以及量到的改變程度。
+
+### 17.2 它抓到什麼（三個都通過了單元測試）
+
+1. **`makeGatewayTransport` 用陣列索引當 answers 的 key。** gateway `evaluate`
+   回的是 `[{question, answer}]` 陣列，`Object.entries` 過去變成 `{0:…,1:…}`，
+   於是 `answers.difficulty` 永遠 undefined，triage 每一 turn 都 fail-open。
+   只有 fake transport（本來就用 question id 當 key）被測過。修在
+   `agent-glue/src/client.js`，加兩筆回歸測試。triage 1/3 → 3/3，
+   decision cache 也從「永遠空的」變成會進資料（它只 cache 非 null 的 tier）。
+2. **`makeScorer` 送的是 `criteria[c] = null`。** Jev 看到的是裸標籤。
+   `plugin/lib/route.js` 加可選 `descriptions`，dispatch 也帶上內聯描述。
+   route 2/4 → 4/4。裸標籤那組保留在 probe 裡當對照。
+3. **spawn hook 呼叫 `triage(input, deps)` 而 `deps={}`。** 永遠走
+   `defaultNoTransport`，「啟用」與「停用」在行為上分不出來。新增
+   `agent-glue/src/live.js`（lazy、fail-soft，沒 key 就回 `null`），
+   spawn hook 與 Codex hook 都自己注入。
+
+教訓：注入式 transport 買到可測性，但**只測 fake 的形狀**時，測試綠的是膠水的
+想像，不是真線。probe 留在 repo 裡，不是一次性腳本。
+
+### 17.3 快速壓縮併入本 plugin
+
+`agent-glue/claude/compact-hook.mjs` 註冊 `session.compact`（逐字壓縮，契約沿用
+`agent-glue/src/compact.js`）與 `turn.complete`（`JEV_COMPACT_AT_PERCENT` 預設 60，
+撞牆前就做）。`compactMessages` 新增 `judgeHeadChars`（預設 0＝原契約：只給名字與
+大小），hook opt-in 一段有界開頭——「這段 `npm ls` 還需要嗎」光看工具名答不出來。
+
+**雙開問題**：外部 `fast-jev-compaction@…` 也註冊 `session.compact`，兩個模組回
+同一事件是 undefined，而症狀（壓縮「有時候」才逐字）極難追。所以本版讓路：
+`rivalCompactor()` 在 `session.start` 讀 `~/.claude/settings.json`，發現對方仍
+enabled 就 stand down 並在 ledger 寫明原因。要用本版得先停用外部 plugin。
+
+### 17.4 triage 改成依情境自動啟用
+
+`triageEnabled()`：任一 `JEV_TRIAGE_MODEL_*` 有設就是 true，`JEV_TRIAGE_ENABLED=1/0`
+強制覆寫。設了 tier model 本身就是「我要分層」的意思；原本的第二道 opt-in flag
+只換來「看起來開著但什麼都不做」這種狀態——正是 §17.2 第 3 點藏身的地方。
+
+### 17.5 對帳
+
+| | 承接 §16 | 修後 |
+|---|---|---|
+| tests | 181 | 193 |
+| pass | 179 | 191 |
+| **fail** | **0** | **0** |
+| skipped | 2 | 2 |
+
+`npm run agents:acceptance` `ALL OK`、`claude plugin validate .` passed。
+live-probe 九項能力全部 `live=YES`。政策檔零改動、MCP surface 仍兩支、
+五個 policy 仍 `shadow` + `uncalibrated`。文件改成中英對照：`README.md` ⇄
+`README.zh-TW.md`，深入的繁中文件留在 `docs/zh-TW/`。

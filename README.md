@@ -1,7 +1,6 @@
 # Jev Gate
 
-> 繁中：若要把 Decision Gateway 接到 Claude Code 或 Codex，直接看
-> [繁中接線與 Codex 快速指南](docs/zh-TW/README.md)。
+**English** · [繁體中文](README.zh-TW.md)
 
 ## Three separate things live here
 
@@ -168,14 +167,18 @@ not a replacement. Manifests stay in separate files — `hooks/hooks.json` for C
 over the catalog + `no_match`) when a skill catalog is supplied — and
 deterministic code maps them onto a cheap→medium→hard tier. The skill pick
 rides the same request, so it never costs an extra Jev call and is advisory
-only (never changes the model choice). It is wired on both hosts but is
-strictly advisory and **opt-in** (`enabled:false` by default):
+only (never changes the model choice).
 
-- **Claude**: `agent-glue/claude/spawn-hook.mjs` registers `agent.spawn`. When
-  enabled (`JEV_TRIAGE_ENABLED=1`) **and** a transport is injected, it picks the
-  subagent `model` by tier; with the default wiring it does nothing, so the
-  subagent's model is never changed out of the box. A per-tier model can be set
-  with `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`.
+**It activates on situation, not on a flag.** `triageEnabled()` is true as soon
+as any per-tier model is configured (`JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`) —
+configuring a tier *is* the request for tiering, and a second opt-in flag only
+bought a state where the hook looked enabled and did nothing.
+`JEV_TRIAGE_ENABLED=1` forces it on, `=0` forces it off.
+
+- **Claude**: `agent-glue/claude/spawn-hook.mjs` registers `agent.spawn` and
+  picks the subagent `model` by tier. It injects the live gateway itself
+  (`agent-glue/src/live.js`); with no provider key the transport is `null` and
+  the triage fail-opens to the status quo, so a missing key changes nothing.
 - **Codex**: `UserPromptSubmit` runs the same triage but can't change the model,
   so it only emits a one-line advisory `additionalContext` notice and writes a
   bounded line to `codex-route.log`.
@@ -189,12 +192,71 @@ privacy mode (forced for a sensitive profile) sends only statistics, never the
 original text. Every decision records one bounded ledger line. Fail-open holds:
 any transport failure keeps the status quo and never guesses up or down.
 
-This plugin does **not** register its own `session.compact`. If you also run the
-external fast-jev compaction plugin, do not enable both — see
-[`docs/agent-glue.md`](docs/agent-glue.md) for the migration.
+### Fast compaction (`session.compact` + `turn.complete`)
+
+`agent-glue/claude/compact-hook.mjs` folds the fast-jev-compaction capability
+into this plugin. "Fast" means two things: compaction fires on a **context
+percentage** (`JEV_COMPACT_AT_PERCENT`, default 60) rather than at the wall, and
+one System One judgment per tool call/result pair (~350 in / ~35 out tokens,
+~500 ms) decides what goes — there is no summarisation pass, so what survives is
+**byte-for-byte** what was there.
+
+| knob | env | default |
+|---|---|---|
+| trigger point | `JEV_COMPACT_AT_PERCENT` | 60 (% of context) |
+| reduction floor | `JEV_COMPACT_MIN_REDUCTION` | 4,000 chars |
+| pinned recent turns | `JEV_COMPACT_PIN_LAST` | 6 |
+| payload head shown to the judge | `JEV_COMPACT_ASK_CHARS` | 1,200 |
+| off switch | `JEV_COMPACT_ENABLED=0` | on |
+
+The contract is `agent-glue/src/compact.js` and is not tuning: user/assistant
+prose is never dropped or truncated, a dropped call and its result go together,
+the first and the most recent turns are pinned, and a judge failure or a
+below-floor reduction hands the host its **original** messages back so built-in
+compaction runs. Fail-open here means "keep the context".
+
+`compactMessages` shows the judge names and sizes only (`judgeHeadChars: 0`) by
+default; the hook opts in to a bounded head, because "is this `npm ls` output
+still needed" is not answerable from a tool name.
+
+**Do not run this and the standalone fast-jev-compaction plugin at once.** Two
+`session.compact` registrations answering one event is undefined. This one
+yields: at `session.start` it reads `~/.claude/settings.json`, and if
+`fast-jev-compaction@…` is still enabled it stands down and says so in
+`~/.openclaw/state/jev-compact.log`. Disable the standalone plugin to let this
+one run.
 
 ```sh
 npm run agents:acceptance   # plugin validate, full tests, build, gateway, both host smokes
+```
+
+## Measured, live
+
+`scripts/live-probe.mjs` runs every capability against the real provider and
+reports three things per row: did it *reach* Jev at all (a fail-open looks
+exactly like success from the outside), how many cases it got right, and by how
+much it changed the outcome. Last run, 2026-09-22:
+
+| capability | live | correct | ms | measured degree |
+|---|---|---|---|---|
+| prune (`hooks/jev.js`) | yes | 2/2 | 1412 | mixed chunk 39,418 → 16,028 (59% cut, signal line kept); pure noise 39,379 → 92 (100% cut) |
+| route (bare labels) | yes | 2/4 | 2006 | labels alone are not enough |
+| route (+ descriptions) | yes | 4/4 | 2523 | one `descriptions` map took it to 4/4 |
+| triage | yes | 3/3 | 1570 | 3/3 tiers right, 0/3 fell back to status quo, cache populating |
+| compact | yes | 1/1 | 664 | 29,117 → 15,262 chars (47%), prose verbatim |
+| verify | yes | 3/3 | 317 | verdict stays deterministic; Jev is advisory |
+| review | yes | 1/1 | 374 | severity `medium`/route `peer` while Jev said `high` — deterministic unmoved |
+| gateway `jev_evaluate` | yes | 2/2 | 343 | coverage `complete`, 382 in / 66 out tokens |
+| gateway `jev_apply_policy` | yes | 5/5 | 1759 | all five policies answer, all pinned `shadow` + `uncalibrated` |
+
+The probe is the reason three live-wiring defects are fixed rather than latent:
+the gateway transport keyed its answers by array index so `triage` never saw
+them, `makeScorer` sent Jev bare labels with `null` criteria, and the spawn hook
+never injected a transport — each one passed its unit tests, because the fake
+transport had the shape the real one did not.
+
+```sh
+node scripts/live-probe.mjs   # needs a provider key; costs a few cents
 ```
 
 ## Also in this repo, not mounted
@@ -213,6 +275,7 @@ tested but deliberately not wired — see `docs/NEXT.md` for why.
 - [Domain context](CONTEXT.md)
 - [Architecture decisions](docs/adr/0001-governed-two-tool-mcp-boundary.md)
 - [What is next](docs/NEXT.md)
+- [繁中接線與 Codex 快速指南](docs/zh-TW/README.md) — wiring the gateway into Claude Code / Codex
 - [Handoff 2026-09-21（繁中）](docs/HANDOFF-20260921.md) — **start here if you have no prior context**
 - [Jev 十步操作手冊（繁中）](docs/zh-TW/PLAYBOOK.md) — the ten-step playbook mapped onto this repo, gaps included
 - [Agent glue（繁中）](docs/agent-glue.md) — install / disable / observability per host, and the four effectiveness metrics

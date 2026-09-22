@@ -30,9 +30,17 @@ skills/jev-agent/   兩端共用操作規則
   載入 `hooks/jev.js`（prune）。其他四項用 `agent-glue/claude/bridge.mjs` 直接 import 或 CLI。
 - **停用**：移除/停用 `jev-gate` plugin。
 - **觀測**：`~/.openclaw/state/jev-prune.log`（每筆被判定的 prune，keep 也寫）。
-- **壓縮互斥**：本 plug-in 不註冊自己的 `session.compact`；外部 fast-jev plugin
-  （`~/dev/fast-jev-compaction-openrouter`）註冊了 `session.compact`。**不要雙開。**
-  要改用本移植版本，停用外部 plugin 後再由 host 註冊。見 `skills/jev-agent/SKILL.md`。
+- **快速壓縮（已併入本 plugin）**：`agent-glue/claude/compact-hook.mjs` 註冊
+  `session.compact`（逐字壓縮）與 `turn.complete`（context 百分比觸發，
+  `JEV_COMPACT_AT_PERCENT` 預設 60）。契約在 `agent-glue/src/compact.js`：
+  user/assistant 文字逐字保留、call 與其 result 成對刪、首尾 turn 釘住、
+  judge 失敗或縮減未達 `JEV_COMPACT_MIN_REDUCTION`（預設 4000 字元）就把**原始**
+  messages 還給 host 走內建壓縮。`JEV_COMPACT_ENABLED=0` 關閉。
+  觀測：`~/.openclaw/state/jev-compact.log`。
+- **壓縮互斥**：外部 fast-jev plugin（`~/dev/fast-jev-compaction-openrouter`）也註冊
+  `session.compact`。**不要雙開**——兩個模組回同一事件是 undefined。本 plugin 會讓路：
+  `session.start` 讀 `~/.claude/settings.json`，若 `fast-jev-compaction@…` 仍 enabled
+  就 stand down 並在 ledger 寫明。要用本版，先停用外部 plugin。
 
 ## 3. Codex 端
 
@@ -77,10 +85,12 @@ cheap→medium→hard tier。skill 選擇是 advisory 的 `skills` 陣列，不�
 - stakes > 0.85 且已偏難（難度側機率 ≥ `hard_needs_probability`，且信心足）→ hard。
 - large context（bucket `l`）→ 永不降級到 cheapest。
 
-**Claude 端**：`claude/spawn-hook.mjs` 註冊 `agent.spawn`。預設 `enabled:false`
-（`JEV_TRIAGE_ENABLED=1` 才開）；開啟**且**有注入 transport 時才依 tier 設
-subagent 的 `model`，model 對應可設 `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD`。
-預設接線是 no-op——副 agent 的模型從不被動。skill 選擇併進同趟 triage 的 `skill`
+**Claude 端**：`claude/spawn-hook.mjs` 註冊 `agent.spawn`，**依情境自動啟用**：
+`triageEnabled()` 只要 `JEV_TRIAGE_MODEL_CHEAP/MEDIUM/HARD` 任一有設就是 true——
+設了 tier model 本身就是「我要分層」的意思，再多一個 opt-in flag 只會多出
+「看起來開著但什麼都不做」的狀態。`JEV_TRIAGE_ENABLED=1/0` 可強制覆寫。
+transport 由 hook 自己注入（`agent-glue/src/live.js`）：沒有 provider key 時
+transport 是 `null`，triage fail-open 回原狀。skill 選擇併進同趟 triage 的 `skill`
 第 4 題（`pickSkills` 的關鍵字啟發式已刪除），catalog 來源
 `input.skills ?? deps.skillCatalog ?? []`；多數 turn 回「不需要任何 skill」（`[]`）。
 
