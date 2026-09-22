@@ -1418,3 +1418,44 @@ WebFetch 可以，`curl` 到 `raw.githubusercontent.com` 可以。addendum 有�
 
 `node --test` → `tests 210 / pass 208 / fail 0`（2 skipped）。
 含兩個打真 endpoint 的 live prune 測試。
+
+雙宿主改動後各重跑一次。`npm run agents:acceptance`：
+
+```
+[agents:acceptance] build OK
+[agents:acceptance] gateway acceptance OK
+[agents:acceptance] claude bridge smoke: verify=pass
+[agents:acceptance] codex hooks smoke: stop=block-once-then-allow
+[agents:acceptance] injected client smoke: triage=cheap spawn=haiku escape-hatch=ok
+[agents:acceptance] ALL OK
+```
+
+Hermes 用 profile 的真 loader ＋ 真 middleware chain ＋ 真 Jev 打一次
+（注意要用 `~/.hermes/hermes-agent/.venv/bin/python3`，系統 python3 是 3.9，
+`hermes_constants.py` 的 PEP 604 `X | Y` 會炸 `TypeError: unsupported operand
+type(s) for |: 'type' and 'type'`）：
+
+```
+has tool_execution middleware: True
+middleware callbacks: ['hermes_plugins.jev_prune._on_tool_execution']
+tool output chars: 19889
+result chars: 60
+changed: True
+result tail: '[jev-prune: dropped 322 lines]\n[jev-prune: dropped 78 lines]'
+```
+
+commit `5ce3b3c`，plugin 版本 0.5.2 → 0.6.0。fixindex 記 9314（confidence 門檻
+無聲關功能）、9315（insight：LLM confidence 是熵不是授權）、9316（SKILL.md 缺
+frontmatter＝永不觸發）、9317（沙箱擋 marketplace add），另 `0001-hermes.md` §68
+補 venv 直譯器那條。
+
+### 21.6 收尾時自己踩的兩個工具坑
+
+記在這裡是因為兩個都會再犯，而且都不報有用的錯：
+
+1. `fixindex insight` → `unknown command: insight`。`insights`（複數）是唯讀查詢，
+   寫入沒有獨立子命令；洞見要跟 defect 一起 pipe 進 `fixindex fi`，混合輸入
+   （`SYMPTOM/ROOT/FIX/VERIFY` ＋ `INSIGHT:`）會自動拆成兩筆、一次 commit。
+2. Bash 工具裡跑 `cd /some/other/dir` 會改掉**整個 session 的 primary working
+   directory**，不是只影響那一條指令。之後所有相對路徑指令都在別的地方執行，
+   而且完全不報錯。改用 `cd <repo> && <cmd>` 單行，或全部絕對路徑。
