@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { CONFIG, TARGETS, TARGET_NAMES, appendLedger, judgeChunk, pruneText, register, userRequestOf } from '../hooks/jev.js';
+import { CONFIG, LEDGER, TARGETS, TARGET_NAMES, appendLedger, judgeChunk, pruneText, register, userRequestOf } from '../hooks/jev.js';
 
 // The hook module carries its own wire code (it runs with no Node, so it cannot
 // share plugin/lib/judge.js). That duplicate is exactly where a wrong model id
@@ -167,7 +167,7 @@ function ledgerHost(seed = '') {
     clock: { now: async () => Date.parse('2026-09-21T00:00:00.000Z') },
     fs: {
       read: async () => seed,
-      write: async (path, text) => { assert.equal(path, '/Users/51mini/.openclaw/state/jev-prune.log'); writes.push(text); },
+      write: async (path, text) => { assert.equal(path, LEDGER); writes.push(text); },
     },
   };
   return { $, writes };
@@ -201,7 +201,7 @@ test('live: a real drop writes a ledger-style line', { skip: !hasKey && 'no api 
   const host = makeHost();
   host.__writes = [];
   host.clock = { now: async () => Date.now() };
-  host.fs.write = async (path, text) => { if (path === '/Users/51mini/.openclaw/state/jev-prune.log') host.__writes.push(text); };
+  host.fs.write = async (path, text) => { if (path === LEDGER) host.__writes.push(text); };
   const out = noisyLog();
   const core = { ref: 7, text: out, result: { stdout: out, stderr: '', interrupted: false } };
   let shrank = false;

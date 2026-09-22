@@ -13,7 +13,7 @@
 export const CONFIG = {
   endpoint: 'https://openrouter.ai/api/v1/systemone',
   model: 'typesafe/jev-1.13',
-  apiKeyFile: '/Users/51mini/.creds/kv/OPENROUTER_API_KEY.txt',
+  apiKeyFile: process.env.JEV_API_KEY_FILE || `${process.env.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`,
   chunkChars: 16000,
   // ponytail: judge at most this many chunks per call; the rest passes through
   // verbatim (never truncated). Raise it if the log shows tails going unjudged.
@@ -222,7 +222,7 @@ export async function userRequestOf($, e) {
 }
 
 /** Durable mirror of each judged-prunable outcome; see appendLedger's comment. */
-const LEDGER = '/Users/51mini/.openclaw/state/jev-prune.log';
+export const LEDGER = process.env.JEV_LEDGER || `${process.env.HOME}/.openclaw/state/jev-prune.log`;
 
 /**
  * Append one prune line to the ledger, read-then-write because `$.fs` has no

@@ -1,14 +1,14 @@
 {
   "baseUrl": "https://openrouter.ai/api",
   "model": "typesafe/jev-1.13",
-  "apiKeyFile": "/Users/51mini/.creds/kv/OPENROUTER_API_KEY.txt",
+  "apiKeyFile": "${HOME}/.creds/kv/OPENROUTER_API_KEY.txt",
   "timeoutMs": 2000,
   "maxRetries": 0,
   "thresholdChars": 4000,
   "chunkChars": 16000,
   "maxChunks": 8,
-  "pruneLog": "/Users/51mini/dev/jev-gate-mcp/.jev/prune.log",
-  "gateLog": "/Users/51mini/dev/jev-gate-mcp/.jev/gate.log",
+  "pruneLog": "${HOME}/.jev-gate/prune.log",
+  "gateLog": "${HOME}/.jev-gate/gate.log",
   "shadow": true,
   "ghostMaxAttempts": 2
 }

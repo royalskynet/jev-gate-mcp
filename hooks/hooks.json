@@ -1,7 +1,5 @@
 {
   "modules": [
-    "./jev.js",
-    "../agent-glue/claude/spawn-hook.mjs",
-    "../agent-glue/claude/compact-hook.mjs"
+    "./index.js"
   ]
 }
