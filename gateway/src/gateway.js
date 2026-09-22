@@ -262,7 +262,7 @@ export class JevGateway {
       ...digests,
     };
     this._emit(payload);
-    // Opt-in corpus (JEV_CALIBRATION_LOG) in scripts/calibrate.mjs's JSONL
+    // Shadow corpus (JEV_CALIBRATION_LOG=off to stop) in calibrate.mjs JSONL
     // shape. Telemetry cannot carry state by design, and a policy cannot leave
     // shadow without labelled state. `gate` is the raw composed gate, not the
     // shadow-capped public outcome: capping is a rollout control, not a
@@ -275,7 +275,11 @@ export class JevGateway {
       policy_version: spec.version,
       model: result.model ?? spec.model ?? null,
       provider: this._provider ?? 'unknown',
-      dataset_version: spec.evaluation_dataset_version ?? null,
+      // A sample's dataset is where the SAMPLE came from, not the fixture set
+      // the spec was smoke-tested against. Stamping the spec's
+      // `synthetic-harness-*` here made calibrate.mjs mark every live record
+      // harness-only, so no amount of real traffic could ever leave shadow.
+      dataset_version: `live-${spec.id}-v1`,
       // sample
       gate,
       coverage: 'complete',

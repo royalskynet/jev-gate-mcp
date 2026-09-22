@@ -1121,3 +1121,116 @@ spawn hook (ambient)   YES  3/3  1283ms  3/3 spawns had their model changed;
 `JEV_TRIAGE_ENABLED=0 disables it`——逃生門仍被釘住，而且 `=0` 必須在任何
 provider 呼叫之前短路。政策檔零改動，五個 policy 仍 `shadow` + `uncalibrated`。
 plugin 版本 0.4.0 → 0.5.0。
+
+## 19. shadow 開始收樣＋openclaw/Hermes 實跑確認（2026-09-22）
+
+### 19.1 語料 sink 出貨即開
+
+`gateway/src/calibration.js` 原本是純 opt-in：`JEV_CALIBRATION_LOG` 沒設就
+no-op。問題跟 §18.2 的 tier ladder 一模一樣——**規則對，但預設值讓規則永遠解成
+「關」**。shadow 模式的唯一出路是收到可評分的樣本，所以 sink 不該等人 export：
+
+```js
+export const DEFAULT_CALIBRATION_LOG = join(homedir(), '.openclaw', 'state', 'jev-calibration.jsonl');
+
+export function calibrationPath(env = process.env) {
+  const v = env.JEV_CALIBRATION_LOG;
+  if (v === 'off') return null;
+  return v || DEFAULT_CALIBRATION_LOG;
+}
+```
+
+`off` 當退出開關，跟 tier ladder 同一套約定。`recordSample()` 多一行
+`mkdirSync(dirname(path), { recursive: true })`，仍然吞掉所有錯誤——語料是
+best-effort 證據，不是耐久性契約。
+
+選 `~/.openclaw/state/` 是因為 `hooks/jev.js` 的 prune ledger 與 fast-jev 的
+compaction log 已經寫在那；沙箱也放行寫入，而 `~/.claude/settings.json` 不放行。
+
+### 19.2 收了也走不到任何地方：`dataset_version` 繼承 harness 版號
+
+開起來第一跑就發現真正的死結。`gateway.js` 的 `recordSample()` 呼叫把
+`dataset_version` 填成 `spec.evaluation_dataset_version`，五個 policy 的值都是
+`synthetic-harness-*`；而 `calibrate.mjs` 的 `harnessOnly()` 是
+
+```js
+return source === 'synthetic' || source === 'demo' || /^synthetic(-harness)?-/.test(datasetVersion ?? '');
+```
+
+→ `eligible_for_review: false`，**永久**。也就是說：sink 開了、樣本落盤了、
+calibrate 跑了，結果依然永不合格。一個樣本的 dataset 是「這個樣本從哪來」，
+不是「這份 spec 當初拿哪套 fixture 煙測」，所以改成 `live-${spec.id}-v1`。
+
+這是 §18.2「看起來開著、其實推不動任何東西」的第三次變形，記在這裡當樣式。
+
+### 19.3 實測：真 provider 五個 policy，樣本落盤
+
+```
+$ rm -f ~/.openclaw/state/jev-calibration.jsonl
+$ node scripts/live-probe.mjs policies
+gateway jev_apply_policy  YES   5/5      2947   intent-routing=review/shadow context-screening=deny/shadow proposed-action-risk=deny/shadow completion-claims=deny/shadow diff-risk=escalate/shadow  [all five pinned shadow/uncalibrated]
+every probed capability reached the provider
+
+samples: 5
+intent-routing        dataset=live-intent-routing-v1       gate=accept    public=review   label=null harnessOnly=false
+context-screening     dataset=live-context-screening-v1    gate=deny      public=deny     label=null harnessOnly=false
+proposed-action-risk  dataset=live-proposed-action-risk-v1 gate=deny      public=deny     label=null harnessOnly=false
+completion-claims     dataset=live-completion-claims-v1    gate=deny      public=deny     label=null harnessOnly=false
+diff-risk             dataset=live-diff-risk-v1            gate=escalate  public=escalate label=null harnessOnly=false
+```
+
+第一筆就是 shadow 的意義所在：raw `gate=accept`，對外 `public=review`——模型說
+可以過，fuse 把它降級成人工看。這正是之後要拿來評分的那一對。
+
+### 19.4 openclaw 實跑確認：401 的真因不是影子金鑰
+
+`~/.openclaw/state/jev-compaction.log` 在 `2026-09-21T23:55:02Z` 記過一次
+`fallback auto ... Jev request failed (401): {"error":{"message":"User not found.","code":401}}`，
+而金鑰檔 mtime 是 `23:26:12Z`——**晚 29 分鐘**。第一個假設是
+`fast-jev.ts:getApiKey()` 的優先序（`config.apiKey` → env → `settings.env` → 檔案）
+讓某個舊值蓋掉輪替後的檔案。逐一查（全程只印 key 名／布林／長度，不印值）：
+
+| 來源 | 結果 |
+|---|---|
+| process env | 無 `OPENROUTER_API_KEY` |
+| `~/.claude/settings.json` | 兩處命中都是 `sandbox.credentials.envVars[].name`，是**名字宣告**不是值 |
+| `~/.claude/settings.local.json` | 0 |
+| `~/.openclaw/.env` | 只有註解，無此 key |
+| `~/.openclaw/openclaw.json` | 只有 `models.providers.openrouter.apiKey.id` 引用，解析回 `~/.creds` |
+
+沒有影子來源。改用「同一把金鑰、兩種請求形狀」直接對打，才發現兩邊連端點都不同：
+
+```
+plugin  alpha/decisions ~typesafe/jev-latest +zdr   http=200  model=typesafe/jev-1.13-20260917 cost=0.000013902
+plugin  alpha/decisions ~typesafe/jev-latest  -zdr  http=200
+gate    v1/systemone   typesafe/jev-1.13           http=200
+```
+
+三種形狀全 200、模型都解析成同一個、都有真實 cost → **openclaw fast-jev 的
+endpoint＋model＋provider＋金鑰路徑現在是活的**，07:55 那次 401 無法重現。
+誠實記錄：真因未定案，最可能是那個 process 手上握的是輪替前的金鑰。
+
+真正值得修的反而是**形狀**：plugin 把 env／settings 排在輪替過的檔案之前，
+一個過期的 env 就能無聲勝出，而 fallback 成功看起來跟正常運作一模一樣。
+（該 plugin 在 `~/dev/fast-jev-compaction-openrouter`，不在本 repo 沙箱可寫範圍，
+只記不改。）
+
+### 19.5 openclaw／Hermes 的載入邊界
+
+`grep -o "jev[a-zA-Z-]*" ~/.openclaw/openclaw.json` → **零命中**。所以：
+
+- jev-gate 與 fast-jev-compaction **只在 Claude Code 跑**，openclaw／Hermes 的
+  agent runtime 沒載它們；ledger 寫在 `~/.openclaw/state/` 只是借路徑，不代表
+  openclaw 在跑這些 hook。
+- openclaw 本體活著：`openclaw.sqlite` 11:00、`-wal` 11:06 有寫入。
+- `~/.openclaw/logs/gateway.log` 停在 `2026-08-24T01:05:04`（SIGTERM restart
+  被 background task 擋住），那是舊的 gateway 日誌路徑，不是現況證據。
+- Hermes 在 `openclaw.json` 只出現在 skill 名稱（`hermes-gateway-debug`、
+  `hermes-installer`），沒有任何 jev 接線。
+
+### 19.6 對帳
+
+測試 199 → 200（改寫 1 條、新增 1 條），pass 197 → 198，fail 0，skipped 2。
+`node --test` 全綠、`agents:acceptance` 8 段 ALL OK、`claude plugin validate` 通過。
+政策檔零改動，五個 policy 仍 `shadow` + `uncalibrated`；本輪唯一的行為變更是
+「開始收樣」與「樣本的 provenance 改成 live」，沒有任何 accept 被放行。

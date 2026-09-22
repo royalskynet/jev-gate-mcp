@@ -164,6 +164,17 @@ Two rules hold the whole thing up:
   is not allowed to authorize or block anything.
   `tests/agent-glue/policy-shadow.test.js` turns red if anyone flips that.
 
+**Shadow mode now collects the evidence it needs to end.** Shadow is only useful
+if the samples it produces can be scored, so the corpus sink ships on: every
+`apply_policy` appends one JSONL record to `~/.openclaw/state/jev-calibration.jsonl`
+(`JEV_CALIBRATION_LOG=<path>` moves it, the literal `off` stops it). Each record
+carries the raw `gate` *and* the shadow-capped `public_outcome`, plus `label: null`
+for a human to fill in — `gateway/scripts/calibrate.mjs` refuses an unlabelled
+file, so an untouched corpus can never be mistaken for evidence. A sample's
+`dataset_version` is `live-<policy>-v1`: stamping the spec's `synthetic-harness-*`
+fixture version here made `harnessOnly()` mark every live record permanently
+ineligible, i.e. the collection could never have led anywhere.
+
 Host differences are real and documented rather than papered over: a Claude
 function hook can replace a tool result before the model reads it and can replace
 built-in compaction; Codex can only block in `PreToolUse`, and its compaction side

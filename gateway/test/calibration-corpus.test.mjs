@@ -8,8 +8,11 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { recordSample } from '../src/calibration.js';
-import { parseCalibrateInput, validateCalibrateInput } from '../scripts/calibrate.mjs';
+import { calibrationPath, DEFAULT_CALIBRATION_LOG, recordSample } from '../src/calibration.js';
+import { harnessOnly, parseCalibrateInput, validateCalibrateInput } from '../scripts/calibrate.mjs';
+import { FakeMode, makeFakeAdapter } from '../src/adapters.js';
+import { JevGateway } from '../src/gateway.js';
+import { loadRegistry } from '../src/registry.js';
 
 const sample = (gate) => ({
   policy: 'completion-claims',
@@ -23,8 +26,15 @@ const sample = (gate) => ({
   state: { claims: 'done', evidence: 'none' },
 });
 
-test('corpus: no path configured means no write and no throw', () => {
-  assert.equal(recordSample(sample('review'), undefined), false);
+test('corpus: the sink ships on, and `off` is the only way to stop it', () => {
+  // Nothing set: collecting shadow samples is the point of shadow mode, so the
+  // sink has to be on without anyone exporting anything.
+  assert.equal(calibrationPath({}), DEFAULT_CALIBRATION_LOG);
+  assert.match(DEFAULT_CALIBRATION_LOG, /jev-calibration\.jsonl$/);
+  assert.equal(calibrationPath({ JEV_CALIBRATION_LOG: '/x/y.jsonl' }), '/x/y.jsonl');
+  assert.equal(calibrationPath({ JEV_CALIBRATION_LOG: 'off' }), null, '`off` opts out');
+  // A resolved-to-nothing path must still be a no-op, never a throw.
+  assert.equal(recordSample(sample('review'), null), false);
   assert.equal(recordSample(sample('review'), ''), false);
 });
 
@@ -66,6 +76,31 @@ test('corpus: a one-record corpus parses as JSONL, not as a malformed wrapper', 
   assert.equal(parsed.ok, true, parsed.error);
   assert.equal(parsed.samples.length, 1);
   assert.equal(parsed.meta.policy, 'completion-claims');
+});
+
+// The whole point of collecting in shadow mode is being able to leave it. A
+// live record stamped with the spec's `synthetic-harness-*` fixture version is
+// harness-only forever, so the corpus would grow and stay ineligible.
+test('corpus: a live sample is not harness-only, so it can actually be scored', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'jev-cal-')), 'live.jsonl');
+  const g = new JevGateway({ evaluateAdapter: makeFakeAdapter(FakeMode.SUCCESS), registry: loadRegistry() });
+  const prev = process.env.JEV_CALIBRATION_LOG;
+  process.env.JEV_CALIBRATION_LOG = path;
+  try {
+    const res = await g.applyPolicy({
+      policy: 'intent-routing',
+      state: { task: 'rename a helper', available_handlers: ['main', 'deep'], context: 'small' },
+    });
+    assert.ok(res.outcome);
+  } finally {
+    if (prev === undefined) delete process.env.JEV_CALIBRATION_LOG;
+    else process.env.JEV_CALIBRATION_LOG = prev;
+  }
+
+  const rec = JSON.parse(readFileSync(path, 'utf8').trim().split('\n')[0]);
+  assert.equal(harnessOnly(undefined, rec.dataset_version), false, `still harness-only: ${rec.dataset_version}`);
+  assert.equal(rec.dataset_version, 'live-intent-routing-v1');
+  assert.equal(rec.label, null);
 });
 
 test('corpus: a wrapper object without a samples array is still rejected', () => {

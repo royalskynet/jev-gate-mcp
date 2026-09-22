@@ -177,12 +177,13 @@ provider token 路徑與 MCP 掛載方式見 `docs/zh-TW/README.md`；gateway �
 五個 policy 現在全是 `shadow + uncalibrated + rollout_percent: 0`，
 `registry.js` 會擋下任何「active 但未校準」的 policy。要轉正：
 
-1. 設 `JEV_CALIBRATION_LOG=<path>`，gateway 就會把每次決策以 `calibrate.mjs`
-   的 JSONL 格式逐行落盤（含投影後 state、answers、raw gate、`label: null`）。
-   不設就完全不寫。
-2. 逐行把 `label` 填成「本來應該是什麼結果」。policy 的
-   `evaluation_dataset_version` 若還是 `synthetic-harness-*`，先改掉——
-   `calibrate.mjs` 會把它標成 harness-only 且永不 eligible。
+1. 什麼都不用設：gateway 已經把每次決策以 `calibrate.mjs` 的 JSONL 格式逐行寫到
+   `~/.openclaw/state/jev-calibration.jsonl`（含投影後 state、answers、raw `gate`、
+   `public_outcome`、`label: null`）。`JEV_CALIBRATION_LOG=<path>` 改路徑，
+   字面值 `off` 關掉。
+2. 逐行把 `label` 填成「本來應該是什麼結果」。樣本的 `dataset_version` 是
+   `live-<policy>-v1`；若哪天又變回 `synthetic-harness-*`，`calibrate.mjs`
+   會標成 harness-only 且永不 eligible。
 3. `node gateway/scripts/calibrate.mjs <file.jsonl>`，只有 `eligible_for_review: true`
    才進人工審核。
 4. 人工審過才改 `active + calibrated`，並用 `rollout_percent` 慢慢開。

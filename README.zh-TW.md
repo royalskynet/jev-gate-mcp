@@ -151,6 +151,16 @@ frontmatter 裡的 `description:`——所以 `agent-glue/src/catalog.js` 去讀
   未校準的判斷不得授權或阻擋任何事。`tests/agent-glue/policy-shadow.test.js`
   在有人翻掉這條時會變紅。
 
+**shadow 模式現在會自己收「離開 shadow 所需的證據」。** shadow 只有在樣本能被
+評分時才有意義，所以語料 sink 出貨即開：每次 `apply_policy` 都往
+`~/.openclaw/state/jev-calibration.jsonl` 追加一行 JSONL（`JEV_CALIBRATION_LOG=<path>`
+改路徑，字面值 `off` 關掉）。每筆同時帶原始 `gate` 與被 shadow 蓋住的
+`public_outcome`，外加 `label: null` 等人填 —— `gateway/scripts/calibrate.mjs`
+會拒收未標註的檔，所以沒人動過的語料絕不會被誤當成證據。樣本的
+`dataset_version` 是 `live-<policy>-v1`：先前這裡蓋的是 spec 的
+`synthetic-harness-*` fixture 版號，害 `harnessOnly()` 把每筆真實紀錄都判成
+永久不合格，等於收了也走不到任何地方。
+
 Host 差異是照實寫出來、不是抹平：Claude 的 function hook 可以在模型讀到之前
 換掉 tool result，也可以取代內建壓縮；Codex 只能在 `PreToolUse` 擋，它的壓縮側
 是**還原層**（`PreCompact` snapshot + `PostCompact` additionalContext），不是取代。

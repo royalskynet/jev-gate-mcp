@@ -193,12 +193,13 @@ const result = await guard.enforce({
 
 ## Policy 安全啟用順序
 
-1. 保持 `shadow + uncalibrated + rollout_percent: 0` 收集真實 labels：設
-   `JEV_CALIBRATION_LOG=<path>`，gateway 會把每次 `apply_policy` 決策以
-   `calibrate.mjs` 的 JSONL 格式逐行落盤（projection 後的 state、answers、raw gate、
-   `label: null`）。不設就完全不寫，沒有成本。收完逐行把 `label` 填成「本來應該是什麼結果」。
-   注意 policy 的 `evaluation_dataset_version` 若還是 `synthetic-harness-*`，
-   `calibrate.mjs` 會標記為 harness-only 且永不 eligible——真要收集前先改掉。
+1. 保持 `shadow + uncalibrated + rollout_percent: 0` 收集真實 labels：**出貨即開**，
+   gateway 會把每次 `apply_policy` 決策以 `calibrate.mjs` 的 JSONL 格式逐行寫到
+   `~/.openclaw/state/jev-calibration.jsonl`（projection 後的 state、answers、
+   raw `gate`、被蓋住的 `public_outcome`、`label: null`）。`JEV_CALIBRATION_LOG=<path>`
+   改路徑，字面值 `off` 關掉。收完逐行把 `label` 填成「本來應該是什麼結果」。
+   樣本的 `dataset_version` 已改為 `live-<policy>-v1`，不再繼承 spec 的
+   `synthetic-harness-*`（那會讓 `harnessOnly()` 判成永不 eligible）。
 2. 跑 `node gateway/scripts/calibrate.mjs <external.jsonl>`；只有 `eligible_for_review: true` 才進人工審核。
    未填 label 會被 validate 擋下，fake provider 的樣本會被 provenance 擋下（pinned model 不符）。
 3. 跑 `npm run gateway:replay`，確認 policy digest 與既有 safe/red-line outcome。

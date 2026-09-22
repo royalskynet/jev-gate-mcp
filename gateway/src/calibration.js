@@ -12,10 +12,23 @@
 // `shadow`/`uncalibrated` needs precisely that material, paired with a human
 // label. Hence a separate, opt-in file rather than a wider allowlist.
 //
-// Opt-in via JEV_CALIBRATION_LOG=<path>. Unset (the default) => no-op, no file,
-// no cost. Only the policy's own `state_projection` fields are recorded; the
+// On by situation: samples land in DEFAULT_CALIBRATION_LOG unless
+// JEV_CALIBRATION_LOG names another path, or the literal `off` to stop
+// collecting. Only the policy's own `state_projection` fields are recorded; the
 // caller's undeclared fields were stripped before this point.
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+/** Shipped sink: a dir the rest of the stack already writes its ledgers to. */
+export const DEFAULT_CALIBRATION_LOG = join(homedir(), '.openclaw', 'state', 'jev-calibration.jsonl');
+
+/** The corpus path in force. `off` is the opt-out; any other value overrides. */
+export function calibrationPath(env = process.env) {
+  const v = env.JEV_CALIBRATION_LOG;
+  if (v === 'off') return null;
+  return v || DEFAULT_CALIBRATION_LOG;
+}
 
 /**
  * Append one decision sample as a JSONL line. Never throws: a corpus write must
@@ -26,12 +39,13 @@ import { appendFileSync } from 'node:fs';
  * unlabelled, so an untouched corpus can never be mistaken for evidence.
  *
  * @param {object} sample
- * @param {string} [path=process.env.JEV_CALIBRATION_LOG]
+ * @param {string} [path=calibrationPath()]
  * @returns {boolean} true if a line was written
  */
-export function recordSample(sample, path = process.env.JEV_CALIBRATION_LOG) {
+export function recordSample(sample, path = calibrationPath()) {
   if (!path) return false;
   try {
+    mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify({ ...sample, label: null })}\n`);
     return true;
   } catch {
