@@ -223,3 +223,24 @@ test('live: a real drop writes a ledger-style line', { skip: !hasKey && 'no api 
     'at least one ledger line must record a real non-zero drop',
   );
 });
+
+test('a near-miss under the threshold is recorded; a small output leaves no trace', async () => {
+  // Observation window (DEVLOG §23.6): the ledger cannot show what pruning gave
+  // up when the threshold rose, because those calls stopped happening. Half a
+  // chunk up is the give-up band; below it the line count would swamp the file.
+  const writes = [];
+  const $ = {
+    ...makeHost(),
+    clock: { now: async () => Date.parse('2026-09-22T00:00:00.000Z') },
+    fs: { read: async () => '', write: async (p, t) => { assert.equal(p, LEDGER); writes.push(t); } },
+  };
+  const hook = hooksByTool().Bash;
+  const run = (out) => hook($, { tool: 'Bash', command: 'x' },
+    async () => ({ ref: 1, text: out, result: { stdout: out, stderr: '', interrupted: false } }));
+
+  await run('y'.repeat(CONFIG.chunkChars / 2 - 1));
+  assert.equal(writes.length, 0, 'below half a chunk must stay out of the ledger');
+  await run('y'.repeat(CONFIG.chunkChars - 1));
+  assert.equal(writes.length, 1, 'the give-up band must be recorded');
+  assert.match(writes[0], /jev-skip\(Bash\): 15999 chars, under threshold 16000/);
+});

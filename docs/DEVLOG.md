@@ -1802,3 +1802,43 @@ if (THRESHOLD_CHARS < DEFAULT_CONFIG.chunkChars) {
 short-circuit 但測試照樣綠——改成從 `THRESHOLD_CHARS` 反推行數。這是這輪第三次
 踩同一個坑（另兩次在 §23.3 的 integrations 與 hook.live fixture）：**對門檻做正向
 斷言的 fixture，大小必須從門檻算出來，不能寫死字面量。**
+
+### 23.6 一週觀察窗：量「放棄掉的那一段」，不是量命中率
+
+使用者要求抬門檻後觀察一週再驗收。直接看 ledger 有個陷阱：**抬門檻後命中率一定
+上升**——把從來沒剪到東西的呼叫拿掉，drops/calls 本來就會漲，那是算術不是證據。
+真正要看的是反面：我們**不再判**的那一段裡，有沒有本來該剪的。
+
+問題是那些呼叫不再發生，ledger 上不會留任何痕跡。所以臨時加一行觀測：
+
+```js
+if (typeof out === 'string' && out.length >= CONFIG.chunkChars / 2) {
+  await appendLedger($, `jev-skip(${tool}): ${out.length} chars, under threshold ${target.thresholdChars}`);
+}
+```
+
+只記**半個 chunk 以上**（8–16 KB），也就是這次改動實際放棄掉的那一段。不往下記的
+原因是成本：`appendLedger` 沒有 append API，每行都要 read-then-write 整個檔，
+每個 Bash 呼叫記一筆會把檔案跟 I/O 一起吹大。這段標了
+`ponytail: observation window, remove after the 2026-09-29 verdict`，判完就拆。
+
+`scripts/prune-verdict.mjs` 讀同一個 ledger，以 16000 上線時間（`da28c55`，
+2026-09-22T07:12Z）切開前後，印命中率與 skip 的 chunk-relative band 分布。
+現況（觀察窗剛開）：
+
+```
+ledger split at 2026-09-22T07:12:00Z
+before   calls   19  hits   1  hit-rate   5.3%  saved   28015 chars  judged   218113 chars
+after    calls    0  hits   0  hit-rate   0.0%  saved       0 chars  judged        0 chars
+
+skipped (>= half a chunk, would have been judged at the old threshold): 0
+  (none — nothing in the give-up band yet)
+```
+
+判讀規則先寫死，免得一週後看到數字再編故事：**band 厚**（8–16 KB 一堆）＝可能有
+該剪沒剪的，降回 12000 並用 `scripts/calibrate-prune.mjs` 對那個 band 重跑；
+**band 薄或空**＝16000 站得住，拆掉 skip logging 收工。命中率只當附註。
+
+腳本自帶 `--selftest`（parse、summarise、bands 三個斷言，無網路無檔案），
+hook 那行由 `tests/hook.live.test.js` 釘住：半個 chunk 以下不留痕、給出的那段要留。
+待辦寫進 memory `project_jev_prune_threshold_verdict`，09-29 後執行。
