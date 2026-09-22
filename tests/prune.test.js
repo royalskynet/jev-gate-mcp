@@ -25,7 +25,10 @@ test('below threshold short-circuits: judge never called', async () => {
 
 test('fail-open: judge error keeps original output, nothing dropped', async () => {
   // Force chunking so the judge path is exercised.
-  const output = Array.from({ length: 100 }, (_, i) => `line${i}-` + 'y'.repeat(80)).join('\n');
+  // Sized off the live threshold, not a literal: raising `thresholdChars` used to
+  // turn this into a short-circuit that still went green.
+  const lineCount = Math.ceil(THRESHOLD_CHARS / 90) + 10;
+  const output = Array.from({ length: lineCount }, (_, i) => `line${i}-` + 'y'.repeat(80)).join('\n');
   assert.ok(output.length >= THRESHOLD_CHARS);
   const r = await pruneOutput({
     output,

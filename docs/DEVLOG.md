@@ -1767,3 +1767,38 @@ gateway 自己的套件 `tests 86 / pass 84 / fail 0`；Hermes plugin
 `jev-prune selfcheck OK`；Hermes `tests/hermes_cli/test_plugins.py`
 `1 failed, 76 passed`，唯一那個 fail 是沙箱 PermissionError 的
 `TestForceReloadSymmetry`，`git stash` 後照樣 fail，與本次改動無關。
+
+### 23.5 PR #2 合併，順手把獨立 plugin 的門檻對齊
+
+PR #2（`fix/portable-paths-and-hooks-schema`，2026-09-22 05:24 開的）在 §22／§23
+之前就掛在那裡，內容是三件讓別台機器 clone 下來就跑不起來的事：`hooks/jev.js` 的
+金鑰檔路徑與 `LEDGER` 寫死 `/Users/51mini/*`、`plugin/config.default.json` 同樣寫死、
+以及 `hooks/hooks.json` 一次列三個 modules 被 Claude Code plugin schema 拒收
+（`'modules' names one hooks module per plugin; a second entry is refused`）→
+安裝時 `Status: ✘ failed to load`，改用 `hooks/index.js` 聚合三個 `register()`。
+
+合併前在**合併後的樹**上驗（不是只驗 PR head）：`tests 219 / pass 217 / fail 0`、
+`agents:acceptance ALL OK`、`import('./hooks/index.js') -> register: function`。
+`git merge-tree` 無衝突——即使 main 這段時間把 `CONFIG` 整塊與 `hook.live.test.js`
+大半都改掉了。merge commit `91f0b21`。
+
+Review 時唯一停下來查的點：`hooks/jev.js` 的檔頭寫「The module runs with no Node」，
+而 PR 在模組層用了 `process.env.HOME`。不是靠推論放行——
+`agent-glue/claude/compact-hook.mjs` 早就在同一個 hook runtime 用這個寫法上線
+（28、33、140 行）。「no Node」指的是不 import `fs`／`fetch`，不是沒有 `process`。
+
+順手對齊：`plugin/config.default.json` 還留著 `thresholdChars: 4000` 配
+`chunkChars: 16000`，跟 hook 端同一個結構問題。改成 16000，並在
+`plugin/hooks/prune.js` 載入時直接 assert：
+
+```js
+if (THRESHOLD_CHARS < DEFAULT_CONFIG.chunkChars) {
+  throw new Error(`thresholdChars ${THRESHOLD_CHARS} is under one chunk (${DEFAULT_CONFIG.chunkChars})`);
+}
+```
+
+選 throw 不選 clamp：一個「安靜地變成別的意思」的設定，比一個載不起來的設定難查。
+`tests/prune.test.js` 的 fixture 原本寫死 100 行（約 8.9 KB），門檻一抬就變成
+short-circuit 但測試照樣綠——改成從 `THRESHOLD_CHARS` 反推行數。這是這輪第三次
+踩同一個坑（另兩次在 §23.3 的 integrations 與 hook.live fixture）：**對門檻做正向
+斷言的 fixture，大小必須從門檻算出來，不能寫死字面量。**

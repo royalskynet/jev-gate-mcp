@@ -4,7 +4,16 @@ import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { makeJudge, DEFAULT_CONFIG } from '../lib/judge.js';
 
+// Never below `chunkChars`: under one chunk the judge is asked to drop the whole
+// output or keep it, and it answers keep — in 19 real prune calls on the hook
+// side of this repo, every call under one chunk dropped 0 lines while the single
+// 44 KB call produced all 28,015 saved chars. A sub-chunk threshold buys latency
+// and spend, not savings (DEVLOG §23.2). Asserted rather than clamped: a config
+// that silently means something else is worse than one that refuses to load.
 export const THRESHOLD_CHARS = DEFAULT_CONFIG.thresholdChars;
+if (THRESHOLD_CHARS < DEFAULT_CONFIG.chunkChars) {
+  throw new Error(`thresholdChars ${THRESHOLD_CHARS} is under one chunk (${DEFAULT_CONFIG.chunkChars})`);
+}
 const DROP_MARKER = (n) => `[jev-prune: dropped ${n} lines]`;
 
 /**

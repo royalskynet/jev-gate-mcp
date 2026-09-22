@@ -4,7 +4,7 @@
   "apiKeyFile": "${HOME}/.creds/kv/OPENROUTER_API_KEY.txt",
   "timeoutMs": 2000,
   "maxRetries": 0,
-  "thresholdChars": 4000,
+  "thresholdChars": 16000,
   "chunkChars": 16000,
   "maxChunks": 8,
   "pruneLog": "${HOME}/.jev-gate/prune.log",
