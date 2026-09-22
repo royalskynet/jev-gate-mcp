@@ -145,7 +145,7 @@ test('Read threshold sits under the core token cap that precedes the hook', () =
 
 test('pruneText never truncates chunks past the judged window', async () => {
   const text = Array.from({ length: 5 }, (_, i) => `line ${i}`).join('\n');
-  const { kept, droppedLines } = await pruneText(text, async () => 'drop', 0);
+  const { kept, droppedLines } = await pruneText(text, async (chunks) => chunks.map(() => 'drop'), 0);
   assert.equal(kept, text);
   assert.equal(droppedLines, 0);
 });

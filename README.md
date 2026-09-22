@@ -25,10 +25,20 @@ Status: shipped. Three function hooks (Bash, Grep, Read), live-verified end to e
 
 `hooks/jev.js` hooks `tool.call` on `Bash`, `Grep` and `Read`. It runs the call
 through `next(e)`, and if the long string in the result is over that tool's
-threshold it splits it on line boundaries and asks Jev, one Choice per chunk,
-whether that chunk helps the user's current request. Dropped chunks are
-replaced by `[jev-prune: dropped N lines]`; kept text is passed through
-verbatim, never rewritten.
+threshold it splits it on line boundaries and asks Jev whether each chunk helps
+the user's current request — **all chunks in one request**, one Choice question
+per chunk, because independent questions over the same state belong in a single
+call. Dropped chunks are replaced by `[jev-prune: dropped N lines]`; kept text
+is passed through verbatim, never rewritten.
+
+A `drop` is only acted on when the answer's own `probabilities.drop` clears
+`CONFIG.minDropProbability` (0.6). The floor is on the probability, not on
+Choice `confidence`: batching spreads the distribution, and the same noise chunk
+that answers `drop` 0.98 / confidence 0.96 on its own came back `drop` 0.63 /
+confidence 0.25 next to a sibling chunk — a floor on `confidence` vetoed every
+real drop and looked exactly like a hook that never loaded. Vetoed drops are
+counted into the ledger line (`N unsure drops vetoed`) so a floor that is too
+high stays visible instead of silently turning pruning off.
 
 | tool | field pruned | threshold | criteria drop |
 |---|---|---|---|
@@ -355,6 +365,32 @@ manifest declares no `provides_hooks`: a middleware is a different surface from
 `VALID_HOOKS`, and declaring it as a hook fails `plugins doctor`. Ledger:
 `<profile home>/logs/jev-prune.jsonl`.
 
+## Skills: which situation pulls in which rules
+
+Two skills ship inside the plugin under `skills/`, and are symlinked into
+`.claude/skills/` so they also load at project scope when you work in this repo
+directly.
+
+| Skill | Fires when |
+|---|---|
+| `skills/jev-agent` | routing, compacting, claiming completion, picking a review profile, editing `agent-glue/src/*`, or calling the `jev_evaluate` / `jev_apply_policy` MCP tools |
+| `skills/typesafe-ai` | designing or changing any Jev question — wording, batching, criteria, thresholds, confidence policy — or editing `hooks/jev.js` and the host integrations |
+
+`skills/typesafe-ai/SKILL.md` is TypeSafe's own skill, vendored (MIT, upstream
+[typesafe-ai/skills](https://github.com/typesafe-ai/skills)) with two extra
+trigger lines in its `description` and a clearly-marked local addendum mapping
+its patterns onto this repo. It is vendored because
+`claude plugin marketplace add typesafe-ai/skills` cannot run here — the sandbox
+denies writes under `~/.claude/plugins` — while this repo *is* a plugin install
+location, so shipping the skill inside it reaches the same place. Note that the
+sandboxed shell also cannot reach `docs.typesafe.ai`; WebFetch can, and the
+addendum says so.
+
+Frontmatter is what makes a skill reachable at all. `skills/jev-agent/SKILL.md`
+shipped without any, so nothing could ever match it; a test in
+`tests/integrations.test.mjs` now asserts every `SKILL.md` declares a `name` and
+a `description`.
+
 ## Also in this repo, not mounted
 
 `plugin/` holds the Node-side experiments: `lib/judge.js`, `lib/route.js`
@@ -376,4 +412,5 @@ tested but deliberately not wired — see `docs/NEXT.md` for why.
 - [Jev 十步操作手冊（繁中）](docs/zh-TW/PLAYBOOK.md) — the ten-step playbook mapped onto this repo, gaps included
 - [Agent glue（繁中）](docs/agent-glue.md) — install / disable / observability per host, and the four effectiveness metrics
 - [Agent skill](skills/jev-agent/SKILL.md) — the operating rules both hosts share
+- [TypeSafe skill](skills/typesafe-ai/SKILL.md) — vendored upstream skill (MIT) + how its patterns map onto this repo
 - [Dev log](docs/DEVLOG.md) — how this got built, and the traps that cost time

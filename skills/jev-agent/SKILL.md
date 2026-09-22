@@ -1,3 +1,14 @@
+---
+name: jev-agent
+description: >
+  Operating rules for this repository's four Jev glue capabilities (route,
+  compact, verify, review) shared by Claude Code and OpenAI Codex. Use when
+  routing a request to a known handler, compacting a session, claiming a task
+  is complete, picking a review profile for a diff, or changing anything under
+  agent-glue/src. Also use before calling the jev_evaluate / jev_apply_policy
+  MCP tools: every policy is advisory and must never hard-block.
+---
+
 # jev-agent — Jev 前四項雙 Agent 膠水操作規則
 
 共用於 Claude Code 與 OpenAI Codex。核心在 `agent-glue/src/`，兩端只有薄 adapter。

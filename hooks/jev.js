@@ -18,6 +18,15 @@ export const CONFIG = {
   // ponytail: judge at most this many chunks per call; the rest passes through
   // verbatim (never truncated). Raise it if the log shows tails going unjudged.
   maxJudgedChunks: 8,
+  // Drop only when the answer's own probability of `drop` clears this.
+  // NOT `confidence`: for a Choice, confidence measures how concentrated the
+  // distribution is, and batching several chunks into one request spreads it —
+  // the same noise chunk that answers drop 0.98 / confidence 0.96 alone came
+  // back drop 0.63 / confidence 0.25 next to a sibling chunk. Gating on
+  // confidence therefore vetoed every real drop. A missing `probabilities`
+  // counts as 1, so an endpoint that omits the field cannot silently turn
+  // pruning off (DEVLOG §18.2).
+  minDropProbability: 0.6,
 };
 
 /**
@@ -93,11 +102,38 @@ export function chunkLines(text, chunkChars = CONFIG.chunkChars) {
 }
 
 /**
- * One Jev Choice over a chunk. Returns 'keep' | 'drop'; every failure path
- * answers 'keep', so a bad key, a 4xx or a bad schema can only pass output
- * through unchanged.
+ * Read one Choice answer as a verdict. A `drop` under the probability floor is
+ * reported as `unsure`, which prunes nothing but stays visible in the ledger —
+ * a floor that quietly vetoes everything would look exactly like a judge that
+ * never ran.
  */
-export async function judgeChunk($, key, userRequest, chunk, criteria = TARGETS.Bash.criteria) {
+export function verdictOf(answer, minProbability = CONFIG.minDropProbability) {
+  if (answer?.choice !== 'drop') return 'keep';
+  const p = answer?.probabilities?.drop;
+  return (typeof p === 'number' ? p : 1) >= minProbability ? 'drop' : 'unsure';
+}
+
+/**
+ * One Jev request for ALL the chunks: the chunks go up once as `state.chunks`
+ * and each question points at its own element by path, which is the batching
+ * shape the TypeSafe docs describe (independent questions over shared state run
+ * in parallel server-side). It replaces one request per chunk — up to 8 round
+ * trips and 8 copies of the user request per tool call.
+ *
+ * Returns one verdict per chunk; every failure path answers 'keep', so a bad
+ * key, a 4xx or a bad schema can only pass output through unchanged.
+ */
+export async function judgeChunks($, key, userRequest, chunks, criteria = TARGETS.Bash.criteria) {
+  const keepAll = chunks.map(() => 'keep');
+  if (!chunks.length) return keepAll;
+  const questions = {};
+  chunks.forEach((_, i) => {
+    questions[`c${i}`] = {
+      type: 'choice',
+      instructions: `${INSTRUCTIONS} Judge only the chunk at \`chunks[${i}]\`.`,
+      criteria,
+    };
+  });
   let res;
   try {
     res = await $.http.fetch(CONFIG.endpoint, {
@@ -109,38 +145,51 @@ export async function judgeChunk($, key, userRequest, chunk, criteria = TARGETS.
       },
       body: JSON.stringify({
         model: CONFIG.model,
-        state: { user_request: userRequest, chunk },
-        questions: { q: { type: 'choice', instructions: INSTRUCTIONS, criteria } },
+        state: { user_request: userRequest, chunks },
+        questions,
       }),
     });
   } catch {
-    return 'keep';
+    return keepAll;
   }
-  if (!res || !res.ok) return 'keep';
+  if (!res || !res.ok) return keepAll;
   try {
-    const answer = JSON.parse(res.text)?.answers?.q;
-    return answer?.choice === 'drop' ? 'drop' : 'keep';
+    const answers = JSON.parse(res.text)?.answers ?? {};
+    return chunks.map((_, i) => verdictOf(answers[`c${i}`]));
   } catch {
-    return 'keep';
+    return keepAll;
   }
 }
 
+/** One chunk, one verdict — the single-question form, kept for live probes. */
+export async function judgeChunk($, key, userRequest, chunk, criteria = TARGETS.Bash.criteria) {
+  const [verdict] = await judgeChunks($, key, userRequest, [chunk], criteria);
+  return verdict === 'drop' ? 'drop' : 'keep';
+}
+
 /**
- * Prune `text` chunk by chunk. `judge` is `(chunk) => Promise<'keep'|'drop'>`.
- * Returns `{ kept, droppedLines }`; kept text is always verbatim or a marker.
+ * Prune `text`. `judge` is `(chunks) => Promise<Array<'keep'|'drop'|'unsure'>>`
+ * — one call for the whole batch, not one per chunk. Returns
+ * `{ kept, droppedLines, unsure }`; kept text is always verbatim or a marker.
  */
 export async function pruneText(text, judge, maxJudged = CONFIG.maxJudgedChunks) {
   const chunks = chunkLines(text);
   const judged = chunks.slice(0, maxJudged);
-  const verdicts = await Promise.all(judged.map((c) => judge(c).catch(() => 'keep')));
+  const verdicts = judged.length
+    ? await Promise.resolve()
+        .then(() => judge(judged))
+        .catch(() => [])
+    : [];
   let droppedLines = 0;
+  let unsure = 0;
   const parts = chunks.map((chunk, i) => {
+    if (verdicts[i] === 'unsure') unsure += 1;
     if (verdicts[i] !== 'drop') return chunk;
     const n = countLines(chunk);
     droppedLines += n;
     return `[jev-prune: dropped ${n} lines]`;
   });
-  return { kept: parts.join('\n'), droppedLines };
+  return { kept: parts.join('\n'), droppedLines, unsure };
 }
 
 let keyPromise;
@@ -204,10 +253,11 @@ async function prune(tool, $, e, next) {
   if (!key) return r;
 
   const request = await userRequestOf($, e);
-  const { kept, droppedLines } = await pruneText(out, (chunk) =>
-    judgeChunk($, key, request, chunk, target.criteria),
+  const { kept, droppedLines, unsure } = await pruneText(out, (chunks) =>
+    judgeChunks($, key, request, chunks, target.criteria),
   );
-  const line = `jev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped`;
+  const line = `jev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped`
+    + (unsure ? `, ${unsure} unsure drops vetoed` : '');
   $.ui.log(line);
   // ponytail: the ui.log above is TUI-only and reaches no file unless --debug;
   // on a headless box the prune outcome would be unobservable and the threshold

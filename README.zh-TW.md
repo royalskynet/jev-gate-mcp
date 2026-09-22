@@ -24,9 +24,17 @@ Claude Code plugin，用 Jev（System One）的 keep/drop 判斷，在 tool outp
 ## 它做什麼
 
 `hooks/jev.js` 對 `Bash`、`Grep`、`Read` 掛 `tool.call`。它先跑 `next(e)`，
-若結果中的長字串超過該工具門檻，就依行邊界切塊，每塊問 Jev 一次 Choice：
-這塊對使用者當下的請求有沒有幫助。被判 drop 的塊換成
-`[jev-prune: dropped N lines]`；留下的文字逐字通過，絕不改寫。
+若結果中的長字串超過該工具門檻，就依行邊界切塊，問 Jev 每塊對使用者當下的請求
+有沒有幫助——**所有塊在同一個 request 裡**，一塊一個 Choice 問題，因為對同一份
+state 的獨立問題該一次問完。被判 drop 的塊換成 `[jev-prune: dropped N lines]`；
+留下的文字逐字通過，絕不改寫。
+
+只有答案自己的 `probabilities.drop` 過得了 `CONFIG.minDropProbability`（0.6）
+才真的剪。門檻掛在機率上，不是掛在 Choice `confidence`：批次會把分布攤開，同一塊
+噪音單問時是 `drop` 0.98／confidence 0.96，跟另一塊一起問就變 `drop` 0.63／
+confidence 0.25——門檻掛 confidence 會否決掉每一個真 drop，看起來跟「hook 根本沒
+載入」一模一樣。被否決的 drop 會記進 ledger（`N unsure drops vetoed`），讓門檻
+訂太高這件事是看得見的，而不是無聲把剪裁關掉。
 
 | 工具 | 剪哪個欄位 | 門檻 | drop 準則 |
 |---|---|---|---|
@@ -324,6 +332,28 @@ plugin 放在**該 profile 的 home** 底下（`~/.hermes/profiles/<profile>/plu
 不寫 `provides_hooks`：middleware 跟 `VALID_HOOKS` 是兩個不同介面，當成 hook 宣告
 會讓 `plugins doctor` 直接報錯。Ledger：`<profile home>/logs/jev-prune.jsonl`。
 
+## Skills：什麼情境拉進哪套規則
+
+兩個 skill 隨 plugin 放在 `skills/`，並 symlink 到 `.claude/skills/`，所以直接在
+這個 repo 裡工作時也會以 project scope 載入。
+
+| Skill | 何時觸發 |
+|---|---|
+| `skills/jev-agent` | 路由、壓縮、宣告完成、挑 review profile、改 `agent-glue/src/*`，或呼叫 `jev_evaluate`／`jev_apply_policy` MCP tool |
+| `skills/typesafe-ai` | 設計或修改任何 Jev 問題——措辭、批次、criteria、門檻、confidence 政策——或改 `hooks/jev.js` 與 host 整合 |
+
+`skills/typesafe-ai/SKILL.md` 是 TypeSafe 官方 skill 的 vendored 版（MIT，上游
+[typesafe-ai/skills](https://github.com/typesafe-ai/skills)），只在 `description`
+多加兩行觸發情境，並在檔尾附一段明確標示的本地 addendum，把它的 pattern 對應到這個
+repo。之所以 vendor：`claude plugin marketplace add typesafe-ai/skills` 在這台機器
+跑不了——沙箱擋 `~/.claude/plugins` 的寫入——而這個 repo **本身就是** plugin 的安裝
+位置，skill 放進來等於到同一個地方。另外沙箱的 shell 連不到 `docs.typesafe.ai`，
+WebFetch 可以，addendum 有寫。
+
+frontmatter 才是 skill 能被找到的前提。`skills/jev-agent/SKILL.md` 原本完全沒有，
+所以永遠不可能被任何情境命中；現在 `tests/integrations.test.mjs` 有測試斷言每個
+`SKILL.md` 都有 `name` 與 `description`。
+
 ## 也在這個 repo，但沒掛上
 
 `plugin/` 放 Node 側的實驗：`lib/judge.js`、`lib/route.js`
@@ -343,6 +373,7 @@ plugin 放在**該 profile 的 home** 底下（`~/.hermes/profiles/<profile>/plu
 - [繁中接線與 Codex 快速指南](docs/zh-TW/README.md) — 把 gateway 接到 Claude Code／Codex
 - [Handoff 2026-09-21（繁中）](docs/HANDOFF-20260921.md) — **沒有前情提要就從這裡開始**
 - [Jev 十步操作手冊（繁中）](docs/zh-TW/PLAYBOOK.md) — 十步手冊對應到這個 repo，含缺口
+- [TypeSafe skill](skills/typesafe-ai/SKILL.md) — vendored 上游 skill（MIT）＋對應到本 repo 的 addendum
 - [Agent glue（繁中）](docs/agent-glue.md) — 各 host 的安裝／停用／觀測，以及四項有效性指標
 - [Agent skill](skills/jev-agent/SKILL.md) — 兩個 host 共用的操作規則
 - [開發日誌](docs/DEVLOG.md) — 怎麼做出來的，以及踩過哪些坑

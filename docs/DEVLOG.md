@@ -1331,3 +1331,90 @@ hook 弱。ledger 每筆都記 `chars_before`／`chars_after`，過度修剪會�
   **同一個物件**。
 - `integrations/hermes/live-probe.py`：把「middleware 真的註冊了嗎、真的改了
   結果嗎」變成可重跑的一行，不用再手搭。
+
+## §21 對齊官方 TypeSafe skill：批次提問、機率門檻、情境自動調用（2026-09-22）
+
+### 21.1 起點：官方提示詞能做的，這個 repo 都有了嗎
+
+官方 skill（`https://raw.githubusercontent.com/typesafe-ai/skills/main/skills/typesafe-ai/SKILL.md`）
+逐條對照下來，只有兩條真的缺：
+
+| 官方規定 | repo 原狀 | 結果 |
+|---|---|---|
+| 對同一份 state 的獨立問題**一次問完** | prune 每個 chunk 發一個 request，最多 8 個 | 缺 → 補 |
+| 用 probabilities／confidence 導行為，門檻要**用自己的資料評估** | 完全沒讀 `confidence`／`probabilities` | 缺 → 補 |
+| judgment 放 `instructions`、選項放 `criteria` | 已是 | 有 |
+| 有 no-match 出口 | `route` 的 `no_match`、triage 的 `no-model-map` | 有 |
+| 規則／計算留在程式碼 | 門檻、切塊、記錄全在 JS | 有 |
+| 憑證留伺服器側 | key 只在 process 內讀檔 | 有 |
+| typed output 保證介面不保證真值 | 每條路徑 fail-open ＋ ledger | 有 |
+| rerank／composite scoring／cascade | 沒有可排序的候選 | 刻意不做（YAGNI） |
+
+端點差異記一下：官方文件寫 `api.typesafe.ai/v1/systemone` ＋ `jev-latest`，本 repo
+走 OpenRouter `https://openrouter.ai/api/v1/systemone` ＋ `typesafe/jev-1.13`
+（回應是 `typesafe/jev-1.13-20260917`、`"provider":"TypeSafe"`）。request/answer
+形狀相同，base URL 與 model id 不同。
+
+### 21.2 第一個陷阱：門檻掛錯欄位，等於把功能關掉
+
+補完批次後先掛了 `minDropConfidence: 0.55`，兩個 live test 直接紅：
+
+```
+✖ live: Bash hook shrinks a long stdout
+  AssertionError: expected pruning, got 19542/19542
+✖ live: a real drop writes a ledger-style line
+  AssertionError: expected at least one drop, got 19542/19542 every time
+```
+
+拿測試自己的 fixture（400 行 heartbeat，第 200 行插一條 ERROR）打真 endpoint：
+
+```
+chars 19542 chunks 2 [ 15965, 3576 ]
+status 200
+{"model":"typesafe/jev-1.13-20260917","answers":{
+  "c0":{"type":"choice","choice":"keep","probabilities":{"drop":0.2,"keep":0.8},"confidence":0.6},
+  "c1":{"type":"choice","choice":"drop","probabilities":{"drop":0.63,"keep":0.37},"confidence":0.25}},
+ "usage":{"input_tokens":6851,"output_tokens":61,"cost":0.000287742}}
+```
+
+同一塊噪音**單問**時是 `drop` 0.98／confidence 0.96；跟兄弟塊一起問就變 0.63／0.25。
+官方 skill 早寫了：Choice 的 confidence 是**分布集中度**，不是「可以動手」的授權；
+可接受的替代選項本來就會把機率攤開。所以門檻改掛 `probabilities.drop ≥ 0.6`，
+也就是「模型自己相信這塊該丟的程度」，跟批次與否無關。
+
+這是 §18.2 那族缺陷第 N 次出現：**門檻訂太高 ＝ 功能無聲關閉，長相跟 hook 沒載入一樣**。
+預防加固是被否決的 drop 會進 ledger（`N unsure drops vetoed`），關掉是看得見的。
+
+### 21.3 第二個陷阱：skill 沒 frontmatter，永遠不會被情境命中
+
+要做「依情境自動調用」才發現 `skills/jev-agent/SKILL.md` 從頭到尾沒有 frontmatter
+——沒有 `name`、沒有 `description`，任何情境都匹配不到它。檔案就擺在 repo 裡，
+看起來完全正常。同一族缺陷：宣告 ≠ 生效。
+
+補 frontmatter，並在 `tests/integrations.test.mjs` 加斷言：每個 `SKILL.md` 都要有
+`name` 與 `description`。
+
+### 21.4 官方安裝路徑走不通，改 vendor
+
+```
+$ claude plugin marketplace add typesafe-ai/skills
+Failed to clone marketplace repository: fatal: could not create work tree dir
+'/Users/51mini/.claude/plugins/marketplaces/typesafe-ai-skills..clone': Operation not permitted
+```
+
+沙箱擋 `~/.claude/plugins` 寫入。但 `known_marketplaces.json` 裡 `jev-gate` 是
+directory marketplace，`installLocation` 就是這個 repo——所以把 skill 放進
+`skills/typesafe-ai/` 到達的是同一個地方。再 symlink 到 `.claude/skills/`，
+在 repo 內工作時也以 project scope 載入。
+
+vendor 的規矩：上游 MIT、保留出處註記、只在 `description` 加兩行本 repo 的觸發情境，
+其餘逐字不動，本地內容集中在檔尾標示清楚的 addendum。
+
+附帶事實：沙箱 shell 連不到 docs（`deny network-outbound docs.typesafe.ai:443`），
+WebFetch 可以，`curl` 到 `raw.githubusercontent.com` 可以。addendum 有寫，免得
+下一個人照官方指示 `curl` 然後以為文件掛了。
+
+### 21.5 驗收
+
+`node --test` → `tests 210 / pass 208 / fail 0`（2 skipped）。
+含兩個打真 endpoint 的 live prune 測試。

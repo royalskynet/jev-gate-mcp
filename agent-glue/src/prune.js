@@ -7,7 +7,7 @@
  * the CLI (`cli.mjs prune`) is their seam onto the SAME judge rather than a
  * second implementation of it.
  */
-import { pruneText, judgeChunk, TARGETS, CONFIG } from '../../hooks/jev.js';
+import { pruneText, judgeChunks, TARGETS, CONFIG } from '../../hooks/jev.js';
 
 /**
  * `$` as the hooks module expects it, over plain Node: `fetch` there returns a
@@ -59,10 +59,13 @@ export async function pruneCommand(payload = {}, deps = {}) {
   if (text.length < threshold) return out('below-threshold');
   const key = deps.key ?? (await pruneKey());
   if (!key) return out('no-key');
-  const judge = deps.judge ?? ((chunk) => judgeChunk(deps.host ?? fetchHost, key, payload.request ?? '', chunk, target.criteria));
+  const judge = deps.judge
+    ?? ((chunks) => judgeChunks(deps.host ?? fetchHost, key, payload.request ?? '', chunks, target.criteria));
   try {
-    const { kept, droppedLines } = await pruneText(text, judge);
-    return out('judged', kept, droppedLines, true);
+    const { kept, droppedLines, unsure } = await pruneText(text, judge);
+    const r = out('judged', kept, droppedLines, true);
+    if (unsure) r.unsure = unsure;
+    return r;
   } catch {
     // ponytail: the judge already fail-opens per chunk; this catch is only for
     // a broken chunker, and a prune that throws must never lose tool output.

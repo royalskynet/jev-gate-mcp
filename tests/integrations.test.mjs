@@ -10,6 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -22,7 +23,7 @@ test('prune: below threshold passes through verbatim, without a judge', async ()
   let judged = false;
   const r = await pruneCommand(
     { tool: 'Bash', text: 'x'.repeat(100) },
-    { key: 'k', judge: async () => { judged = true; return 'drop'; } },
+    { key: 'k', judge: async (chunks) => { judged = true; return chunks.map(() => 'drop'); } },
   );
   assert.equal(r.text, 'x'.repeat(100));
   assert.equal(r.judged, false);
@@ -33,7 +34,7 @@ test('prune: below threshold passes through verbatim, without a judge', async ()
 test('prune: a drop verdict replaces the chunk with a visible marker', async () => {
   const text = Array.from({ length: 400 }, (_, i) => `line ${i} ${'y'.repeat(40)}`).join('\n');
   assert.ok(text.length > 4000, 'fixture must clear the Bash threshold');
-  const r = await pruneCommand({ tool: 'Bash', text }, { key: 'k', judge: async () => 'drop' });
+  const r = await pruneCommand({ tool: 'Bash', text }, { key: 'k', judge: async (chunks) => chunks.map(() => 'drop') });
   assert.equal(r.judged, true);
   assert.ok(r.dropped_lines > 0);
   assert.ok(r.chars_after < r.chars_before);
@@ -127,3 +128,20 @@ function fakeTransport(tier) {
   };
   return { evaluate: async () => ({ answers: byTier[tier], latency_ms: 1 }) };
 }
+
+// A SKILL.md with no frontmatter loads nowhere: no `name`, no `description`, so
+// nothing can match a situation and fire it. That failure is silent — the file
+// is right there in the repo — which is the declaration≠effect family again
+// (DEVLOG §18.2). `skills/jev-agent/SKILL.md` shipped that way until §21.
+test('every skill declares frontmatter with a name and a description', () => {
+  const root = new URL('../skills/', import.meta.url);
+  const names = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  assert.ok(names.length, 'no skills found');
+  for (const name of names) {
+    const text = readFileSync(new URL(`${name}/SKILL.md`, root), 'utf8');
+    const fm = /^---\n([\s\S]*?)\n---\n/.exec(text);
+    assert.ok(fm, `skills/${name}/SKILL.md has no frontmatter — it can never be invoked`);
+    assert.match(fm[1], /^name:\s*\S/m, `skills/${name}: frontmatter has no name`);
+    assert.match(fm[1], /^description:\s*\S/m, `skills/${name}: frontmatter has no description`);
+  }
+});
