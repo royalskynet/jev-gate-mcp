@@ -27,7 +27,8 @@ Claude Code plugin，用 Jev（System One）的 keep/drop 判斷，在 tool outp
 若結果中的長字串超過該工具門檻，就依行邊界切塊，問 Jev 每塊對使用者當下的請求
 有沒有幫助——**所有塊在同一個 request 裡**，一塊一個 Choice 問題，因為對同一份
 state 的獨立問題該一次問完。被判 drop 的塊換成 `[jev-prune: dropped N lines]`；
-留下的文字逐字通過，絕不改寫。
+留下的文字逐字通過，絕不改寫。單次呼叫最多判 `CONFIG.maxJudgedChunks`（8）塊、
+約 128 KB；超過的部分不判，也**不截斷**，所以再大的輸出都不會因此掉東西。
 
 只有答案自己的 `probabilities.drop` 過得了 `CONFIG.minDropProbability`（0.7），
 而且沒被下面那條 deterministic 關鍵字否決，才真的剪。門檻掛在機率上，不是掛在
@@ -82,6 +83,17 @@ Read）一行都沒剪。低於一個 chunk 時，題目變成「整包丟掉還
 只有一次呼叫寬，沒有 margin——下次輸出落在 16–32 KB 就整個失效；所以門檻放在
 **結構邊界**：一個 chunk 是「部分丟棄」這件事能存在的最小單位。
 `tests/jev.test.mjs` 釘住 `thresholdChars >= chunkChars`。
+
+ledger 定下來的是那個**關係**——門檻等於一個 chunk——不是那個數字。
+`chunkChars: 16000` 從第一個 commit 就是這個值，本身沒有單獨掃過；動它會把三個
+門檻一起帶著動，所以那是 `scripts/calibrate-prune.mjs` 的問題，不是改一行的事。
+
+這次抬門檻放棄掉一段：8–16 KB 的輸出，以前會判、現在不判。那些呼叫按定義不留痕跡，
+所以 `prune` 臨時對「過半個 chunk 但未達門檻」的輸出寫一行 `jev-skip`，
+`node scripts/prune-verdict.mjs` 以上線時間切開 ledger，印前後命中率與那些被跳過
+的大小（chunk 相對 band）。命中率是算術——把從來沒剪到東西的呼叫拿掉，它自己就會
+漲——所以證據在 band：厚就該回 12,000，薄就是 16,000 站得住。判完這段 logging
+跟這段說明一起拆掉。
 
 Read 仍然最保守：Bash 或 Grep 的結果是**關於**檔案的報告，而 Read 的結果
 **就是**模型指名要的那個檔案，所以它的 drop 準則只剪讀起來沒有意義的堆量，

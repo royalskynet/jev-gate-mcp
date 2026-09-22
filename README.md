@@ -29,7 +29,10 @@ threshold it splits it on line boundaries and asks Jev whether each chunk helps
 the user's current request — **all chunks in one request**, one Choice question
 per chunk, because independent questions over the same state belong in a single
 call. Dropped chunks are replaced by `[jev-prune: dropped N lines]`; kept text
-is passed through verbatim, never rewritten.
+is passed through verbatim, never rewritten. At most `CONFIG.maxJudgedChunks`
+(8) chunks are judged per call — roughly 128 KB; anything past that is passed
+through unjudged and, in particular, never truncated, so a very large output
+loses nothing it would otherwise have kept.
 
 A `drop` is only acted on when the answer's own `probabilities.drop` clears
 `CONFIG.minDropProbability` (0.7) **and** the deterministic keyword veto below
@@ -96,6 +99,20 @@ more on this corpus but is one call wide — no margin the day output lands
 between the two — so the threshold sits on the structural boundary instead: one
 chunk is the smallest output in which a partial drop can exist.
 `tests/jev.test.mjs` pins `thresholdChars >= chunkChars`.
+
+What the ledger settles is the *relation* — a threshold of one chunk — not the
+number. `chunkChars: 16000` has shipped since the first commit and has never
+been swept on its own; moving it moves all three thresholds with it, so it is a
+`scripts/calibrate-prune.mjs` question, not an edit.
+
+The raise gave up a band: 8-16 KB of output that used to be judged and no longer
+is. Those calls leave no trace by construction, so `prune` temporarily writes a
+`jev-skip` line for output that clears half a chunk but not the threshold, and
+`node scripts/prune-verdict.mjs` splits the ledger at the cutover to print
+before/after hit rates plus those skipped sizes as chunk-relative bands. The hit
+rate is arithmetic — dropping calls that never dropped anything raises it by
+itself — so the band is the evidence: a fat one argues for 12,000, a thin one
+settles 16,000. Both the logging and this paragraph come out at that verdict.
 
 Read is still the cautious one: a Bash or Grep result is a *report about* files,
 but a Read result *is* the file the model asked for by name, so its criteria
