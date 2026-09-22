@@ -32,8 +32,12 @@ function hooksByTool() {
 }
 
 const SIGNAL = 'ERROR: config.yaml not found at /etc/app/config.yaml';
+// 800 lines, not 400: at 400 the noise tail is a single 3.5 KB chunk and the
+// judge scores it 0.63-0.74 — straddling `minDropProbability`, so the test
+// failed on live variance rather than on a broken wire (DEVLOG §22.2). At 800
+// the tail chunks are full 16 KB dumps and come back 0.91-0.96 every run.
 function noisyLog() {
-  const noise = Array.from({ length: 400 }, (_, i) => `debug heartbeat tick ${i} ok ok ok ok ok ok ok ok`);
+  const noise = Array.from({ length: 800 }, (_, i) => `debug heartbeat tick ${i} ok ok ok ok ok ok ok ok`);
   return [...noise.slice(0, 200), SIGNAL, ...noise.slice(200)].join('\n');
 }
 

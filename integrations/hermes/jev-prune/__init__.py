@@ -104,21 +104,25 @@ def prune_text(tool: str, request: str, text: str, run=None) -> Dict[str, Any]:
     return json.loads(proc.stdout)
 
 
-def _request_of(args: Dict[str, Any]) -> str:
-    """What the pruning is relative to.
+def _request_of(kwargs: Dict[str, Any]) -> str:
+    """The user's request, or "" — and "" means the judge declines, not that it guesses.
 
-    ponytail: the middleware payload carries no conversation, so the tool's own arguments
-    stand in for the user's request. Weaker judgments than the Claude hook (which reads the
-    newest user turn); wire a real request here if the ledger shows over-eager drops.
+    Hermes' real call sites (``model_tools.handle_function_call``,
+    ``agent_runtime_helpers._execute``) pass ``original_args`` plus the id fields and
+    nothing else, so today this returns "" in production and the shared judge answers
+    ``no-request``. The tool's own arguments used to stand in here. They are not a
+    substitute: judged for relevance against ``cat log``, a 40 KB file the task was
+    entirely about came back 99.8% dropped (DEVLOG §22.3).
+
+    ``request`` is read anyway because ``run_tool_execution_middleware`` forwards its
+    ``**context`` verbatim — the day a Hermes call site passes one, pruning starts
+    working with no change here.
     """
-    for key in ("command", "path", "pattern", "query", "description"):
-        value = args.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()[:2000]
-    return ""
+    value = kwargs.get("request")
+    return value.strip()[:2000] if isinstance(value, str) and value.strip() else ""
 
 
-def _prune_result(tool_name: str, args: Dict[str, Any], result: Any, run=None) -> Any:
+def _prune_result(tool_name: str, ctx: Dict[str, Any], result: Any, run=None) -> Any:
     criteria_tool = _TARGETS.get(tool_name)
     if criteria_tool is None:
         return result
@@ -126,7 +130,7 @@ def _prune_result(tool_name: str, args: Dict[str, Any], result: Any, run=None) -
     if not text:
         return result
     try:
-        out = prune_text(criteria_tool, _request_of(args), text, run=run)
+        out = prune_text(criteria_tool, _request_of(ctx), text, run=run)
     except Exception as exc:
         _log({"tool": tool_name, "outcome": "error", "error": str(exc)[:200]})
         return result
@@ -152,7 +156,7 @@ def _prune_result(tool_name: str, args: Dict[str, Any], result: Any, run=None) -
 def _on_tool_execution(**kwargs: Any) -> Any:
     result = kwargs["next_call"](kwargs.get("args"))
     try:
-        return _prune_result(str(kwargs.get("tool_name") or ""), kwargs.get("args") or {}, result)
+        return _prune_result(str(kwargs.get("tool_name") or ""), kwargs, result)
     except Exception as exc:  # pragma: no cover - the guard of last resort
         logger.warning("jev-prune passed the result through unchanged: %s", exc)
         return result
@@ -176,7 +180,7 @@ def _selfcheck() -> None:
     )
 
     # a bare-string terminal result is replaced by the pruned text
-    assert _prune_result("terminal", {"command": "ls"}, big, run=lambda _p: _Proc(dropped)) == (
+    assert _prune_result("terminal", {"request": "r"}, big, run=lambda _p: _Proc(dropped)) == (
         "[jev-prune: dropped 1 lines]"
     )
     # a dict result keeps its shape, only the text field changes
@@ -189,7 +193,9 @@ def _selfcheck() -> None:
     # nothing dropped -> the original object, not a rebuilt copy
     kept = json.dumps({"text": big, "dropped_lines": 0, "judged": True, "reason": "judged"})
     assert _prune_result("terminal", {}, big, run=lambda _p: _Proc(kept)) is big
-    assert _request_of({"command": "ls -la"}) == "ls -la"
+    # the request comes from the middleware context, never from the tool arguments
+    assert _request_of({"request": "why is the worker slow?"}) == "why is the worker slow?"
+    assert _request_of({"args": {"command": "ls -la"}}) == ""
     print("jev-prune selfcheck OK")
 
 

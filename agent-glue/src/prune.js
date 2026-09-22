@@ -57,10 +57,17 @@ export async function pruneCommand(payload = {}, deps = {}) {
     reason,
   });
   if (text.length < threshold) return out('below-threshold');
+  // A prune with no request is not a weaker prune, it is a different and unsafe
+  // one: every keep/drop criterion this repo has is written relative to the
+  // user's task. Measured both ways in DEVLOG §22.3 — relevance judged against a
+  // stand-in request dropped the file the task was about, and request-free
+  // "mechanical bulk" criteria dropped every log and JSON dump, needle included.
+  // Refusing costs the savings; guessing costs the answer.
+  if (!String(payload.request ?? '').trim()) return out('no-request');
   const key = deps.key ?? (await pruneKey());
   if (!key) return out('no-key');
   const judge = deps.judge
-    ?? ((chunks) => judgeChunks(deps.host ?? fetchHost, key, payload.request ?? '', chunks, target.criteria));
+    ?? ((chunks) => judgeChunks(deps.host ?? fetchHost, key, payload.request, chunks, target.criteria));
   try {
     const { kept, droppedLines, unsure } = await pruneText(text, judge);
     const r = out('judged', kept, droppedLines, true);

@@ -29,12 +29,31 @@ Claude Code plugin，用 Jev（System One）的 keep/drop 判斷，在 tool outp
 state 的獨立問題該一次問完。被判 drop 的塊換成 `[jev-prune: dropped N lines]`；
 留下的文字逐字通過，絕不改寫。
 
-只有答案自己的 `probabilities.drop` 過得了 `CONFIG.minDropProbability`（0.6）
-才真的剪。門檻掛在機率上，不是掛在 Choice `confidence`：批次會把分布攤開，同一塊
+只有答案自己的 `probabilities.drop` 過得了 `CONFIG.minDropProbability`（0.7），
+而且沒被下面那條 deterministic 關鍵字否決，才真的剪。門檻掛在機率上，不是掛在
+Choice `confidence`：批次會把分布攤開，同一塊
 噪音單問時是 `drop` 0.98／confidence 0.96，跟另一塊一起問就變 `drop` 0.63／
 confidence 0.25——門檻掛 confidence 會否決掉每一個真 drop，看起來跟「hook 根本沒
 載入」一模一樣。被否決的 drop 會記進 ledger（`N unsure drops vetoed`），讓門檻
 訂太高這件事是看得見的，而不是無聲把剪裁關掉。
+
+0.7 是量出來的，不是挑出來的：`node scripts/calibrate-prune.mjs <corpus.jsonl>`
+把人工標過的本機 tool output 用 hook 實際送的同一份 request 重放一次，再對標籤掃
+門檻（8 cases／17 chunks／一輪約 $0.006）。明顯該丟的回 0.86–1.00，但貴的是另一
+種：整塊幾乎都是雜訊、答案埋在裡面。真實 16 KB 的那塊——200 行 heartbeat 夾一行
+`ERROR`——跨多輪落在 0.47–0.62。0.6 省 48.5% 的位元組但運氣差就把答案剪掉；0.7 省
+29.3%，一次都沒剪錯。答案被剪掉比留著一坨 dump 貴。
+
+有兩條規則寫在程式裡、擋在模型前面，因為模型自己被量出來會錯：
+
+* **沒有 request 就不剪。** 每一條 criteria 都是相對使用者的任務寫的，沒有任務就
+  沒有判斷基準，`pruneCommand` 回 `no-request` 而不是用猜的。Hermes middleware 以前
+  拿 tool 自己的 shell 指令頂替：用 `cat log` 當基準去判，一個整個任務都在講它的
+  40 KB 檔案被判 99.8% 該丟。
+* **關鍵字否決**（`vetoOnTerms`）。塊裡含有請求中**有鑑別力**的詞——有些塊有、不是
+  每塊都有——就把 `drop` 壓成 `unsure`。每塊都有的詞說不出該留哪塊，忽略；只有一塊
+  時任何命中都算。這條專治模型唯一可重現的盲點（問「哪幾個 commit 改過這條路徑」，
+  `git log --stat` 那塊回 `drop` 0.92／confidence 0.84）。
 
 | 工具 | 剪哪個欄位 | 門檻 | drop 準則 |
 |---|---|---|---|

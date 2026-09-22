@@ -22,7 +22,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 test('prune: below threshold passes through verbatim, without a judge', async () => {
   let judged = false;
   const r = await pruneCommand(
-    { tool: 'Bash', text: 'x'.repeat(100) },
+    { tool: 'Bash', request: 'why is it slow?', text: 'x'.repeat(100) },
     { key: 'k', judge: async (chunks) => { judged = true; return chunks.map(() => 'drop'); } },
   );
   assert.equal(r.text, 'x'.repeat(100));
@@ -34,16 +34,38 @@ test('prune: below threshold passes through verbatim, without a judge', async ()
 test('prune: a drop verdict replaces the chunk with a visible marker', async () => {
   const text = Array.from({ length: 400 }, (_, i) => `line ${i} ${'y'.repeat(40)}`).join('\n');
   assert.ok(text.length > 4000, 'fixture must clear the Bash threshold');
-  const r = await pruneCommand({ tool: 'Bash', text }, { key: 'k', judge: async (chunks) => chunks.map(() => 'drop') });
+  const r = await pruneCommand(
+    { tool: 'Bash', request: 'why is it slow?', text },
+    { key: 'k', judge: async (chunks) => chunks.map(() => 'drop') },
+  );
   assert.equal(r.judged, true);
   assert.ok(r.dropped_lines > 0);
   assert.ok(r.chars_after < r.chars_before);
   assert.match(r.text, /\[jev-prune: dropped \d+ lines\]/);
 });
 
+test('prune: no request means no prune, not a prune against a stand-in', async () => {
+  // §22.3: the Hermes middleware fed the tool's own shell command in as the
+  // request, and a 40 KB file the task was entirely about came back 99.8%
+  // dropped. Every criteria row is written relative to the user's task, so
+  // without one there is nothing to judge against — refuse, never guess.
+  let judged = false;
+  const r = await pruneCommand(
+    { tool: 'Bash', text: 'x'.repeat(9000) },
+    { key: 'k', judge: async (chunks) => { judged = true; return chunks.map(() => 'drop'); } },
+  );
+  assert.equal(r.reason, 'no-request');
+  assert.equal(r.judged, false);
+  assert.equal(r.text.length, 9000);
+  assert.equal(judged, false, 'no request must not spend a Jev request either');
+});
+
 test('prune: a throwing judge keeps the output (fail-open)', async () => {
   const text = 'z'.repeat(9000);
-  const r = await pruneCommand({ tool: 'Bash', text }, { key: 'k', judge: async () => { throw new Error('boom'); } });
+  const r = await pruneCommand(
+    { tool: 'Bash', request: 'why is it slow?', text },
+    { key: 'k', judge: async () => { throw new Error('boom'); } },
+  );
   assert.equal(r.text, text);
   assert.equal(r.dropped_lines, 0);
 });

@@ -32,13 +32,38 @@ call. Dropped chunks are replaced by `[jev-prune: dropped N lines]`; kept text
 is passed through verbatim, never rewritten.
 
 A `drop` is only acted on when the answer's own `probabilities.drop` clears
-`CONFIG.minDropProbability` (0.6). The floor is on the probability, not on
+`CONFIG.minDropProbability` (0.7) **and** the deterministic keyword veto below
+lets it through. The floor is on the probability, not on
 Choice `confidence`: batching spreads the distribution, and the same noise chunk
 that answers `drop` 0.98 / confidence 0.96 on its own came back `drop` 0.63 /
 confidence 0.25 next to a sibling chunk — a floor on `confidence` vetoed every
 real drop and looked exactly like a hook that never loaded. Vetoed drops are
 counted into the ledger line (`N unsure drops vetoed`) so a floor that is too
 high stays visible instead of silently turning pruning off.
+
+The 0.7 is measured, not chosen: `node scripts/calibrate-prune.mjs <corpus.jsonl>`
+replays hand-labelled chunks of this machine's own tool output through the exact
+request the hook sends and sweeps the threshold over the labels (8 cases / 17
+chunks / ~$0.006 a sweep). Obvious drops come back 0.86-1.00, but the expensive
+case is a chunk that is mostly noise with the answer buried in it: a real 16 KB
+chunk holding one `ERROR` line among 200 heartbeats scored 0.47-0.62 across runs.
+0.6 saved 48.5% of the bytes and destroyed that answer on a bad roll; 0.7 saves
+29.3% and never did. A destroyed answer costs more than a kept dump.
+
+Two rules sit in code, in front of the model, because the model alone was
+measured to be wrong:
+
+* **No request, no prune.** Every criteria row is written relative to the user's
+  task, so with no task there is nothing to judge against and `pruneCommand`
+  answers `no-request` instead of guessing. The Hermes middleware used to pass
+  the tool's own shell command as a stand-in; judged against `cat log`, a 40 KB
+  file the task was entirely about came back 99.8% dropped.
+* **Keyword veto** (`vetoOnTerms`). A `drop` is held as `unsure` when the chunk
+  carries a *discriminating* term from the request — one that some but not all
+  chunks contain. A term every chunk shares says nothing about which to keep, so
+  it is ignored; with a single chunk any hit counts. This catches the model's one
+  reproducible blind spot (a `git log --stat` chunk answered `drop` 0.92 /
+  confidence 0.84 for a question about which commits touched a path).
 
 | tool | field pruned | threshold | criteria drop |
 |---|---|---|---|

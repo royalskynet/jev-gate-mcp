@@ -18,3 +18,4 @@ types/
 .jev-runtime/
 # stray non-task artifact from the abandoned deep-run probe
 deep/
+__pycache__/

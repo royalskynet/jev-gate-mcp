@@ -1459,3 +1459,171 @@ frontmatter＝永不觸發）、9317（沙箱擋 marketplace add），另 `0001-
 2. Bash 工具裡跑 `cd /some/other/dir` 會改掉**整個 session 的 primary working
    directory**，不是只影響那一條指令。之後所有相對路徑指令都在別的地方執行，
    而且完全不報錯。改用 `cd <repo> && <cmd>` 單行，或全部絕對路徑。
+
+## 22. 實測 Hermes 省多少、門檻實測校準（2026-09-22）
+
+問題三句：Hermes 掛上去到底省多少？門檻 0.6 憑什麼？Score／Noul 要不要收？
+
+### 22.1 先量再說：Hermes 真的省多少
+
+量法：真 `discover_plugins` ＋ 真 `run_tool_execution_middleware` ＋ 真 Jev，
+餵 5 份這台機器自己的 tool output（worker log、jsonl 統計、`git log --stat`、
+原始碼＋檔案列表、lock 檔），每份配一句真的使用者問題。
+
+```
+has tool_execution middleware: True
+  27063 ->   11134  ( 58.9% saved,  0.58s)  worker log 有沒有噴錯？是什麼錯？
+  40000 ->   40000  (  0.0% saved,  0.58s)  統計 jev-calibration.jsonl 最近樣本的 gat
+  30000 ->   14063  ( 53.1% saved,  0.58s)  最近哪幾個 commit 改過 prune 這條路徑？
+  32025 ->   16062  ( 49.8% saved,  0.55s)  hooks/jev.js 裡 minDropProbability
+  17440 ->   17440  (  0.0% saved,  0.53s)  這個專案裝了哪些套件、鎖在什麼版本？
+
+total 146528 -> 98699 chars, 32.6% saved, 2.8s judging
+~tokens (chars/4): 36632 -> 24674, saved ~11957
+```
+
+**32.6%、約 12k token／5 次呼叫、每次判斷 ~0.55s。** 兩個 0% 不是壞掉：那兩題
+整份輸出就是答案，該留。答案有沒有被剪掉另外驗過：
+
+```
+30000->14063 answer kept: true | 最近哪幾個 commit 改過 prun
+32025->16062 answer kept: true | hooks/jev.js 裡 minDr
+27063->11134 dropped=266 hasERROR=true   (連跑 3 次都一樣)
+```
+
+之前記的 50%（觀察 49435）是假的，根因見 §22.3。
+
+### 22.2 門檻校準：0.6 → 0.7，以及為什麼機率掃不掉那個錯
+
+`scripts/calibrate-prune.mjs <corpus.jsonl>` 把人工標好 keep／drop 的塊，用
+`judgeChunks` 一模一樣的 wire shape 重放，留下每塊原始 `probabilities.drop`，
+再對標籤掃門檻。語料是這台機器自己的輸出，8 cases／17 chunks，一輪 ~$0.006。
+
+```
+8 cases, 17 chunks, 5048 ms, 144059 input tokens, $0.006050
+
+threshold  recall(drop)  false-drops  chars saved  of total
+     0.30           7/8          1/9       151156  48.5% (max 54.1%)
+     0.60           7/8          1/9       151156  48.5% (max 54.1%)
+     0.70           5/8          0/9        91156  29.3% (max 54.1%)
+     0.80           4/8          0/9        75197  24.1% (max 54.1%)
+     0.90           3/8          0/9        67998  21.8% (max 54.1%)
+```
+
+0.6 的那個 false drop 是 case 7，也是唯一一個用**真 chunker 切出來的真邊界**
+當語料的 case：`noise.txt + needle.txt` 經 `chunkLines` 切成 15959／11103，
+答案那行 `ERROR OperationalError` 落在後面那塊、周圍全是 heartbeat。重複量：
+
+```
+case 0 drop  15959c choice=drop p(drop)=0.8  conf=0.6
+case 0 keep  11103c choice=drop p(drop)=0.58 conf=0.15
+case 0 keep  11103c choice=keep p(drop)=0.47 conf=0.06
+case 0 keep  11103c choice=drop p(drop)=0.52 conf=0.03
+case 0 keep  11103c choice=drop p(drop)=0.58 conf=0.15
+case 0 keep  11103c choice=drop p(drop)=0.55 conf=0.1
+case 0 keep  11103c choice=drop p(drop)=0.62 conf=0.24
+```
+
+**混合塊落 0.47–0.62，純噪音塊落 0.70–0.80。** 兩個帶子只差 0.08，0.6 剛好在
+混合塊帶子裡面——運氣差就把答案剪掉。`vetoOnTerms` 救不了這題：請求只有 `worker`
+一個 ASCII 詞，兩塊都有，沒有鑑別力（中文詞根本不會被 `[a-z0-9_]{4,}` 抓到）。
+所以只能靠門檻。代價：省 29.3% 而不是 48.5%。答案被剪掉比留著一坨 dump 貴。
+
+同一條變異也炸掉 `tests/hook.live.test.js` 兩個 live 測試：fixture 的噪音尾巴
+只有 3576 字元，判 0.63–0.74 橫跨門檻，6 次 retry 全部沒 drop。fixture 從 400 行
+改 800 行，尾巴變成整塊 16 KB dump，穩定 0.91–0.96。**測試失敗的根因是 fixture
+剛好坐在門檻上，不是 wire 壞掉**——這種 fixture 本來就不該拿來當正向斷言。
+
+`vetoOnTerms` 自己的規則（只有**有鑑別力**的詞才算：有些塊有、不是每塊都有；
+單塊時任何命中都算）現在有離線測試 `tests/jev.test.mjs`，5 條。
+
+### 22.3 真正吃掉那 50% 的缺陷：Hermes 根本沒有使用者請求
+
+`_request_of(args)` 原本拿 tool 自己的參數頂替使用者請求，所以 `cat log` 這個
+shell 指令變成判斷基準。量出來：一個整個任務都在講它的 40 KB 檔案被判 99.8%
+該丟（27063 → 61）。那 50% 省的是答案本身。
+
+讀 Hermes 自己的呼叫點確認過：`model_tools.py:773` 與
+`agent/agent_runtime_helpers.py:2257` 只傳 `original_args` ＋ 一串 id 欄位，
+**沒有任何 call site 傳使用者請求**。`_run_execution_chain` 會把 `**context`
+原樣轉發，所以哪天 Hermes 傳了 `request=`，這裡不用改就會開始運作。
+
+試過的替代方案，也量了：不用請求、改用「機械式體積」準則（`bulk_only`）省
+68.4%，但 5 題有 3 題答案被剪掉，包含 needle。**兩種猜法都比不猜貴**，所以
+`pruneCommand` 現在直接回 `no-request`：沒有任務就沒有判斷基準。
+今天 Hermes 線上跑到的就是這條，等於 Hermes 側暫時不剪。
+
+### 22.4 驗收
+
+```
+ℹ tests 216
+ℹ pass 214
+ℹ fail 0
+ℹ skipped 2
+```
+
+```
+[agents:acceptance] triage + spawn-hook smoke: OK
+  triage=cheap spawn=haiku escape-hatch=ok
+[agents:acceptance] ALL OK
+```
+
+### 22.5 Score／Noul：白話、實測、要不要收
+
+三個原語同一件事的三種問法：
+
+* **Choice** — 「選一個」。回 `choice` ＋ 每個選項的 `probabilities` ＋
+  `confidence`（分布有多集中，**不是**授權動手，§18.2）。prune 的 keep／drop 用它。
+* **Noul** — 「是不是？」只回一個 `noul` 0–1，**沒有 confidence 欄**。0.5 同時
+  代表「一半一半」跟「我不知道」，兩者分不出來。
+* **Score** — 「打幾分」。`criteria` 是**陣列**（legend，每級一句話），回
+  `score`（可能是 1.53 這種小數，是期望值不是某一級）＋每級 `probabilities` ＋
+  `confidence`。
+
+repo 裡已經在用：triage 的 `difficulty` 是 Score（4 級 → tier），
+`costly_mistake` 是 Noul（當 floor rule，不參與排序），gateway 四支 policy
+都是 Noul。
+
+拿 prune 最難的那塊（混合塊）同題三問，各 3 輪：
+
+```
+choice c0="drop"/conf0.21  c1="keep"/conf0.13
+noul   c0=0.75  c1=0.76
+choice c0="drop"/conf0.21  c1="keep"/conf0.45
+noul   c0=0.72  c1=0.8
+choice c0="drop"/conf0.25  c1="keep"/conf0.11
+noul   c0=0.75  c1=0.74
+
+score  c0 score=1.53 p={"0":0.18,"1":0.34,"2":0.26,"3":0.22} conf=0.11
+       c1 score=1.79 p={"0":0.18,"1":0.26,"2":0.15,"3":0.41} conf=0
+       c0 score=1.69 p={"0":0.16,"1":0.3,"2":0.24,"3":0.3}   conf=0
+       c1 score=1.91 p={"0":0.16,"1":0.23,"2":0.16,"3":0.45} conf=0
+       c0 score=1.47 p={"0":0.2,"1":0.35,"2":0.24,"3":0.21}  conf=0.13
+       c1 score=1.98 p={"0":0.17,"1":0.21,"2":0.11,"3":0.51} conf=0
+```
+
+同一個 Noul 問法換成**好分的**那對（純噪音 vs needle）：
+
+```
+clear-cut pair  noul: c0(noise)=0.86  c1(needle)=0.06
+clear-cut pair  noul: c0(noise)=0.86  c1(needle)=0.05
+clear-cut pair  noul: c0(noise)=0.85  c1(needle)=0.05
+```
+
+結論（有原因的）：
+
+1. **prune 不換 Noul。** 好分的題 Noul 分得很開（0.86 vs 0.05），但題目一難就
+   兩塊都 0.75——**沒有 confidence 欄就沒有「我不知道」這個通道**，模糊只好被壓
+   成中間值，跟一個有把握的中間值長得一樣。prune 的貴錯就發生在難題上。
+2. **prune 不換 Score。** Score 的 `probabilities[3]`（「這塊含答案」）確實分得開
+   （0.41–0.51 vs 0.21–0.30），但間距跟 Choice 的 p(drop) 同級（差 ~0.1），
+   換過去要多維護一份 legend、多一個小數門檻，**換不到 separation**。
+   Choice ＋ 0.7 ＋ `vetoOnTerms` 已經 0 false drop。
+3. **Noul 繼續當 flag，不要當排序。** `costly_mistake`、gateway 四支 policy 都是
+   「是不是危險」的單一旗標，答案進 floor rule（危險就不准降級），不跟別的分數
+   比大小。那正是 Noul 唯一穩的用法。
+4. **Score 繼續留在 triage。** 難度本來就有序（trivial→hard），Score 的每級
+   `probabilities` 是 `decideTier` 算 `simpleProb`／`hardProb` 的原料——那是
+   Choice 給不了的東西。
+5. 踩到的坑：Score 的 legend 要放在 `criteria`（陣列），寫成 `legend` 會被擋
+   `expected "array" ... path questions.c0.criteria`。

@@ -26,7 +26,18 @@ export const CONFIG = {
   // confidence therefore vetoed every real drop. A missing `probabilities`
   // counts as 1, so an endpoint that omits the field cannot silently turn
   // pruning off (DEVLOG §18.2).
-  minDropProbability: 0.6,
+  //
+  // 0.7 is measured, not taste: `scripts/calibrate-prune.mjs` over 17
+  // hand-labelled chunks of this machine's own tool output (8 cases, $0.006 a
+  // sweep). Obvious drops come back 0.86-1.00, but the expensive case is a chunk
+  // that is mostly noise with the answer buried in it: the real 16 KB chunk that
+  // holds one ERROR line among 200 heartbeats scores 0.47-0.62 across runs, so
+  // 0.6 drops the answer on a bad roll while 0.7 never did. `vetoOnTerms` cannot
+  // save that one — the request's only term appears in every chunk — so the
+  // threshold has to. Cost: 29.3% of the bytes instead of 48.5%, and 0 false
+  // drops instead of 1 (DEVLOG §22.2). A destroyed answer costs more than a
+  // kept dump.
+  minDropProbability: 0.7,
 };
 
 /**
@@ -114,6 +125,49 @@ export function verdictOf(answer, minProbability = CONFIG.minDropProbability) {
 }
 
 /**
+ * The words from the request a chunk could literally answer with. Four letters
+ * or more, so `the`, `for` and a bare `js` cannot pin every chunk in place.
+ *
+ * ponytail: ASCII word characters only. A Chinese-only request yields no terms
+ * and the veto below simply does not fire — the model's judgment stands, which
+ * is where it was anyway. Segment CJK here if the ledger ever shows a drop that
+ * a Chinese keyword would have caught.
+ */
+export function requestTerms(request = '') {
+  return new Set(
+    String(request).toLowerCase().match(/[a-z0-9_]{4,}/g) ?? [],
+  );
+}
+
+/**
+ * Veto a `drop` on a chunk that contains a word the request asked about.
+ *
+ * The model has a reproducible blind spot here: asked which commits touched
+ * `prune`, it answered `drop` (p=0.92 alone, 0.60-0.67 batched) on the very
+ * `git log --stat` chunk naming `prune` eleven times — diffstat output reads as
+ * boilerplate to it. No threshold separates that from a true drop, because true
+ * drops land in the same 0.6-0.7 band. A literal string test does separate it,
+ * costs nothing, and is the kind of rule the TypeSafe skill says to keep in code
+ * rather than hand to the model (DEVLOG §22.4).
+ */
+export function vetoOnTerms(verdicts, chunks, terms) {
+  if (!terms.size) return verdicts;
+  const hays = chunks.map((c) => c.toLowerCase());
+  // Only a term that tells the chunks apart is evidence. A term every chunk
+  // contains ("worker" in a log where every line says worker) says nothing about
+  // which chunk to keep, and vetoing on it held the single clearest true drop in
+  // the corpus. With one chunk there is nothing to compare it to, so any term hit
+  // counts — that is the case the model gets wrong on its own.
+  const discriminating = [...terms].filter((t) => {
+    const n = hays.filter((h) => h.includes(t)).length;
+    return n > 0 && (chunks.length === 1 || n < chunks.length);
+  });
+  if (!discriminating.length) return verdicts;
+  return verdicts.map((v, i) =>
+    (v === 'drop' && discriminating.some((t) => hays[i].includes(t)) ? 'unsure' : v));
+}
+
+/**
  * One Jev request for ALL the chunks: the chunks go up once as `state.chunks`
  * and each question points at its own element by path, which is the batching
  * shape the TypeSafe docs describe (independent questions over shared state run
@@ -155,7 +209,8 @@ export async function judgeChunks($, key, userRequest, chunks, criteria = TARGET
   if (!res || !res.ok) return keepAll;
   try {
     const answers = JSON.parse(res.text)?.answers ?? {};
-    return chunks.map((_, i) => verdictOf(answers[`c${i}`]));
+    const verdicts = chunks.map((_, i) => verdictOf(answers[`c${i}`]));
+    return vetoOnTerms(verdicts, chunks, requestTerms(userRequest));
   } catch {
     return keepAll;
   }
