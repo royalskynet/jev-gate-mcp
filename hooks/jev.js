@@ -11,8 +11,13 @@
  */
 
 export const CONFIG = {
-  endpoint: 'https://openrouter.ai/api/v1/systemone',
-  model: 'typesafe/jev-1.13',
+  // ponytail: the OpenRouter proxy stays the default so a machine that only has
+  // the OpenRouter key keeps working; a machine with a TypeSafe key overrides all
+  // three together (endpoint, model, key file) — the model id differs per host,
+  // so overriding the endpoint alone would send `typesafe/jev-1.13` to an API
+  // that names it `jev-latest`, and fail-open would hide that as a silent keep.
+  endpoint: process.env.JEV_ENDPOINT || 'https://openrouter.ai/api/v1/systemone',
+  model: process.env.JEV_MODEL || 'typesafe/jev-1.13',
   apiKeyFile: process.env.JEV_API_KEY_FILE || `${process.env.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`,
   chunkChars: 16000,
   // ponytail: judge at most this many chunks per call; the rest passes through
