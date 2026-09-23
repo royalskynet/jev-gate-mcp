@@ -52,9 +52,52 @@ const PLUGIN_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
  * the one signal `claude plugin validate` cannot give (it reads the source
  * statically, so a `process` reference passes it and dies at load).
  */
+/** `2.1.278 (Claude Code)` -> [2, 1, 278]; null when the binary will not say. */
+function versionOf(bin) {
+  const r = spawnSync(bin, ['--version'], { encoding: 'utf8' });
+  const m = r.status === 0 && /(\d+)\.(\d+)\.(\d+)/.exec(r.stdout || '');
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+const MIN_VERSION = [2, 1, 274];
+const cmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+
+/**
+ * The newest claude on this machine, not merely the one that spawned us.
+ * `$CLAUDE_CODE_EXECPATH` is whatever wrapper is hosting this session — inside
+ * Happy that is its own bundled copy, two releases behind the `claude` on PATH
+ * — and an older binary refuses the module on the first event name it does not
+ * know (`"session.compact" is not an event`), which reads in the debug log
+ * exactly like the load failure this probe exists to catch. So pick by version
+ * and say which, rather than blaming the hooks module for the host.
+ */
+function newestClaude() {
+  const seen = [];
+  let best = null;
+  for (const bin of [process.env.JEV_CLAUDE_BIN, process.env.CLAUDE_CODE_EXECPATH, 'claude']) {
+    if (!bin) continue;
+    const v = versionOf(bin);
+    if (!v) continue;
+    seen.push(`${bin} ${v.join('.')}`);
+    if (!best || cmp(v, best.v) > 0) best = { bin, v };
+  }
+  if (!best) {
+    console.error('ledger-probe: no runnable claude binary found (tried $JEV_CLAUDE_BIN, $CLAUDE_CODE_EXECPATH, claude).');
+    process.exit(2);
+  }
+  if (cmp(best.v, MIN_VERSION) < 0) {
+    console.error(`ledger-probe: function hooks need >= ${MIN_VERSION.join('.')}; newest available is ${best.bin} ${best.v.join('.')}.`);
+    console.error(`  candidates: ${seen.join(', ')}`);
+    console.error('  This is a host problem, not a hook problem — nothing about the module is proven either way.');
+    process.exit(2);
+  }
+  return best.bin;
+}
+
 function e2e() {
   const before = ledgerLines().length;
-  const claude = process.env.CLAUDE_CODE_EXECPATH || 'claude';
+  const claude = newestClaude();
+  console.log(`binary   ${claude}`);
   const r = spawnSync(claude, [
     '-p', '--debug',
     '--plugin-dir', PLUGIN_DIR,
