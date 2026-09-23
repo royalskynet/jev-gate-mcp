@@ -72,11 +72,22 @@ test('compact-hook: stands down when the standalone fast-jev plugin is also enab
 });
 
 test('compact-hook: the key comes from the option, then env, then the file', async () => {
-  const host = fakeHost({ files: { [CONFIG.apiKeyFile]: 'from-file\n' } });
-  assert.equal(await apiKey(host, { apiKey: 'from-option' }), 'from-option');
-  assert.equal(await apiKey(host, {}), 'from-file');
-  const noFile = fakeHost();
-  assert.equal(await apiKey(noFile, {}), null);
+  // This box exports OPENROUTER_API_KEY from the shell profile, so the suite
+  // is polluted with a live key on dev machines; pin it to absent so the
+  // assertion measures the precedence, not the ambient env (same save/restore
+  // hygiene as the spawn-hook and prune-cli-ledger tests).
+  const prev = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  try {
+    const host = fakeHost({ files: { [CONFIG.apiKeyFile]: 'from-file\n' } });
+    assert.equal(await apiKey(host, { apiKey: 'from-option' }), 'from-option');
+    assert.equal(await apiKey(host, {}), 'from-file');
+    const noFile = fakeHost();
+    assert.equal(await apiKey(noFile, {}), null);
+  } finally {
+    if (prev === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = prev;
+  }
 });
 
 // End to end over the core with the hook's own judge: prose stays byte-for-byte,
