@@ -264,9 +264,19 @@ function apiKey($) {
   keyPromise ??= Promise.resolve()
     .then(() => $.fs.read(CONFIG.apiKeyFile))
     .then((t) => String(t).trim() || null)
-    .catch(() => null);
+    .catch(() => null)
+    .then((k) => {
+      // ponytail: memoize the hit, not the miss. `??=` alone made one unreadable
+      // read at session start disable pruning for the whole session, with the
+      // key landing seconds later changing nothing.
+      if (!k) keyPromise = undefined;
+      return k;
+    });
   return keyPromise;
 }
+
+/** Once per session: a key we cannot read is a standing condition, not an event. */
+let noKeyLogged = false;
 
 /**
  * What the pruning is relative to. The newest real user turn beats anything on
@@ -328,7 +338,17 @@ async function prune(tool, $, e, next) {
   }
 
   const key = await apiKey($);
-  if (!key) return r;
+  if (!key) {
+    // The same lesson as the ledger comment below, one gate earlier: this
+    // `return r` used to be the last silent exit in the hook, so an unreadable
+    // key file looked exactly like a hook that never loaded — which is how the
+    // ledger stayed empty for two days after the credentials moved.
+    if (!noKeyLogged) {
+      noKeyLogged = true;
+      await appendLedger($, `jev-nokey(${tool}): ${out.length} chars unjudged, key file unreadable — pruning is off`);
+    }
+    return r;
+  }
 
   const request = await userRequestOf($, e);
   const { kept, droppedLines, unsure } = await pruneText(out, (chunks) =>
