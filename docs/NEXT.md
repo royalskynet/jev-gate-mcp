@@ -134,15 +134,16 @@ README.zh-TW「ledger 是空的：一個症狀，四個根因」，這裡不重�
 4. `git pull`（要 `3dcdd39`：`if (!key)` 不再是靜默出口，`apiKey` 只 memoize 命中）。
 5. **確認 key 檔可讀**——`ls -l` 看 metadata 就好，不要 cat。讀不到的話 ledger
    自己會寫 `jev-nokey`，不用猜。
-6. **驗收探針一律走 Read，不要走 Bash**：造一個 > 16000 字元的檔再 Read 它。
-   Bash 與 Grep 的大輸出會被 core 落檔成 `tool-results/<id>.txt` 只遞 preview，
-   用它們探等於在測 core 的落檔門檻，不是在測 hook。
+6. **跑探針**：`npm run probe:ledger` 產 fixture 並記下 ledger 行數，用 **Read 工具**
+   讀那個 fixture（整份，不要 limit），然後 `npm run probe:ledger:check`。
+   探針走 Read 不走 Bash 是刻意的——Bash 與 Grep 的大輸出會被 core 落檔成
+   `tool-results/<id>.txt` 只遞 preview，用它們探等於在測 core 的落檔門檻。
 
 ### 驗收
 
-`wc -l ~/.openclaw/state/jev-prune.log` 在 Read 探針之後應該多一行
-`jev-prune(Read): ... chars` 或 `jev-nokey(Read): ...`。兩種都算 hook 活著；
-零新行代表還卡在第 1–3 步，回頭量 `$CLAUDE_CODE_EXECPATH --version`。
+`npm run probe:ledger:check` 印 `PASS` 並貼出新增的那行。`jev-prune(Read): ...`
+與 `jev-nokey(Read): ...` 都算 hook 活著（後者是 key 讀不到，另一個問題）。
+`FAIL` 會把四個根因按順序印出來，第一個就是 `$CLAUDE_CODE_EXECPATH --version`。
 
 ### 順帶
 

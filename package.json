@@ -12,7 +12,9 @@
     "gateway:acceptance": "node gateway/scripts/acceptance.mjs",
     "gateway:replay": "node gateway/scripts/replay.mjs gateway/fixtures/replay-baseline.json",
     "gateway:stdio": "node gateway/src/stdio.js",
-    "agents:acceptance": "node scripts/agents-acceptance.mjs"
+    "agents:acceptance": "node scripts/agents-acceptance.mjs",
+    "probe:ledger": "node scripts/ledger-probe.mjs",
+    "probe:ledger:check": "node scripts/ledger-probe.mjs check"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
