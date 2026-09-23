@@ -214,6 +214,13 @@ above it.
 5. **The key file is unreadable.** Then the ledger says so, one
    `jev-nokey(<tool>)` line per session. No such line means this was not it.
 
+And a sixth, the CLI path: **the CLI never writes the hook ledger.** A run of
+`cli.mjs prune` writes its own `~/.openclaw/state/jev-prune-cli.log` (tagged
+`jev-cli(...)`, redirectable via `JEV_CLI_LEDGER`) — by design, so the hook
+liveness probe reads a CLI run as nothing. A CLI run only proves the judge
+loaded; it does **not** prove the hook loaded. An empty hook ledger with a busy
+CLI ledger is the "hook never loaded" signal, not a healthy state.
+
 1, 2 and 3 leave no trace anywhere by construction, which is why they come first:
 every instrument in this repo lives *inside* a hook that was never loaded.
 

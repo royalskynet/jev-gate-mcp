@@ -11,11 +11,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { DEFAULTS, buildGateway } from '../src/config.js';
 
+const provider = process.env.JEV_PROVIDER ?? 'openrouter';
 const JEVRUN = {
-  name: 'jev (typesafe/jev-1.13 via OpenRouter)',
-  base: 'https://openrouter.ai/api',
-  model: 'typesafe/jev-1.13',
-  keyFile: process.env.JEV_API_KEY_FILE ?? DEFAULTS.apiKeyFile,
+  name: provider === 'typesafe' ? 'jev (jev-latest via native TypeSafe)' : 'jev (typesafe/jev-1.13 via OpenRouter)',
+  base: provider === 'typesafe' ? 'https://api.typesafe.ai' : 'https://openrouter.ai/api',
+  model: provider === 'typesafe' ? 'jev-latest' : 'typesafe/jev-1.13',
+  keyFile: provider === 'typesafe'
+    ? process.env.JEV_API_KEY_FILE ?? 'no-native-key' // no native TypeSafe key exists; JEV_PROVIDER=typesafe without one skips
+    : process.env.JEV_API_KEY_FILE ?? DEFAULTS.apiKeyFile,
 };
 
 const optIn = process.env.JEV_RUN_SMOKE === '1';
@@ -28,13 +31,14 @@ const skip = !optIn
   ? `opt-in smoke: set JEV_RUN_SMOKE=1 to hit ${JEVRUN.name}`
   : key ? false : `missing credential: ${JEVRUN.keyFile} (skip; not a failure)`;
 test(`smoke ${JEVRUN.name}: real provider round trip`, { skip: skip ? skip : false }, async () => {
-  const { gateway } = buildGateway({ provider: 'openrouter', apiKeyFile: JEVRUN.keyFile, model: JEVRUN.model });
+  const { gateway } = buildGateway({ provider, apiKeyFile: JEVRUN.keyFile, model: JEVRUN.model });
   const r = await gateway.applyPolicy({ policy: 'completion-claims', state: { claims: ['smoke'], evidence: 'pytest: 1 passed' } });
   assert.ok(['accept', 'review', 'escalate', 'deny'].includes(r.outcome));
   assert.equal(r.coverage, 'complete');
   assert.equal(r.policy.id, 'completion-claims');
   assert.ok(r.model, 'resolved model recorded');
-  // Jev/TypeSafe live ALWAYS rides the OpenRouter token, so the resolved model
-  // must identify the Jev System One model.
-  assert.match(r.model, /typesafe\/jev-1\.13/, `resolved model must be Jev/jev-1.13, got ${r.model}`);
+  // The OpenRouter path resolves to the Jev System One model id; native
+  // TypeSafe answers `jev-1.13.0`. Both are the provider-side model field —
+  // recorded on the result, not forwarded, so drift stays observable.
+  assert.match(String(r.model), /jev-1\.13/, `resolved model must be Jev/jev-1.13, got ${r.model}`);
 });

@@ -150,8 +150,27 @@ Opt-in live (key-gated; never required by offline CI):
 
 ```sh
 JEV_RUN_SMOKE=1 node --test gateway/test/smoke-matrix.test.mjs          # Jev (typesafe/jev-1.13) live smoke, single OpenRouter key
+JEV_PROVIDER=typesafe JEV_RUN_SMOKE=1 node --test gateway/test/smoke-matrix.test.mjs  # native TypeSafe path (no key in this repo → skips)
 JEV_RUN_EVAL=1 node gateway/scripts/tool-eval.mjs                        # GPT/Claude tool-selection eval
 ```
+
+The smoke matrix runs whichever provider `JEV_PROVIDER` names (default
+`openrouter`, matching the only credential this repo ships). The example above
+with `JEV_PROVIDER=typesafe` uses `jev-latest` against the native TypeSafe
+endpoint but has no native key here, so it skips unless one is supplied.
+
+### Native TypeSafe path does not honor policy date pinning
+
+Policies pin `"model": "typesafe/jev-1.13-20260917"` — a **response** model id,
+not a valid native **request** id. OpenRouter accepts it (it re-resolves to the
+same Jev model), but native `api.typesafe.ai` only accepts `jev-latest` today;
+any other id returns 400. `makeTypesafeAdapter` therefore strips the
+`typesafe/` prefix and forces `jev-latest` at the adapter boundary — the policy
+file and its digest are never rewritten, and nothing shared with the OpenRouter
+path changes (where `typesafe/jev-1.13` is the correct request id). The only
+audit record left after translation is the response's `model` field, surfaced
+as `resolved_model` on the result. Do not pretend the native path honors the
+pin; it does not.
 
 Operational CLIs:
 

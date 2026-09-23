@@ -64,9 +64,19 @@ function validateDistribution(probabilities, keys) {
 
 // --- Real adapters (require credentials; only constructed when configured) ---
 
-export function makeTypesafeAdapter({ apiKey, baseUrl = 'https://api.typesafe.ai', model = 'jev-1.13', timeoutMs = LIMITS.deadlineMs }) {
-  const m = new JevDecisionModel({ apiKey, baseUrl, model, timeoutMs, maxRetries: LIMITS.maxRetries });
-  return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: opts.model });
+export function makeTypesafeAdapter({ apiKey, baseUrl = 'https://api.typesafe.ai', model = 'jev-latest', timeoutMs = LIMITS.deadlineMs }) {
+  // Native TypeSafe only accepts `jev-latest` today. Policies pin `typesafe/…`
+  // ids — those are OpenRouter/response ids and 400 on the native path — so
+  // translate HERE at the adapter boundary only. Stripping anywhere shared
+  // would break OpenRouter, where `typesafe/jev-1.13` is the correct request
+  // id (fix 0007 §13). The response's `model` field still rides through to the
+  // result as `resolved_model`, the one audit record left after translation.
+  const toTypeSafeId = (id) => {
+    const bare = String(id ?? '').replace(/^typesafe\//, '');
+    return bare === 'jev-latest' ? bare : 'jev-latest';
+  };
+  const m = new JevDecisionModel({ apiKey, baseUrl, model: toTypeSafeId(model), timeoutMs, maxRetries: LIMITS.maxRetries });
+  return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: toTypeSafeId(opts.model) });
 }
 
 export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai/api', model = 'typesafe/jev-1.13', timeoutMs = LIMITS.deadlineMs, fetch: fetchImpl, sleep }) {

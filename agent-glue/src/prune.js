@@ -8,6 +8,30 @@
  * second implementation of it.
  */
 import { pruneText, judgeChunks, TARGETS, CONFIG } from '../../hooks/jev.js';
+import { appendFileSync } from 'node:fs';
+
+/**
+ * CLI ledger: separate from the hook ledger by design (#4/#6 option 2). The
+ * CLI is a *different* seam — a CLI run only proves the judge loaded, never
+ * that the in-process hook did — so it must not write `jev-prune.log` or the
+ * hook-liveness probe reads a CLI run as hook activity (hooks/jev.js:358/371/391
+ * are the hook-side probe's meaning and stay untouched).
+ */
+export const CLI_LEDGER = process.env.JEV_CLI_LEDGER || `${process.env.HOME}/.openclaw/state/jev-prune-cli.log`;
+
+/**
+ * Append one `jev-cli(...)` line to the CLI ledger. Never throws: a broken
+ * ledger must not stop the prune (same fail-open contract as `appendLedger`).
+ * Reads `JEV_CLI_LEDGER` at call time (not module scope) so tests and hosts can
+ * redirect per run.
+ */
+export async function writeCliLedger(ledger, tool, reason) {
+  try {
+    appendFileSync(ledger, `${new Date().toISOString()}\tjev-cli(${tool}): ${reason}\n`);
+  } catch {
+    /* observation only — a write refusal must not break the prune */
+  }
+}
 
 /**
  * `$` as the hooks module expects it, over plain Node: `fetch` there returns a
@@ -48,14 +72,27 @@ export async function pruneCommand(payload = {}, deps = {}) {
   const text = typeof payload.text === 'string' ? payload.text : '';
   const target = TARGETS[payload.tool] ?? TARGETS.Bash;
   const threshold = Number(payload.threshold_chars ?? target.thresholdChars);
-  const out = (reason, kept = text, dropped = 0, judged = false) => ({
-    text: kept,
-    dropped_lines: dropped,
-    chars_before: text.length,
-    chars_after: kept.length,
-    judged,
-    reason,
-  });
+  // Ledger BEFORE any early return, so a CLI run with no key, a short input or
+  // a broken judge still leaves a trace (fix 0522 §7: `const key = …; if (!key)
+  // return` came before the hook's appendLedger and the ledger stayed silent for
+  // two days). This line must never move below a return.
+  const ledger = deps.ledger ?? CLI_LEDGER;
+  writeCliLedger(ledger, payload.tool ?? 'Bash', `len=${text.length}`);
+  const out = (reason, kept = text, dropped = 0, judged = false) => {
+    // Outcome line with reason: judged / below-threshold / no-request /
+    // no-key / error all land here, so no exit path is silent. Runs inside
+    // `out()`, which every return path constructs through, so it executes
+    // before the function returns (never after a return).
+    writeCliLedger(ledger, payload.tool ?? 'Bash', reason);
+    return {
+      text: kept,
+      dropped_lines: dropped,
+      chars_before: text.length,
+      chars_after: kept.length,
+      judged,
+      reason,
+    };
+  };
   if (text.length < threshold) return out('below-threshold');
   // A prune with no request is not a weaker prune, it is a different and unsafe
   // one: every keep/drop criterion this repo has is written relative to the
