@@ -149,3 +149,19 @@ README.zh-TW「ledger 是空的：一個症狀，四個根因」，這裡不重�
 `~/.openclaw/state/jev-calibration.jsonl` 尾巴那些 `provider:"unknown"` /
 `model: typesafe/jev-1.13-20260917` 是 `npm run gateway:acceptance` 自己寫的
 fixture，不是真實決策語料，別拿去校準。
+
+### 本機（m1）同病，2026-09-23 已修
+
+m1 的 ledger 從 `2026-09-21T14:19:40` 就停了，根因一樣：Happy 1.2.3 自帶
+`@anthropic-ai/claude-agent-sdk` 0.3.263 ＝ Claude Code 2.1.263，`PATH` 上的
+`claude` 卻是 2.1.278。修法是把 wrapper 自己那份升上去：
+
+    npm i -g --prefix ~/.local happy@latest
+
+（`/opt/homebrew` 沙箱不可寫，所以裝進 `~/.local`——它在 `PATH` 最前面，
+會蓋過 `/opt/homebrew/bin/happy`。）happy 1.2.5 起改用 native installer 的
+`~/.local/bin/claude` 2.1.278，不再用自帶那份：`happy --version` 會印
+`Using Claude Code v2.1.278 from native installer`。
+
+**升級不影響已經在跑的 session**（hook 模組在 session 啟動時載入），
+要新開一個才生效。
