@@ -125,6 +125,12 @@ README.zh-TW「ledger 是空的：一個症狀，四個根因」，這裡不重�
 
 ### m2 要跑的（全部非互動）
 
+**只需要這一個 repo。**`git pull` 加 `npm install` 就齊了——唯一的 git 依賴
+`jevwire` 由 npm 自己拉。本檔上面提到的 `ingebyd/fast-jev-compaction-openrouter`
+是另一條線（`session.compact`），跟 ledger 無關，這輪不用裝；README 裡的
+`claude-model-router-hook` 之類是 prior art 的引用，不是依賴。
+
+
 1. **量宿主版本**，不是 `PATH` 上的：
    `"$CLAUDE_CODE_EXECPATH" --version`。< 2.1.274 就到第 2 步，≥ 就跳到第 4 步。
 2. **升級那支 binary**。如果是 Happy：`npm i -g happy@latest`（1.2.3 → 1.2.5 把
