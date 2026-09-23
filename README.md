@@ -161,7 +161,7 @@ red.
 ### Observability: the ledger
 
 `$.ui.log` only reaches the TUI, not a file, so on a headless box the only
-durable record of the hook is a ledger appended to `/Users/51mini/.openclaw/state/jev-prune.log`
+durable record of the hook is a ledger appended to `~/.openclaw/state/jev-prune.log`
 (`$` has no append, hence read-then-write; `$.clock.now` for the ISO timestamp).
 The ledger records **every judged-prunable call**, kept or dropped — not only
 drops. It used to write only after a successful drop and swallow its own write
@@ -171,11 +171,13 @@ so a broken ledger cannot stop the prune itself. A ledger line is evidence that
 the hook fired; **it is not a calibration result** — `calibration_status`
 stays `uncalibrated` until a labelled evaluation corpus exists.
 
-### An empty ledger is a symptom with five causes
+### An empty ledger is a symptom with six causes
 
 A ledger that gains no lines looks the same from the outside whatever the
 reason. Check in this order; each step is one command and rules out everything
-above it.
+above it. `npm run probe:ledger:e2e` walks the whole thing in one command: it
+writes the fixture, runs `claude -p --debug --plugin-dir .` against it headless
+and diffs the ledger, so nobody has to reopen an interactive session to find out.
 
 1. **The host is a different binary than you think.** `claude --version` reports
    whatever is on `PATH`, not what is running the session you are inside. A
@@ -200,9 +202,28 @@ above it.
    answers "already at the latest version" until the version is bumped. A
    plugin whose `settings.json` entry has a local `path` runs from the repo
    itself and has no such copy.
-3. **Function hooks are off.** `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` has to be in
+3. **The module threw at load, and nothing that asks "is it installed" can
+   tell.** A hooks module has no Node: `process` is a `ReferenceError` there,
+   and since `hooks/index.js` is one aggregator, a single `process.env` at
+   module scope takes all seven hooks down before any of them registers.
+   `validate` passes — it reads the shape of the `$` calls, not what else the
+   source names. The one instrument that says so is `claude --debug`, one line
+   in `~/.claude/debug/<uuid>.txt`:
+
+   ```
+   [ERROR] hooks module jev-gate@inline failed to load:
+           ReferenceError: process is not defined
+   ```
+
+   Measured here: two days of an empty ledger while the binary, the flag, the
+   key file and `validate:hooks` all answered yes. Every environment read now
+   goes through `agent-glue/claude/env.mjs` — `ENV` is `process.env` under Node
+   and an empty object in the hook, which each module's own `hydrate($)` fills
+   from `$.env.get('NAME')` on first use. `tests/no-node-globals.test.mjs`
+   fails if any file in the load chain names a Node global again.
+4. **Function hooks are off.** `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` has to be in
    that binary's environment, not only in a shell profile it never sourced.
-4. **The output never reached the threshold.** Core persists Bash and Grep
+5. **The output never reached the threshold.** Core persists Bash and Grep
    results over ~8 KB to `tool-results/<id>.txt` and substitutes a ~2 KB
    preview, so a 179 KB command used to arrive at the hook as 2 KB and no
    threshold in TARGETS was reachable on those two tools. `resolvePersisted()`
@@ -211,18 +232,20 @@ above it.
    in place. The wrapper's shape is core's, not a contract, so probe with `Read`
    anyway: a Read result is delivered whole (18,060 chars measured) and does not
    depend on that parse holding.
-5. **The key file is unreadable.** Then the ledger says so, one
+6. **The key file is unreadable.** Then the ledger says so, one
    `jev-nokey(<tool>)` line per session. No such line means this was not it.
 
-And a sixth, the CLI path: **the CLI never writes the hook ledger.** A run of
+And a seventh, the CLI path: **the CLI never writes the hook ledger.** A run of
 `cli.mjs prune` writes its own `~/.openclaw/state/jev-prune-cli.log` (tagged
 `jev-cli(...)`, redirectable via `JEV_CLI_LEDGER`) — by design, so the hook
 liveness probe reads a CLI run as nothing. A CLI run only proves the judge
 loaded; it does **not** prove the hook loaded. An empty hook ledger with a busy
 CLI ledger is the "hook never loaded" signal, not a healthy state.
 
-1, 2 and 3 leave no trace anywhere by construction, which is why they come first:
-every instrument in this repo lives *inside* a hook that was never loaded.
+1 to 4 leave no trace anywhere by construction, which is why they come first:
+every instrument in this repo lives *inside* a hook that was never loaded. The
+debug log is the exception, and the only one — it is written by the engine, not
+by the plugin, so it still speaks when the module never ran.
 
 ### Registration is spelled out, not looped
 

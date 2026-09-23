@@ -135,7 +135,7 @@ key 不見、4xx、schema 壞掉、judge 丟例外——每一種都回 `keep`�
 ### 觀測：ledger
 
 `$.ui.log` 只到 TUI 不落檔，所以在無頭機上，hook 唯一的持久紀錄是寫到
-`/Users/51mini/.openclaw/state/jev-prune.log` 的 ledger（`$` 沒有 append，
+`~/.openclaw/state/jev-prune.log` 的 ledger（`$` 沒有 append，
 所以是 read-then-write；時間戳用 `$.clock.now`）。ledger 記錄**每一筆被判定為
 可剪的呼叫**，keep 也記，不是只記 drop。它以前只在成功 drop 之後才寫、而且吞掉
 自己的寫入錯誤，於是一個有觸發但全部判 keep 的 hook 會零痕跡，跟根本沒載入
@@ -143,10 +143,12 @@ key 不見、4xx、schema 壞掉、judge 丟例外——每一種都回 `keep`�
 一行 ledger 是 hook 有觸發的證據，**不是校準結果**——在有標註評估語料之前，
 `calibration_status` 一律是 `uncalibrated`。
 
-### ledger 是空的：一個症狀，五個根因
+### ledger 是空的：一個症狀，六個根因
 
-ledger 一行都沒多，五種原因從外面看一模一樣。照這個順序查，
-每步一條指令，而且每步都能排掉它之前的全部：
+ledger 一行都沒多，六種原因從外面看一模一樣。照這個順序查，
+每步一條指令，而且每步都能排掉它之前的全部。`npm run probe:ledger:e2e` 一條
+指令把整條路走完：寫 fixture、用 `claude -p --debug --plugin-dir .` 無頭跑一次、
+再 diff ledger——不必有人去重開一個互動 session 才知道結果。
 
 1. **宿主不是你以為的那支 binary。**`claude --version` 報的是 `PATH` 上的那支，
    不是正在跑這個 session 的那支。包一層的客戶端（Happy、IDE 外掛、任何 SDK
@@ -166,19 +168,37 @@ ledger 一行都沒多，五種原因從外面看一模一樣。照這個順序�
    source repo 什麼也不會變，而且版本沒 bump 之前 `plugin update` 會回
    「already at the latest version」。`settings.json` 裡那筆走本機 `path` 的
    plugin 則直接從 repo 跑，沒有這份複本。
-3. **function hooks 沒開。**`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` 要在**那支
+3. **模組在載入時就炸了，而所有問「裝好了沒」的檢查都答得出「有」。**
+   hooks module 沒有 Node：`process` 在那裡是 `ReferenceError`，而
+   `hooks/index.js` 是單一聚合器，所以 module scope 上一處 `process.env`
+   會在任何 hook 註冊之前就把七個 hook 全帶走。`validate` 照樣過——它讀的是
+   `$` 呼叫的形狀，不是原始碼還提到了什麼。唯一會說的儀器是 `claude --debug`，
+   在 `~/.claude/debug/<uuid>.txt` 裡的一行：
+
+   ```
+   [ERROR] hooks module jev-gate@inline failed to load:
+           ReferenceError: process is not defined
+   ```
+
+   本機實測：兩天的空 ledger，期間 binary、旗標、key 檔、`validate:hooks`
+   全部答「有」。現在所有環境變數讀取都走 `agent-glue/claude/env.mjs`——`ENV`
+   在 Node 下就是 `process.env`，在 hook 裡是空物件，由各模組自己的
+   `hydrate($)` 第一次用到時以 `$.env.get('NAME')` 填進去。
+   `tests/no-node-globals.test.mjs` 會在載入鏈上任何檔案又提到 Node global 時變紅。
+4. **function hooks 沒開。**`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` 要在**那支
    binary 的環境**裡，不是只寫在它沒 source 過的 shell profile。
-4. **輸出根本沒到門檻。**core 把超過約 8 KB 的 Bash / Grep 結果落檔到
+5. **輸出根本沒到門檻。**core 把超過約 8 KB 的 Bash / Grep 結果落檔到
    `tool-results/<id>.txt`，代以約 2 KB 的 preview，所以 179 KB 的指令以前會以
    2 KB 抵達 hook，TARGETS 三個門檻在這兩支工具上都碰不到。`resolvePersisted()`
    現在會先把那個檔讀回來再判，而回寫上限是一個 chunk——超過就代表 core 那份
    盲截斷比較小，保留它。那個包裝的形狀是 core 的事、不是契約，所以探針還是
    走 `Read`：Read 整份遞達（實測 18,060 字元），不依賴這個解析還成立。
-5. **key 檔讀不到。**那 ledger 會說，每個 session 一行
+6. **key 檔讀不到。**那 ledger 會說，每個 session 一行
    `jev-nokey(<tool>)`。沒這種行就不是這個原因。
 
-1、2 與 3 按定義在任何地方都不留痕，所以排最前面：這個 repo 裡每一個儀器都
-裝在一個**從未載入的 hook 裡面**。
+1 到 4 按定義在任何地方都不留痕，所以排最前面：這個 repo 裡每一個儀器都
+裝在一個**從未載入的 hook 裡面**。debug log 是唯一的例外——它是引擎寫的、
+不是 plugin 寫的，所以模組根本沒跑起來時它還會說話。
 
 ### 註冊是攤開寫的，不是跑迴圈
 

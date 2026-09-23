@@ -24,26 +24,76 @@
  * Disable one. `JEV_COMPACT_ENABLED=0` turns this one off.
  */
 import { compactMessages } from '../src/compact.js';
+import { ENV, fillEnv } from './env.mjs';
 
-const LEDGER = `${process.env.HOME}/.openclaw/state/jev-compact.log`;
+let LEDGER = '';
 
 export const CONFIG = {
   endpoint: 'https://openrouter.ai/api/v1/systemone',
   model: 'typesafe/jev-1.13',
-  apiKeyFile: `${process.env.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`,
+  // Every field below is filled by `refreshConfig`; see its comment for why.
+  apiKeyFile: '',
+  compactAtPercent: 60,
+  pinFirst: 1,
+  pinLast: 6,
+  minReductionChars: 4000,
+  askChars: 1200,
+};
+
+/** Whether the module answers `session.compact` at all; `JEV_COMPACT_ENABLED=0` turns it off. */
+export let ENABLED = true;
+
+/**
+ * Recompute what the environment decides, from `ENV`. Called once at load (for
+ * Node) and again after `hydrate($)` in each hook, where `ENV` starts empty
+ * because a hooks module has no `process`.
+ *
+ * ponytail: the defaults live here alone, so the two callers cannot drift.
+ */
+export function refreshConfig() {
+  LEDGER = `${ENV.HOME}/.openclaw/state/jev-compact.log`;
+  CONFIG.apiKeyFile = `${ENV.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`;
   // Compact when the session passes this much of its context window. This is
   // the "fast" in fast compaction: acting at 60% costs one cheap pass, acting
   // at 100% costs a summary of everything.
-  compactAtPercent: Number(process.env.JEV_COMPACT_AT_PERCENT ?? 60),
+  CONFIG.compactAtPercent = Number(ENV.JEV_COMPACT_AT_PERCENT ?? 60);
   // Below this the pass is not worth replacing the history for; the host's
   // own compaction runs instead.
-  minReductionChars: Number(process.env.JEV_COMPACT_MIN_REDUCTION ?? 4000),
-  pinFirst: 1,
-  pinLast: Number(process.env.JEV_COMPACT_PIN_LAST ?? 6),
+  CONFIG.minReductionChars = Number(ENV.JEV_COMPACT_MIN_REDUCTION ?? 4000);
+  CONFIG.pinLast = Number(ENV.JEV_COMPACT_PIN_LAST ?? 6);
   // How much of one call/result pair the judge is shown. The judgment is
   // "is this still needed", which the head of a payload answers.
-  askChars: Number(process.env.JEV_COMPACT_ASK_CHARS ?? 1200),
-};
+  CONFIG.askChars = Number(ENV.JEV_COMPACT_ASK_CHARS ?? 1200);
+  ENABLED = ENV.JEV_COMPACT_ENABLED !== '0';
+}
+refreshConfig();
+
+let hydrated;
+
+/** See jev.js: the names are literals so validate lists what this module reads. */
+function hydrate($) {
+  hydrated ??= (async () => {
+    // `$` is the engine's here and a stub in the unit tests, which have no
+    // `env` noun — and a guard cannot ask, since reading `$.env` as a value is
+    // exactly what the validator refuses. Under Node, ENV already holds
+    // process.env, so there is nothing to fall back to.
+    try {
+      fillEnv({
+        HOME: await $.env.get('HOME'),
+        OPENROUTER_API_KEY: await $.env.get('OPENROUTER_API_KEY'),
+        JEV_COMPACT_ENABLED: await $.env.get('JEV_COMPACT_ENABLED'),
+        JEV_COMPACT_AT_PERCENT: await $.env.get('JEV_COMPACT_AT_PERCENT'),
+        JEV_COMPACT_MIN_REDUCTION: await $.env.get('JEV_COMPACT_MIN_REDUCTION'),
+        JEV_COMPACT_PIN_LAST: await $.env.get('JEV_COMPACT_PIN_LAST'),
+        JEV_COMPACT_ASK_CHARS: await $.env.get('JEV_COMPACT_ASK_CHARS'),
+      });
+    } catch {
+      /* no `$.env` (Node): ENV already came from process.env */
+    }
+    refreshConfig();
+  })();
+  return hydrated;
+}
 
 const INSTRUCTIONS =
   'This is a tool call and its result from earlier in a coding session. Decide whether the model still needs its full payload to continue the current task.';
@@ -56,7 +106,7 @@ const CRITERIA = {
 /** Resolve the provider key: plugin option, env, then the key file. */
 export async function apiKey($, options = {}) {
   if (typeof options.apiKey === 'string' && options.apiKey) return options.apiKey;
-  if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY;
+  if (ENV.OPENROUTER_API_KEY) return ENV.OPENROUTER_API_KEY;
   try {
     const text = await $.fs.read(options.keyFile ?? CONFIG.apiKeyFile);
     return String(text).trim() || null;
@@ -137,8 +187,6 @@ export async function appendLedger($, line) {
   }
 }
 
-export const ENABLED = process.env.JEV_COMPACT_ENABLED !== '0';
-
 /**
  * Is the standalone fast-jev-compaction plugin also enabled? Two modules
  * answering the same `session.compact` is undefined behaviour, and the symptom
@@ -160,8 +208,9 @@ export const register = (on, options = {}) => {
   // missing compact line means the event never arrived — not that the hook is
   // dead. That distinction cost a day the first time it was missing.
   on('session.start', async ($, e, next) => {
+    await hydrate($);
     try {
-      const settings = JSON.parse(await $.fs.read(`${process.env.HOME}/.claude/settings.json`));
+      const settings = JSON.parse(await $.fs.read(`${ENV.HOME}/.claude/settings.json`));
       standDown = rivalCompactor(settings);
     } catch {
       standDown = false; // unreadable settings is not a reason to stop working
@@ -173,6 +222,7 @@ export const register = (on, options = {}) => {
   });
 
   on('session.compact', async ($, e, next) => {
+    await hydrate($);
     if (!ENABLED || standDown) return next(e);
     const messages = e?.messages ?? [];
     const key = await apiKey($, options);

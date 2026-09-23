@@ -17,6 +17,7 @@
  */
 import { triage, DEFAULT_TRIAGE } from '../src/triage.js';
 import { liveTransport } from '../src/live.js';
+import { ENV, fillEnv } from './env.mjs';
 
 // The shipped tier ladder, cheapest first. Same mapping the community
 // model-routing hooks converged on — haiku for mechanical work, sonnet for
@@ -35,7 +36,7 @@ export const DEFAULT_TIER_MODELS = { cheap: 'haiku', medium: 'sonnet', hard: 'op
  * `off` drops that tier back to the engine default (the parent's own model via
  * `inherit`); all three `off` turns the hook off, by the rule below.
  */
-export function tierModels(env = process.env, defaults = DEFAULT_TIER_MODELS) {
+export function tierModels(env = ENV, defaults = DEFAULT_TIER_MODELS) {
   const pick = (v, d) => (v === 'off' ? undefined : (v || d));
   return {
     cheap: pick(env.JEV_TRIAGE_MODEL_CHEAP, defaults.cheap),
@@ -44,7 +45,7 @@ export function tierModels(env = process.env, defaults = DEFAULT_TIER_MODELS) {
   };
 }
 
-export const TIER_MODELS = tierModels();
+export let TIER_MODELS = tierModels();
 
 /**
  * Activation by situation, not by a flag the user has to remember.
@@ -61,14 +62,49 @@ export const TIER_MODELS = tierModels();
  * nothing. Set every tier to `off` and it turns itself back off — no second
  * switch to find.
  */
-export function triageEnabled(env = process.env, models = TIER_MODELS) {
+export function triageEnabled(env = ENV, models = TIER_MODELS) {
   const flag = env.JEV_TRIAGE_ENABLED;
   if (flag === '0') return false;
   if (flag === '1') return true;
   return Object.values(models).some(Boolean);
 }
 
-export const ENABLED = triageEnabled();
+export let ENABLED = triageEnabled();
+
+/**
+ * Recompute the tier map and the switch from `ENV`. Called once at load (for
+ * Node) and again after `hydrate($)` in the hook, where `ENV` starts empty
+ * because a hooks module has no `process`.
+ */
+export function refreshConfig() {
+  TIER_MODELS = tierModels();
+  ENABLED = triageEnabled();
+}
+
+let hydrated;
+
+/** See jev.js: the names are literals so validate lists what this module reads. */
+function hydrate($) {
+  hydrated ??= (async () => {
+    // `$` is the engine's here and a stub in the unit tests, which have no
+    // `env` noun — and a guard cannot ask, since reading `$.env` as a value is
+    // exactly what the validator refuses. Under Node, ENV already holds
+    // process.env, so there is nothing to fall back to.
+    try {
+      fillEnv({
+        JEV_TELEMETRY: await $.env.get('JEV_TELEMETRY'),
+        JEV_TRIAGE_ENABLED: await $.env.get('JEV_TRIAGE_ENABLED'),
+        JEV_TRIAGE_MODEL_CHEAP: await $.env.get('JEV_TRIAGE_MODEL_CHEAP'),
+        JEV_TRIAGE_MODEL_MEDIUM: await $.env.get('JEV_TRIAGE_MODEL_MEDIUM'),
+        JEV_TRIAGE_MODEL_HARD: await $.env.get('JEV_TRIAGE_MODEL_HARD'),
+      });
+    } catch {
+      /* no `$.env` (Node): ENV already came from process.env */
+    }
+    refreshConfig();
+  })();
+  return hydrated;
+}
 
 /** Map a triage tier onto a model alias; undefined tiers stay inherit/default. */
 export function tierToModel(tier) {
@@ -119,6 +155,7 @@ export async function spawnDecision(input = {}, deps = {}) {
 
 export const register = (on) => {
   on('agent.spawn', async ($, input, next) => {
+    await hydrate($);
     const d = await spawnDecision(input || {}, {});
     if (!d.change) return next(input); // default: leave the subagent's model to the engine
     $.ui.log(`jev-triage: subagent on ${d.model} (tier=${d.decision?.tier})`);

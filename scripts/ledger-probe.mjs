@@ -22,10 +22,13 @@
  *
  * ponytail: state is one file next to the fixture, not a database.
  */
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONFIG, LEDGER } from '../hooks/jev.js';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 
 const FIXTURE = join(tmpdir(), 'jev-ledger-probe.txt');
 const STATE = `${FIXTURE}.baseline`;
@@ -37,6 +40,52 @@ const ledgerLines = () => {
     return [];
   }
 };
+
+const PLUGIN_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
+
+/**
+ * The whole probe without a human: `claude -p --plugin-dir` always loads the
+ * plugin fresh from disk, so a fix is measurable in the session that made it
+ * rather than in the next one someone remembers to open. `--debug` is what
+ * turns a silent hook into a named reason: the engine writes
+ * `hooks module <plugin> failed to load: <error>` to the debug log, which is
+ * the one signal `claude plugin validate` cannot give (it reads the source
+ * statically, so a `process` reference passes it and dies at load).
+ */
+function e2e() {
+  const before = ledgerLines().length;
+  const claude = process.env.CLAUDE_CODE_EXECPATH || 'claude';
+  const r = spawnSync(claude, [
+    '-p', '--debug',
+    '--plugin-dir', PLUGIN_DIR,
+    '--settings', '{"sandbox":{"enabled":false}}',
+    `Use the Read tool to read ${FIXTURE} in full (no limit, no offset). Then reply with only the number of lines you received.`,
+  ], {
+    encoding: 'utf8',
+    timeout: 300_000,
+    env: { ...process.env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
+  });
+  if (r.error) {
+    console.error(`ledger-probe: could not run ${claude}: ${r.error.message}`);
+    process.exit(2);
+  }
+  const added = ledgerLines().slice(before);
+  if (added.length) {
+    console.log(`PASS  ${added.length} new ledger line(s) in ${LEDGER}:`);
+    for (const l of added) console.log(`  ${l}`);
+    process.exit(0);
+  }
+  console.log(`FAIL  no new line in ${LEDGER} after a headless session.`);
+  console.log('The fifth cause, the one the README\'s four cannot tell apart: the');
+  console.log('hooks module failed to load. Read the newest file in ~/.claude/debug');
+  console.log('for a line beginning `hooks module` — it names the error.');
+  process.exit(1);
+}
+
+if (process.argv[2] === 'e2e') {
+  writeFixture();
+  e2e();
+}
 
 if (process.argv[2] === 'check') {
   if (!existsSync(STATE)) {
@@ -81,15 +130,20 @@ if (process.argv[2] === 'check') {
 // A fixture the judge should mostly drop: repeated noise around one real line.
 // Just over the threshold, not comfortably over — the reader pays for every
 // byte of it in context, and nothing here is measuring size.
-const noise = 'GET /health 200 0.4ms upstream=api-7 pool=idle\n';
-const signal = 'ERROR: connection refused on port 5432\n';
-const half = noise.repeat(Math.ceil((CONFIG.chunkChars * 0.6) / noise.length));
-writeFileSync(FIXTURE, half + signal + half);
+function writeFixture() {
+  const noise = 'GET /health 200 0.4ms upstream=api-7 pool=idle\n';
+  const signal = 'ERROR: connection refused on port 5432\n';
+  const half = noise.repeat(Math.ceil((CONFIG.chunkChars * 0.6) / noise.length));
+  writeFileSync(FIXTURE, half + signal + half);
+  return half.length * 2 + signal.length;
+}
+
+const chars = writeFixture();
 
 const before = ledgerLines().length;
 writeFileSync(STATE, `${LEDGER}\n${before}`);
 
-console.log(`fixture  ${FIXTURE}  ${(half.length * 2 + signal.length).toLocaleString()} chars`);
+console.log(`fixture  ${FIXTURE}  ${chars.toLocaleString()} chars`);
 console.log(`ledger   ${LEDGER}  ${before} line(s) now`);
 console.log('');
 console.log('Now read that fixture with the Read tool — the whole file, no limit —');

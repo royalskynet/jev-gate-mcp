@@ -14,6 +14,8 @@
  *     key is never an error a host has to handle.
  */
 
+import { ENV } from '../claude/env.mjs';
+
 let transportPromise;
 
 /**
@@ -30,7 +32,7 @@ export function liveTransport() {
       ]);
       // Telemetry off by default here: a hook writing JSONL to the host's
       // stderr is noise in a TUI, and the ledger is the durable record.
-      const { gateway } = buildGateway({ telemetry: process.env.JEV_TELEMETRY === 'on' });
+      const { gateway } = buildGateway({ telemetry: ENV.JEV_TELEMETRY === 'on' });
       return makeGatewayTransport(gateway);
     } catch {
       return null; // no credential / no provider -> caller keeps status quo

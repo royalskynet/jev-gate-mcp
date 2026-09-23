@@ -15,6 +15,7 @@
     "agents:acceptance": "node scripts/agents-acceptance.mjs",
     "probe:ledger": "node scripts/ledger-probe.mjs",
     "probe:ledger:check": "node scripts/ledger-probe.mjs check",
+    "probe:ledger:e2e": "node scripts/ledger-probe.mjs e2e",
     "validate:hooks": "sh -c 'mv .claude-plugin/marketplace.json .marketplace.off; trap \"mv .marketplace.off .claude-plugin/marketplace.json\" EXIT INT TERM; claude plugin validate .'"
   },
   "dependencies": {

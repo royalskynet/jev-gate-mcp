@@ -10,15 +10,15 @@
  * The module runs with no Node: everything outside it comes through `$`.
  */
 
+import { ENV, fillEnv } from '../agent-glue/claude/env.mjs';
+
 export const CONFIG = {
-  // ponytail: the OpenRouter proxy stays the default so a machine that only has
-  // the OpenRouter key keeps working; a machine with a TypeSafe key overrides all
-  // three together (endpoint, model, key file) — the model id differs per host,
-  // so overriding the endpoint alone would send `typesafe/jev-1.13` to an API
-  // that names it `jev-latest`, and fail-open would hide that as a silent keep.
-  endpoint: process.env.JEV_ENDPOINT || 'https://openrouter.ai/api/v1/systemone',
-  model: process.env.JEV_MODEL || 'typesafe/jev-1.13',
-  apiKeyFile: process.env.JEV_API_KEY_FILE || `${process.env.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`,
+  // The three env-backed fields are filled by `refreshConfig`, below: under
+  // Node they are right at load, and in the hook they are right once
+  // `hydrate($)` has read `$.env`.
+  endpoint: '',
+  model: '',
+  apiKeyFile: '',
   chunkChars: 16000,
   // ponytail: judge at most this many chunks per call; the rest passes through
   // verbatim (never truncated). Raise it if the log shows tails going unjudged.
@@ -304,7 +304,58 @@ export async function userRequestOf($, e) {
 }
 
 /** Durable mirror of each judged-prunable outcome; see appendLedger's comment. */
-export const LEDGER = process.env.JEV_LEDGER || `${process.env.HOME}/.openclaw/state/jev-prune.log`;
+export let LEDGER = '';
+
+/**
+ * Recompute what the environment decides, from `ENV`. Called once at load (right
+ * under this definition, which is what Node needs) and again after `hydrate($)`
+ * in the hook, where `ENV` starts empty.
+ *
+ * ponytail: the defaults live here and nowhere else, so the two callers cannot
+ * drift apart.
+ *
+ * The OpenRouter proxy stays the default so a machine that only has the
+ * OpenRouter key keeps working; a machine with a TypeSafe key overrides all
+ * three together (endpoint, model, key file) — the model id differs per host,
+ * so overriding the endpoint alone would send `typesafe/jev-1.13` to an API
+ * that names it `jev-latest`, and fail-open would hide that as a silent keep.
+ */
+export function refreshConfig() {
+  CONFIG.endpoint = ENV.JEV_ENDPOINT || 'https://openrouter.ai/api/v1/systemone';
+  CONFIG.model = ENV.JEV_MODEL || 'typesafe/jev-1.13';
+  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`;
+  LEDGER = ENV.JEV_LEDGER || `${ENV.HOME}/.openclaw/state/jev-prune.log`;
+}
+refreshConfig();
+
+let hydrated;
+
+/**
+ * Read this module's environment through `$`, once per session, then recompute.
+ * The names are string literals because `$.env.get` requires it and
+ * `claude plugin validate` then lists what this module reads.
+ */
+function hydrate($) {
+  hydrated ??= (async () => {
+    // `$` is the engine's here and a stub in the unit tests, which have no
+    // `env` noun — and a guard cannot ask, since reading `$.env` as a value is
+    // exactly what the validator refuses. Under Node, ENV already holds
+    // process.env, so there is nothing to fall back to.
+    try {
+      fillEnv({
+        HOME: await $.env.get('HOME'),
+        JEV_ENDPOINT: await $.env.get('JEV_ENDPOINT'),
+        JEV_MODEL: await $.env.get('JEV_MODEL'),
+        JEV_API_KEY_FILE: await $.env.get('JEV_API_KEY_FILE'),
+        JEV_LEDGER: await $.env.get('JEV_LEDGER'),
+      });
+    } catch {
+      /* no `$.env` (Node): ENV already came from process.env */
+    }
+    refreshConfig();
+  })();
+  return hydrated;
+}
 
 /**
  * Core >= 2.1.278 writes any Bash or Grep result over ~8 KB to
@@ -348,6 +399,9 @@ export async function appendLedger($, line) {
 
 /** The body of every pruning hook; `tool` picks the row of TARGETS to use. */
 async function prune(tool, $, e, next) {
+  // The module's environment has no `process`; this is where `$.env` is first
+  // reachable. Memoized, so only the session's first prune pays for it.
+  await hydrate($);
   const target = TARGETS[tool];
   const r = await next(e);
   if (r?.isError) return r;
