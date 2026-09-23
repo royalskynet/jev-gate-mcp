@@ -195,7 +195,7 @@ export const register = (on, options = {}) => {
       return next(e);
     }
     const line = `jev-compact: ${before} → ${before - (out.reducedBy ?? 0)} chars, ${out.reducedBy} dropped, ${out.messages.length}/${messages.length} messages, verbatim, trigger=${e?.trigger ?? '?'}`;
-    $.ui?.log?.(line);
+    $.ui.log(line);
     await appendLedger($, line);
     return { messages: out.messages };
   });

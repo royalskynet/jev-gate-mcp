@@ -171,7 +171,7 @@ so a broken ledger cannot stop the prune itself. A ledger line is evidence that
 the hook fired; **it is not a calibration result** — `calibration_status`
 stays `uncalibrated` until a labelled evaluation corpus exists.
 
-### An empty ledger is a symptom with four causes
+### An empty ledger is a symptom with five causes
 
 A ledger that gains no lines looks the same from the outside whatever the
 reason. Check in this order; each step is one command and rules out everything
@@ -184,9 +184,25 @@ above it.
    the number that matters. Measured here: 2.1.263 inside the wrapper while
    `PATH` had 2.1.278 — two days of an empty ledger that read as a threshold
    problem.
-2. **Function hooks are off.** `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` has to be in
+2. **The module was refused, and `validate` said it passed.** `hooks/index.js`
+   is one aggregator: a single static-analysis error anywhere under it refuses
+   the whole module, so the prune hook goes with it. `claude plugin validate .`
+   takes the marketplace branch whenever a `marketplace.json` is present and
+   never looks at the hooks module at all — that `✔` is about the catalogue.
+   Use `npm run validate:hooks`, which moves the file aside and restores it on
+   exit. Measured here: `$.ui?.log?.()` in two agent-glue hooks refused the
+   module for days behind a green marketplace `✔` (`$.ui` read as a value; `$`
+   is only ever spelled `$.noun.event(...)`, so the optional chaining is what
+   broke it, not the call).
+   Also check *which copy* is running: a plugin installed from a marketplace
+   lives in `~/.claude/plugins/cache/<name>/<name>/<version>/`, keyed by
+   version, so editing the source repo changes nothing and `plugin update`
+   answers "already at the latest version" until the version is bumped. A
+   plugin whose `settings.json` entry has a local `path` runs from the repo
+   itself and has no such copy.
+3. **Function hooks are off.** `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` has to be in
    that binary's environment, not only in a shell profile it never sourced.
-3. **The output never reached the threshold.** Core persists Bash and Grep
+4. **The output never reached the threshold.** Core persists Bash and Grep
    results over ~8 KB to `tool-results/<id>.txt` and substitutes a ~2 KB
    preview, so a 179 KB command used to arrive at the hook as 2 KB and no
    threshold in TARGETS was reachable on those two tools. `resolvePersisted()`
@@ -195,10 +211,10 @@ above it.
    in place. The wrapper's shape is core's, not a contract, so probe with `Read`
    anyway: a Read result is delivered whole (18,060 chars measured) and does not
    depend on that parse holding.
-4. **The key file is unreadable.** Then the ledger says so, one
+5. **The key file is unreadable.** Then the ledger says so, one
    `jev-nokey(<tool>)` line per session. No such line means this was not it.
 
-1 and 2 leave no trace anywhere by construction, which is why they come first:
+1, 2 and 3 leave no trace anywhere by construction, which is why they come first:
 every instrument in this repo lives *inside* a hook that was never loaded.
 
 ### Registration is spelled out, not looped

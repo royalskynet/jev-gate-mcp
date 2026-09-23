@@ -14,7 +14,8 @@
     "gateway:stdio": "node gateway/src/stdio.js",
     "agents:acceptance": "node scripts/agents-acceptance.mjs",
     "probe:ledger": "node scripts/ledger-probe.mjs",
-    "probe:ledger:check": "node scripts/ledger-probe.mjs check"
+    "probe:ledger:check": "node scripts/ledger-probe.mjs check",
+    "validate:hooks": "sh -c 'mv .claude-plugin/marketplace.json .marketplace.off; trap \"mv .marketplace.off .claude-plugin/marketplace.json\" EXIT INT TERM; claude plugin validate .'"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",

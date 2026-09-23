@@ -121,7 +121,7 @@ export const register = (on) => {
   on('agent.spawn', async ($, input, next) => {
     const d = await spawnDecision(input || {}, {});
     if (!d.change) return next(input); // default: leave the subagent's model to the engine
-    $.ui?.log?.(`jev-triage: subagent on ${d.model} (tier=${d.decision?.tier})`);
+    $.ui.log(`jev-triage: subagent on ${d.model} (tier=${d.decision?.tier})`);
     return next({ ...(input || {}), model: d.model });
   });
 };
