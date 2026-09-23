@@ -196,6 +196,13 @@ ledger 一行都沒多，六種原因從外面看一模一樣。照這個順序�
 6. **key 檔讀不到。**那 ledger 會說，每個 session 一行
    `jev-nokey(<tool>)`。沒這種行就不是這個原因。
 
+還有第七個，CLI 那條路：**CLI 從來不寫 hook 的 ledger。**跑一次
+`cli.mjs prune` 寫的是它自己的 `~/.openclaw/state/jev-prune-cli.log`（標記
+`jev-cli(...)`，可用 `JEV_CLI_LEDGER` 改道）——這是刻意的，所以 hook 的存活探針
+把一次 CLI 執行讀成「什麼都沒發生」。CLI 跑得動只證明 judge 載入了，**不證明
+hook 載入了**。hook ledger 空著、CLI ledger 很忙，正是「hook 從沒載入」的訊號，
+不是健康狀態。
+
 1 到 4 按定義在任何地方都不留痕，所以排最前面：這個 repo 裡每一個儀器都
 裝在一個**從未載入的 hook 裡面**。debug log 是唯一的例外——它是引擎寫的、
 不是 plugin 寫的，所以模組根本沒跑起來時它還會說話。
