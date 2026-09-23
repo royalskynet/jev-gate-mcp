@@ -125,10 +125,16 @@ README.zh-TW「ledger 是空的：一個症狀，四個根因」，這裡不重�
 
 ### m2 要跑的（全部非互動）
 
-**只需要這一個 repo。**`git pull` 加 `npm install` 就齊了——唯一的 git 依賴
-`jevwire` 由 npm 自己拉。本檔上面提到的 `ingebyd/fast-jev-compaction-openrouter`
-是另一條線（`session.compact`），跟 ledger 無關，這輪不用裝；README 裡的
-`claude-model-router-hook` 之類是 prior art 的引用，不是依賴。
+**ledger 這條線只需要這一個 repo。**`git pull` 加 `npm install` 就齊了——唯一的
+git 依賴 `jevwire` 由 npm 自己拉。本檔上面提到的
+`ingebyd/fast-jev-compaction-openrouter` 是另一條線（`session.compact`），跟 ledger
+無關，這輪不用裝；README 裡的 `claude-model-router-hook` 之類是 prior art 的引用，
+不是依賴。
+
+但**整台機**要裝齊的是四層：Beacon endpoint、fixindex + fix-store、beacon-harness
+(`bh`)、以及本 repo。本 repo 是第 4 層，管單次 tool result 的裁剪；前三層管跨
+session 的記憶，兩條線互不依賴，症狀也別互相排查。四層的順序、坑與逐層驗收見
+`royalskynet/beacon-harness` 的 `docs/SECOND-MACHINE.md`。
 
 
 1. **量宿主版本**，不是 `PATH` 上的：
