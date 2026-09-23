@@ -43,7 +43,20 @@ if (process.argv[2] === 'check') {
     console.error('ledger-probe: no baseline; run without arguments first.');
     process.exit(2);
   }
-  const before = Number(readFileSync(STATE, 'utf8'));
+  // The baseline is only meaningful for the ledger it was taken against: a run
+  // with JEV_LEDGER pointed elsewhere leaves a count from a different file, and
+  // slicing the real ledger by it reports every existing line as new.
+  const [ledgerAtBaseline, count] = readFileSync(STATE, 'utf8').split('\n');
+  if (ledgerAtBaseline !== LEDGER) {
+    console.error(`ledger-probe: baseline was taken against ${ledgerAtBaseline}, not ${LEDGER}.`);
+    console.error('Run without arguments again to re-baseline.');
+    process.exit(2);
+  }
+  const before = Number(count);
+  if (!Number.isInteger(before)) {
+    console.error(`ledger-probe: unreadable baseline in ${STATE}; run without arguments first.`);
+    process.exit(2);
+  }
   const lines = ledgerLines();
   const added = lines.slice(before);
   if (added.length) {
@@ -52,12 +65,16 @@ if (process.argv[2] === 'check') {
     process.exit(0);
   }
   console.log(`FAIL  no new line in ${LEDGER} (still ${lines.length}).`);
-  console.log('Work down the four causes in README "An empty ledger", in order:');
+  console.log('Work down the five causes in README "An empty ledger", in order:');
   console.log('  1. "$CLAUDE_CODE_EXECPATH" --version  >= 2.1.274, and it is not');
   console.log('     necessarily the `claude` on PATH — a wrapper ships its own copy.');
-  console.log('  2. CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 in the session env.');
-  console.log(`  3. Was the fixture read with the Read tool? ${FIXTURE}`);
-  console.log(`  4. A jev-nokey line would mean ${CONFIG.apiKeyFile} is unreadable.`);
+  console.log('  2. npm run validate:hooks  — plain `plugin validate` takes the');
+  console.log('     marketplace branch and never opens the module. Also check which');
+  console.log('     copy runs: ~/.claude/plugins/cache/<name>/<name>/<version>/ is a');
+  console.log('     version-keyed snapshot, so editing this repo changes nothing.');
+  console.log('  3. CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 in the session env.');
+  console.log(`  4. Was the fixture read with the Read tool? ${FIXTURE}`);
+  console.log(`  5. A jev-nokey line would mean ${CONFIG.apiKeyFile} is unreadable.`);
   process.exit(1);
 }
 
@@ -70,7 +87,7 @@ const half = noise.repeat(Math.ceil((CONFIG.chunkChars * 0.6) / noise.length));
 writeFileSync(FIXTURE, half + signal + half);
 
 const before = ledgerLines().length;
-writeFileSync(STATE, String(before));
+writeFileSync(STATE, `${LEDGER}\n${before}`);
 
 console.log(`fixture  ${FIXTURE}  ${(half.length * 2 + signal.length).toLocaleString()} chars`);
 console.log(`ledger   ${LEDGER}  ${before} line(s) now`);

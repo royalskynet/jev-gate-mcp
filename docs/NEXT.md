@@ -120,8 +120,8 @@ Read 18,060 字元整份遞達（超過 16000 門檻），ledger 仍零新行—
 低於就**不載入也不報錯**。本機 ledger 最後一行 `2026-09-21T14:19:40`，
 `~/.claude/debug/` 最後一份 log `2026-09-21 14:52`——同一天斷掉，不是巧合。
 
-判讀流程的全文在 README「An empty ledger is a symptom with four causes」／
-README.zh-TW「ledger 是空的：一個症狀，四個根因」，這裡不重抄。
+判讀流程的全文在 README「An empty ledger is a symptom with five causes」／
+README.zh-TW「ledger 是空的：一個症狀，五個根因」，這裡不重抄。
 
 ### m2 要跑的（全部非互動）
 
@@ -155,7 +155,7 @@ session 的記憶，兩條線互不依賴，症狀也別互相排查。四層的
 
 `npm run probe:ledger:check` 印 `PASS` 並貼出新增的那行。`jev-prune(Read): ...`
 與 `jev-nokey(Read): ...` 都算 hook 活著（後者是 key 讀不到，另一個問題）。
-`FAIL` 會把四個根因按順序印出來，第一個就是 `$CLAUDE_CODE_EXECPATH --version`。
+`FAIL` 會把五個根因按順序印出來，第一個就是 `$CLAUDE_CODE_EXECPATH --version`。
 
 ### 順帶
 
@@ -163,9 +163,9 @@ session 的記憶，兩條線互不依賴，症狀也別互相排查。四層的
 `model: typesafe/jev-1.13-20260917` 是 `npm run gateway:acceptance` 自己寫的
 fixture，不是真實決策語料，別拿去校準。
 
-### 本機（m1）同病，2026-09-23 已修
+### 本機（Mac mini M4）同病，2026-09-23 已修
 
-m1 的 ledger 從 `2026-09-21T14:19:40` 就停了，根因一樣：Happy 1.2.3 自帶
+本機的 ledger 從 `2026-09-21T14:19:40` 就停了，根因一樣：Happy 1.2.3 自帶
 `@anthropic-ai/claude-agent-sdk` 0.3.263 ＝ Claude Code 2.1.263，`PATH` 上的
 `claude` 卻是 2.1.278。修法是把 wrapper 自己那份升上去：
 
