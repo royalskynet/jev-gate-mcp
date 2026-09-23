@@ -141,7 +141,10 @@ time it runs, core has already recorded what the model will read. `tool.call`
 can — it awaits `next(e)` and answers with its own `{ result }` (and no `ref`,
 so core re-maps the pruned record rather than reusing its own messages).
 
-Requires `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` and Claude Code ≥ 2.1.274.
+Requires `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` and Claude Code ≥ 2.1.274 — the
+version of the binary actually running the session (`$CLAUDE_CODE_EXECPATH`), which is
+not necessarily the `claude` on `PATH`. Below 2.1.274 the module is not refused, it is
+never loaded, and nothing in this repo can tell you so; see “An empty ledger” below.
 
 ### Fail-open, deliberately
 
@@ -167,6 +170,36 @@ indistinguishable from a hook that never loaded. `appendLedger()` never throws,
 so a broken ledger cannot stop the prune itself. A ledger line is evidence that
 the hook fired; **it is not a calibration result** — `calibration_status`
 stays `uncalibrated` until a labelled evaluation corpus exists.
+
+### An empty ledger is a symptom with four causes
+
+A ledger that gains no lines looks the same from the outside whatever the
+reason. Check in this order; each step is one command and rules out everything
+above it.
+
+1. **The host is a different binary than you think.** `claude --version` reports
+   whatever is on `PATH`, not what is running the session you are inside. A
+   wrapper (Happy, an IDE extension, any SDK embed) ships its own copy:
+   `$CLAUDE_CODE_EXECPATH` names it and `"$CLAUDE_CODE_EXECPATH" --version` is
+   the number that matters. Measured here: 2.1.263 inside the wrapper while
+   `PATH` had 2.1.278 — two days of an empty ledger that read as a threshold
+   problem.
+2. **Function hooks are off.** `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` has to be in
+   that binary's environment, not only in a shell profile it never sourced.
+3. **The output never reached the threshold.** Core persists Bash and Grep
+   results over ~8 KB to `tool-results/<id>.txt` and substitutes a ~2 KB
+   preview, so a 179 KB command used to arrive at the hook as 2 KB and no
+   threshold in TARGETS was reachable on those two tools. `resolvePersisted()`
+   now reads that file back before judging, and the write-back is capped at one
+   chunk — above it core's blind preview is the smaller of the two and is left
+   in place. The wrapper's shape is core's, not a contract, so probe with `Read`
+   anyway: a Read result is delivered whole (18,060 chars measured) and does not
+   depend on that parse holding.
+4. **The key file is unreadable.** Then the ledger says so, one
+   `jev-nokey(<tool>)` line per session. No such line means this was not it.
+
+1 and 2 leave no trace anywhere by construction, which is why they come first:
+every instrument in this repo lives *inside* a hook that was never loaded.
 
 ### Registration is spelled out, not looped
 

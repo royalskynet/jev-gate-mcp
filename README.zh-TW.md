@@ -120,7 +120,7 @@ core 已經把模型要讀的內容記下來了。`tool.call` 可以——它 aw
 然後用自己的 `{ result }` 回答（且不帶 `ref`，讓 core 重新 map 剪過的紀錄，
 而不是沿用它自己的 messages）。
 
-需要 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` 與 Claude Code ≥ 2.1.274。
+需要 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` 與 Claude Code ≥ 2.1.274——指的是**實際跑這個 session 的那支 binary**（`$CLAUDE_CODE_EXECPATH`）的版本，不一定是 `PATH` 上的 `claude`。低於 2.1.274 時模組不是被拒收，是根本沒載入，而這個 repo 裡沒有任何東西會告訴你；見下方「ledger 是空的」。
 
 ### 刻意 fail-open
 
@@ -142,6 +142,30 @@ key 不見、4xx、schema 壞掉、judge 丟例外——每一種都回 `keep`�
 分不出來。`appendLedger()` 永不丟例外，壞掉的 ledger 不會擋住 prune 本身。
 一行 ledger 是 hook 有觸發的證據，**不是校準結果**——在有標註評估語料之前，
 `calibration_status` 一律是 `uncalibrated`。
+
+### ledger 是空的：一個症狀，四個根因
+
+ledger 一行都沒多，四種原因從外面看一模一樣。照這個順序查，
+每步一條指令，而且每步都能排掉它之前的全部：
+
+1. **宿主不是你以為的那支 binary。**`claude --version` 報的是 `PATH` 上的那支，
+   不是正在跑這個 session 的那支。包一層的客戶端（Happy、IDE 外掛、任何 SDK
+   embed）自帶一份：`$CLAUDE_CODE_EXECPATH` 指到它，
+   `"$CLAUDE_CODE_EXECPATH" --version` 才是算數的那個。本機實測：包裡是
+   2.1.263、`PATH` 上是 2.1.278，兩天的空 ledger 被讀成門檻問題。
+2. **function hooks 沒開。**`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` 要在**那支
+   binary 的環境**裡，不是只寫在它沒 source 過的 shell profile。
+3. **輸出根本沒到門檻。**core 把超過約 8 KB 的 Bash / Grep 結果落檔到
+   `tool-results/<id>.txt`，代以約 2 KB 的 preview，所以 179 KB 的指令以前會以
+   2 KB 抵達 hook，TARGETS 三個門檻在這兩支工具上都碰不到。`resolvePersisted()`
+   現在會先把那個檔讀回來再判，而回寫上限是一個 chunk——超過就代表 core 那份
+   盲截斷比較小，保留它。那個包裝的形狀是 core 的事、不是契約，所以探針還是
+   走 `Read`：Read 整份遞達（實測 18,060 字元），不依賴這個解析還成立。
+4. **key 檔讀不到。**那 ledger 會說，每個 session 一行
+   `jev-nokey(<tool>)`。沒這種行就不是這個原因。
+
+1 與 2 按定義在任何地方都不留痕，所以排最前面：這個 repo 裡每一個儀器都
+裝在一個**從未載入的 hook 裡面**。
 
 ### 註冊是攤開寫的，不是跑迴圈
 

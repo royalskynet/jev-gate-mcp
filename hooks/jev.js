@@ -302,6 +302,29 @@ export async function userRequestOf($, e) {
 export const LEDGER = process.env.JEV_LEDGER || `${process.env.HOME}/.openclaw/state/jev-prune.log`;
 
 /**
+ * Core >= 2.1.278 writes any Bash or Grep result over ~8 KB to
+ * `tool-results/<id>.txt` and substitutes a ~2 KB preview wrapper. The hook is
+ * handed the wrapper, so a 179 KB command arrives as 2 KB and every threshold
+ * in TARGETS is unreachable on those two tools — silently, since a preview is a
+ * perfectly ordinary short string.
+ *
+ * Read the file back so the judge sees what the command actually printed. The
+ * shape is core's, not a contract, so every failure falls back to the preview.
+ */
+const PERSISTED_PATH = /^<persisted-output>[\s\S]{0,400}?saved to:\s*(\S+)/;
+export async function resolvePersisted($, out) {
+  const m = typeof out === 'string' ? PERSISTED_PATH.exec(out) : null;
+  if (!m) return { text: out, persisted: false };
+  try {
+    const full = await $.fs.read(m[1]);
+    if (typeof full !== 'string' || full.length <= out.length) return { text: out, persisted: false };
+    return { text: full, persisted: true };
+  } catch {
+    return { text: out, persisted: false };
+  }
+}
+
+/**
  * Append one prune line to the ledger, read-then-write because `$.fs` has no
  * append. Never throws: the ledger is observation only, so a broken clock or a
  * write refusal must never break the caller (prune). `$.clock.now` for a real
@@ -323,7 +346,7 @@ async function prune(tool, $, e, next) {
   const target = TARGETS[tool];
   const r = await next(e);
   if (r?.isError) return r;
-  const out = target.get(r?.result);
+  const { text: out, persisted } = await resolvePersisted($, target.get(r?.result));
   if (typeof out !== 'string' || out.length < target.thresholdChars) {
     // ponytail: observation window, remove after the 2026-09-29 verdict
     // (`scripts/prune-verdict.mjs`, DEVLOG §23.6). Raising the threshold makes
@@ -367,6 +390,12 @@ async function prune(tool, $, e, next) {
   // so a broken ledger cannot stop the prune itself.
   await appendLedger($, line);
   if (!droppedLines) return r;
+  // ponytail: a persisted result was already out of the model's context at 2 KB.
+  // Replacing it is only an improvement while the judged version stays small —
+  // `maxJudgedChunks` lets the tail through verbatim, so an under-pruned 179 KB
+  // log would otherwise land in full. One chunk is the ceiling; above it core's
+  // blind preview wins on size and we leave it alone.
+  if (persisted && kept.length > CONFIG.chunkChars) return r;
   // No `ref`: core re-maps this record for the model instead of reusing its own.
   return { result: target.set(r.result, kept) };
 }

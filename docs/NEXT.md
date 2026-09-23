@@ -106,3 +106,46 @@ compaction 送出去的是**整段對話**，這個 ZDR 條件不是可選項。
 
 - claude.ai connectors `Gmail` / `Google_Calendar` / `Claude_Docs`：30 天 0 真實呼叫，
   但斷開是 `/mcp` 的 GUI 動作，無頭機無法程式化執行。
+
+## 第二台機（m2）：prune ledger 不存在（2026-09-23 已定位，待 m2 執行）
+
+m2 裝完 plugin + Gateway MCP 全綠，唯一沒驗成功的是 `~/.openclaw/state/jev-prune.log`
+不存在。m2 的假設是「core 落檔只遞 2 KB preview，輸出低於 16000 門檻 → hook 永不觸發」。
+
+**那個假設是真的，但不是 m2 的根因。** 本機 2026-09-23 用 Read 探針排掉它：
+Read 18,060 字元整份遞達（超過 16000 門檻），ledger 仍零新行——門檻過了，hook 沒跑。
+往上一層才是真的：**跑 session 的 binary 是 wrapper 自帶的那支**
+（`$CLAUDE_CODE_EXECPATH` → Happy 的 `@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`，
+2.1.263），而 `PATH` 上的 `claude` 是 2.1.278。function hooks 要 ≥ 2.1.274，
+低於就**不載入也不報錯**。本機 ledger 最後一行 `2026-09-21T14:19:40`，
+`~/.claude/debug/` 最後一份 log `2026-09-21 14:52`——同一天斷掉，不是巧合。
+
+判讀流程的全文在 README「An empty ledger is a symptom with four causes」／
+README.zh-TW「ledger 是空的：一個症狀，四個根因」，這裡不重抄。
+
+### m2 要跑的（全部非互動）
+
+1. **量宿主版本**，不是 `PATH` 上的：
+   `"$CLAUDE_CODE_EXECPATH" --version`。< 2.1.274 就到第 2 步，≥ 就跳到第 4 步。
+2. **升級那支 binary**。如果是 Happy：`npm i -g happy@latest`（1.2.3 → 1.2.5 把
+   `@anthropic-ai/claude-agent-sdk` 從 0.3.263 拉到 0.3.280 ＝ CLI 2.1.280）。
+   別的 wrapper 同理——升的是 wrapper 自己那份，不是 `PATH` 上的 `claude`。
+3. **重開 session**，hook 模組在 session 啟動時載入，升級不影響已跑的那個。
+4. `git pull`（要 `3dcdd39`：`if (!key)` 不再是靜默出口，`apiKey` 只 memoize 命中）。
+5. **確認 key 檔可讀**——`ls -l` 看 metadata 就好，不要 cat。讀不到的話 ledger
+   自己會寫 `jev-nokey`，不用猜。
+6. **驗收探針一律走 Read，不要走 Bash**：造一個 > 16000 字元的檔再 Read 它。
+   Bash 與 Grep 的大輸出會被 core 落檔成 `tool-results/<id>.txt` 只遞 preview，
+   用它們探等於在測 core 的落檔門檻，不是在測 hook。
+
+### 驗收
+
+`wc -l ~/.openclaw/state/jev-prune.log` 在 Read 探針之後應該多一行
+`jev-prune(Read): ... chars` 或 `jev-nokey(Read): ...`。兩種都算 hook 活著；
+零新行代表還卡在第 1–3 步，回頭量 `$CLAUDE_CODE_EXECPATH --version`。
+
+### 順帶
+
+`~/.openclaw/state/jev-calibration.jsonl` 尾巴那些 `provider:"unknown"` /
+`model: typesafe/jev-1.13-20260917` 是 `npm run gateway:acceptance` 自己寫的
+fixture，不是真實決策語料，別拿去校準。
