@@ -2,8 +2,18 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { handlePreToolUse, handleStop } from '../plugin/hooks/gate.js';
-import { readEvidence } from '../plugin/lib/transcript.js';
+
+// Before importing the gate: both the ledger path and the key path are
+// `${HOME}/...`, resolved once at module load. Pointing HOME at a scratch dir
+// keeps this file off the real ~/.jev-gate/gate.log and, with no key there,
+// off the network. Without it every `npm test` billed a live judgment and left
+// a line in the production ledger — which is where the gate's own behaviour is
+// supposed to be read back. 24 of the first 39 entries were this file.
+const SCRATCH = mkdtempSync(join(tmpdir(), 'jev-gate-home-'));
+process.env.HOME = SCRATCH;
+
+const { handlePreToolUse, handleStop } = await import('../plugin/hooks/gate.js');
+const { readEvidence } = await import('../plugin/lib/transcript.js');
 
 // The gate must coexist with creds-egress-guard: it may never override an
 // existing deny. Our guarantee: the PreToolUse handler emits no
@@ -43,8 +53,7 @@ assert.equal(
 // Evidence really does come out of the transcript: the live Stop payload has
 // no tool_response at all, and judging every claim against '' returned
 // not_addressed at 0.97 every time — which once the gate blocks is every turn.
-const dir = mkdtempSync(join(tmpdir(), 'jev-gate-'));
-const tp = join(dir, 't.jsonl');
+const tp = join(SCRATCH, 't.jsonl');
 writeFileSync(tp, [
   JSON.stringify({ type: 'user', message: { content: 'fix the build' } }),
   JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }),

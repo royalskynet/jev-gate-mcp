@@ -24,8 +24,12 @@ function logLine(cfg, event) {
   } catch { /* logging never blocks */ }
 }
 
-/** Record-only shadow wrapper around a judgment that returns a decision value. */
-export function shadow(decideFn, cfg) {
+/**
+ * Record-only shadow wrapper around a judgment that returns a decision value.
+ * `label` says which gate wrote the line; the two verdict shapes are otherwise
+ * told apart only by guessing at their fields.
+ */
+export function shadow(decideFn, cfg, label = 'gate') {
   return async function (payload) {
     let decided = null;
     let reason = null;
@@ -36,7 +40,7 @@ export function shadow(decideFn, cfg) {
     }
     // The ledger is written either way: once the gate can act, what it acted
     // on is the only record of why.
-    await logAsync(cfg, { event: cfg.shadow ? 'gate_observe' : 'gate_decide', decided, reason });
+    await logAsync(cfg, { event: cfg.shadow ? 'gate_observe' : 'gate_decide', gate: label, decided, reason });
     return { shadow: !!cfg.shadow, decided, reason };
   };
 }
@@ -73,7 +77,7 @@ export function makeStopGate(cfg = DEFAULT_CONFIG) {
     const cfgOut = runConfig(cfg);
     const out = await runVerify(model, { claims: [claim], evidence }, cfgOut);
     return out;
-  }, cfg);
+  }, cfg, 'stop');
   return stopGate;
 }
 
@@ -88,6 +92,6 @@ export function makeNextGate(cfg = DEFAULT_CONFIG) {
     const cfgOut = runConfig(cfg);
     const out = await runNextStep(model, { goal, last_step, result, attempts }, cfgOut);
     return out;
-  }, cfg);
+  }, cfg, 'next');
   return nextGate;
 }
