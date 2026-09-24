@@ -223,7 +223,14 @@ export const register = (on, options = {}) => {
 
   on('session.compact', async ($, e, next) => {
     await hydrate($);
-    if (!ENABLED || standDown) return next(e);
+    // Say so when the event arrives and we decline it. Silence here is
+    // ambiguous in exactly the way that costs a day: a missing compact line
+    // could mean "the host never sent the event" or "we stood down", and the
+    // ledger is the only place that difference is observable.
+    if (!ENABLED || standDown) {
+      await appendLedger($, `jev-compact: session.compact arrived, not handling it (enabled=${ENABLED}, standDown=${standDown})`);
+      return next(e);
+    }
     const messages = e?.messages ?? [];
     const key = await apiKey($, options);
     if (!key) {
