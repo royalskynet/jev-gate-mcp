@@ -28,21 +28,36 @@ export async function handleStop(payload) {
 }
 
 /**
- * The block itself, kept separate so it is testable without the network.
+ * The decision itself, kept separate so it is testable without the network.
  * Its predecessor read `String(result.decided).includes('not_addressed')` on
  * an object — `'[object Object]'` never matches, so the gate could not have
  * blocked anything even with shadow off.
  *
  * `gate: 'auto'` is jevwire's own word for "confidence cleared the auto
  * threshold"; below that the verdict is recorded and the turn ends.
+ *
+ * Only `contradicted` blocks. `not_addressed` speaks up and lets the turn end,
+ * because the first time this gate blocked for real it blocked a report whose
+ * own words were "here is the part I have not proven" — the honesty the house
+ * rules demand reads to a verifier as an unsupported claim. Blocking that
+ * punishes Fail Loud and teaches the opposite. A turn whose evidence actively
+ * contradicts it is a different animal and still stops.
  */
 export function blockDecision(judged) {
   if (judged?.gate !== 'auto') return undefined;
-  if (judged.verdict !== 'not_addressed' && judged.verdict !== 'contradicted') return undefined;
-  return {
-    decision: 'block',
-    reason: `completion claimed but this round's tool output does not support it (jev-gate: ${judged.verdict}). Re-verify and show the output, or say plainly what is still unproven.`,
-  };
+  if (judged.verdict === 'contradicted') {
+    return {
+      decision: 'block',
+      reason: "this round's tool output contradicts the claim (jev-gate: contradicted). Re-read the output and correct the claim.",
+    };
+  }
+  if (judged.verdict === 'not_addressed') {
+    return {
+      continue: true,
+      systemMessage: "(jev-gate) this round's tool output does not support the completion claim. If something is still unproven, say so plainly.",
+    };
+  }
+  return undefined;
 }
 
 /**
