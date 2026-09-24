@@ -1,30 +1,48 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { makeStopGate, makeNextGate } from '../lib/gate.js';
+import { readEvidence } from '../lib/transcript.js';
 import { DEFAULT_CONFIG } from '../lib/judge.js';
 
 const cfg = DEFAULT_CONFIG;
 
 /**
- * Stop hook. In shadow mode it only records whether the completion claim has
- * evidence; it never emits a block, so it coexists with fi-reminder.sh's
- * one-shot block (a later block would replace the reminder, which we must not
- * do until shadow mode is lifted).
+ * Stop hook. Judges the completion claim against the tool output of this
+ * round. Blocks only when Jev is confident enough for its own `auto` gate;
+ * anything softer is recorded and allowed through.
+ *
+ * Fail-open in three places, all of them load-bearing on a headless machine:
+ * a second pass (`stop_hook_active`) never blocks, an empty claim or empty
+ * evidence never blocks, and an error inside the judgment never blocks.
  */
 export async function handleStop(payload) {
-  const claim = payload?.last_assistant_message ?? '';
-  const result = await makeStopGate(cfg)({
-    claim,
-    evidence: payload?.tool_response?.output ?? '',
-  });
-  // Shadow: never block. Non-shadow would emit {decision:'block'} here.
-  if (!result.shadow && result.decided && String(result.decided).includes('not_addressed')) {
-    return {
-      decision: 'block',
-      reason: 'completion claimed without matching evidence; re-verify before declaring done. (jev-gate, to Claude)',
-    };
-  }
-  return undefined;
+  // fi-reminder.sh's guard: one block per turn-chain, never a loop.
+  if (payload?.stop_hook_active) return undefined;
+  const claim = String(payload?.last_assistant_message ?? '').slice(0, 4000);
+  const evidence = payload?.tool_response?.output ?? readEvidence(payload?.transcript_path);
+  // A turn that ran no tools has nothing to verify against; let it end.
+  if (!claim.trim() || !evidence.trim()) return undefined;
+  const result = await makeStopGate(cfg)({ claim, evidence });
+  if (result.shadow) return undefined;
+  return blockDecision(result.decided?.claims?.[0]);
+}
+
+/**
+ * The block itself, kept separate so it is testable without the network.
+ * Its predecessor read `String(result.decided).includes('not_addressed')` on
+ * an object — `'[object Object]'` never matches, so the gate could not have
+ * blocked anything even with shadow off.
+ *
+ * `gate: 'auto'` is jevwire's own word for "confidence cleared the auto
+ * threshold"; below that the verdict is recorded and the turn ends.
+ */
+export function blockDecision(judged) {
+  if (judged?.gate !== 'auto') return undefined;
+  if (judged.verdict !== 'not_addressed' && judged.verdict !== 'contradicted') return undefined;
+  return {
+    decision: 'block',
+    reason: `completion claimed but this round's tool output does not support it (jev-gate: ${judged.verdict}). Re-verify and show the output, or say plainly what is still unproven.`,
+  };
 }
 
 /**

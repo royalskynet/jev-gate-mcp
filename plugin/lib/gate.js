@@ -11,9 +11,10 @@ import { getModel, DEFAULT_CONFIG } from './judge.js';
  * no policy engine rewritten. Every judgment is fail-open: if Jev is
  * unavailable or the schema is wrong, the result is neutral (no block).
  *
- * Shadow mode (`config.shadow === true`, the default): these functions only
- * RECORD what they would decide; they never emit a block or an override, so
- * the existing hooks (creds-egress-guard, guard, fi-reminder) are untouched.
+ * Shadow mode (`config.shadow === true`): these functions only RECORD what
+ * they would decide; they never emit a block or an override. With shadow off
+ * the Stop gate may block; the PreToolUse gate still only adds context, so a
+ * creds-egress-guard / guard deny can never be overridden either way.
  */
 
 function logLine(cfg, event) {
@@ -33,12 +34,10 @@ export function shadow(decideFn, cfg) {
     } catch (e) {
       reason = e.message;
     }
-    // Always write the observation; never act in shadow mode.
-    if (cfg.shadow) {
-      await logAsync(cfg, { event: 'gate_observe', decided, reason });
-      return { shadow: true, decided };
-    }
-    return { shadow: false, decided, reason };
+    // The ledger is written either way: once the gate can act, what it acted
+    // on is the only record of why.
+    await logAsync(cfg, { event: cfg.shadow ? 'gate_observe' : 'gate_decide', decided, reason });
+    return { shadow: !!cfg.shadow, decided, reason };
   };
 }
 

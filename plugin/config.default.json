@@ -10,6 +10,6 @@
   "maxChunks": 8,
   "pruneLog": "${HOME}/.jev-gate/prune.log",
   "gateLog": "${HOME}/.jev-gate/gate.log",
-  "shadow": true,
+  "shadow": false,
   "ghostMaxAttempts": 2
 }
