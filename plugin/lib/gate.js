@@ -50,6 +50,19 @@ async function logAsync(cfg, event) {
 }
 
 /**
+ * The config handed to jevwire's runners.
+ *
+ * `maxConcurrency` is NOT optional. jevwire's `mapWithConcurrency` computes
+ * `Math.max(1, Math.min(Math.floor(limit), n))`, and `Math.floor(undefined)`
+ * is NaN, so `Array.from({ length: NaN })` opens ZERO workers: every claim
+ * comes back `not_addressed` with `usage: 0` and no request ever sent. That
+ * reads like a judgment and is not one. Keep it a finite number.
+ */
+export function runConfig(cfg = DEFAULT_CONFIG) {
+  return { thresholds: { auto: 0.85, review: 0.6 }, maxConcurrency: cfg.maxConcurrency ?? 2 };
+}
+
+/**
  * Stop completion check. Evidence is the current round's diff / test output;
  * a completion claim with no supporting evidence is treated as unsupported.
  * Uses jevwire runVerify against one claim. Fail-open -> neutral.
@@ -58,7 +71,7 @@ export function makeStopGate(cfg = DEFAULT_CONFIG) {
   const stopGate = shadow(async ({ claim, evidence }) => {
     const model = getModel(cfg);
     if (!model) throw new Error('no Jev model configured');
-    const cfgOut = { thresholds: { auto: 0.85, review: 0.6 } };
+    const cfgOut = runConfig(cfg);
     const out = await runVerify(model, { claims: [claim], evidence }, cfgOut);
     return out;
   }, cfg);
@@ -73,7 +86,7 @@ export function makeNextGate(cfg = DEFAULT_CONFIG) {
   const nextGate = shadow(async ({ goal, last_step, result, attempts }) => {
     const model = getModel(cfg);
     if (!model) throw new Error('no Jev model configured');
-    const cfgOut = { thresholds: { auto: 0.85, review: 0.6 } };
+    const cfgOut = runConfig(cfg);
     const out = await runNextStep(model, { goal, last_step, result, attempts }, cfgOut);
     return out;
   }, cfg);
