@@ -18,6 +18,8 @@ import logging
 import os
 import shutil
 import subprocess
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -41,7 +43,23 @@ _TARGETS = {
 # Result fields that can carry the long string, in order.
 _TEXT_KEYS = ("output", "stdout", "content", "text", "result")
 
-_TIMEOUT_S = float(os.environ.get("JEV_PRUNE_TIMEOUT_S", "45"))
+# The pre-gate is the same measurement hooks/jev.js makes (`CONFIG.chunkChars`):
+# below this, a result cannot earn its Jev call back, so no Node is even started.
+_PRE_GATE_CHARS = 16000
+
+_TIMEOUT_S = float(os.environ.get("JEV_PRUNE_TIMEOUT_S", "20"))
+
+
+def _ledger_path() -> Optional[Path]:
+    override = os.environ.get("JEV_PRUNE_LEDGER")
+    if override:
+        return Path(override)
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore
+
+        return get_hermes_home() / "logs" / "jev-prune.jsonl"
+    except Exception:
+        return Path.home() / ".hermes" / "logs" / "jev-prune.jsonl"
 
 
 def _ledger_path() -> Optional[Path]:
@@ -128,18 +146,47 @@ def _prune_result(tool_name: str, ctx: Dict[str, Any], result: Any, run=None) ->
     text, key = _extract(result)
     if not text:
         return result
+    # Pre-gate before any subprocess: no request, or output too small to earn a
+    # Jev call back, and the result passes through unchanged — Node is never
+    # even started (a middleware that saves nothing still costs less when it
+    # does not fork).
+    request = _request_of(ctx)
+    if not request:
+        _log({"time": datetime.now(timezone.utc).isoformat(), "tool": tool_name, "reason": "no-request"})
+        return result
+    if len(text) < _PRE_GATE_CHARS:
+        _log(
+            {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "tool": tool_name,
+                "reason": "below-threshold",
+                "before": len(text),
+            }
+        )
+        return result
+    started = time.monotonic()
     try:
-        out = prune_text(criteria_tool, _request_of(ctx), text, run=run)
+        out = prune_text(criteria_tool, request, text, run=run)
     except Exception as exc:
-        _log({"tool": tool_name, "outcome": "error", "error": str(exc)[:200]})
+        _log(
+            {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "tool": tool_name,
+                "reason": "error",
+                "error": str(exc)[:200],
+                "duration_ms": int((time.monotonic() - started) * 1000),
+            }
+        )
         return result
     _log(
         {
+            "time": datetime.now(timezone.utc).isoformat(),
             "tool": tool_name,
-            "outcome": out.get("reason"),
-            "chars_before": out.get("chars_before"),
-            "chars_after": out.get("chars_after"),
+            "reason": out.get("reason"),
+            "before": out.get("chars_before"),
+            "after": out.get("chars_after"),
             "dropped_lines": out.get("dropped_lines"),
+            "duration_ms": int((time.monotonic() - started) * 1000),
         }
     )
     if not out.get("judged") or not out.get("dropped_lines"):
@@ -172,26 +219,31 @@ def _selfcheck() -> None:
         def __init__(self, out: str, rc: int = 0) -> None:
             self.stdout, self.returncode = out, rc
 
-    big = "x" * 5000
+    big = "x" * (max(_PRE_GATE_CHARS, 5000) + 100)
+    small = "x" * 5000
     dropped = json.dumps(
-        {"text": "[jev-prune: dropped 1 lines]", "dropped_lines": 1, "chars_before": 5000,
+        {"text": "[jev-prune: dropped 1 lines]", "dropped_lines": 1, "chars_before": len(big),
          "chars_after": 27, "judged": True, "reason": "judged"}
     )
 
+    # the pre-gate: no request or too-small output passes through and never even
+    # starts a subprocess (the `run` lambda raising proves it was not called)
+    assert _prune_result("terminal", {}, big, run=lambda _p: (_ for _ in ()).throw(AssertionError())) is big
+    assert _prune_result("terminal", {"user_request": "r"}, small, run=lambda _p: (_ for _ in ()).throw(AssertionError())) is small
     # a bare-string terminal result is replaced by the pruned text
     assert _prune_result("terminal", {"user_request": "r"}, big, run=lambda _p: _Proc(dropped)) == (
         "[jev-prune: dropped 1 lines]"
     )
     # a dict result keeps its shape, only the text field changes
-    out = _prune_result("terminal", {}, {"output": big, "exit_code": 0}, run=lambda _p: _Proc(dropped))
+    out = _prune_result("terminal", {"user_request": "r"}, {"output": big, "exit_code": 0}, run=lambda _p: _Proc(dropped))
     assert out == {"output": "[jev-prune: dropped 1 lines]", "exit_code": 0}, out
     # an unknown tool, an unknown shape and a failing judge all pass through
-    assert _prune_result("write_file", {}, big, run=lambda _p: _Proc(dropped)) == big
-    assert _prune_result("terminal", {}, {"rows": [1]}, run=lambda _p: _Proc(dropped)) == {"rows": [1]}
-    assert _prune_result("terminal", {}, big, run=lambda _p: _Proc("", 1)) == big
+    assert _prune_result("write_file", {"user_request": "r"}, big, run=lambda _p: _Proc(dropped)) == big
+    assert _prune_result("terminal", {"user_request": "r"}, {"rows": [1]}, run=lambda _p: _Proc(dropped)) == {"rows": [1]}
+    assert _prune_result("terminal", {"user_request": "r"}, big, run=lambda _p: _Proc("", 1)) == big
     # nothing dropped -> the original object, not a rebuilt copy
     kept = json.dumps({"text": big, "dropped_lines": 0, "judged": True, "reason": "judged"})
-    assert _prune_result("terminal", {}, big, run=lambda _p: _Proc(kept)) is big
+    assert _prune_result("terminal", {"user_request": "r"}, big, run=lambda _p: _Proc(kept)) is big
     # the request comes from the middleware context, never from the tool arguments
     assert _request_of({"user_request": "why is the worker slow?"}) == "why is the worker slow?"
     assert _request_of({"args": {"command": "ls -la"}}) == ""
