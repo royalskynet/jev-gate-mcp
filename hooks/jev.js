@@ -11,6 +11,7 @@
  */
 
 import { ENV, fillEnv } from '../agent-glue/claude/env.mjs';
+import { homedir } from 'node:os';
 
 export const CONFIG = {
   // The three env-backed fields are filled by `refreshConfig`, below: under
@@ -365,9 +366,9 @@ export let LEDGER = '';
 export function refreshConfig() {
   CONFIG.endpoint = ENV.JEV_ENDPOINT || 'https://openrouter.ai/api/v1/systemone';
   CONFIG.model = ENV.JEV_MODEL || 'typesafe/jev-1.13';
-  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENROUTER_API_KEY.txt`;
+  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || homedir()}/.creds/kv/OPENROUTER_API_KEY.txt`;
   CONFIG.timeoutMs = Number(ENV.JEV_TIMEOUT_MS) > 0 ? Number(ENV.JEV_TIMEOUT_MS) : 2000;
-  LEDGER = ENV.JEV_LEDGER || `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-prune.log`;
+  LEDGER = ENV.JEV_LEDGER || `${ENV.HOME || homedir()}/.openclaw/state/jev-prune.log`;
 }
 refreshConfig();
 
@@ -387,7 +388,6 @@ function hydrate($) {
     try {
       fillEnv({
         HOME: await $.env.get('HOME'),
-        USERPROFILE: await $.env.get('USERPROFILE'),
         JEV_ENDPOINT: await $.env.get('JEV_ENDPOINT'),
         JEV_MODEL: await $.env.get('JEV_MODEL'),
         JEV_API_KEY_FILE: await $.env.get('JEV_API_KEY_FILE'),
