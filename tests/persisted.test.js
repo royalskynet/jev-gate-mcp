@@ -14,7 +14,12 @@ const preview = (bytes) =>
 function hostWith(files, fetch) {
   const writes = [];
   const $ = {
-    clock: { now: async () => Date.parse('2026-09-23T00:00:00.000Z') },
+    clock: {
+      now: async () => Date.parse('2026-09-23T00:00:00.000Z'),
+      // The engine's deadline wait. Never resolving is the "fetch answered in
+      // time" case, which is what every test below is about.
+      sleep: () => new Promise(() => {}),
+    },
     fs: {
       read: async (path) => {
         if (path in files) return files[path];

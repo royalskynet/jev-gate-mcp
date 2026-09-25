@@ -43,6 +43,20 @@ export const CONFIG = {
   // drops instead of 1 (DEVLOG §22.2). A destroyed answer costs more than a
   // kept dump.
   minDropProbability: 0.7,
+  // Wall-clock ceiling on the one Jev call, because nothing else bounds it.
+  // The engine's 10 s hook budget explicitly does NOT: "the clock stops while
+  // a `next(e)` call or any `$` call of the hook's is in flight" (HookBudget
+  // `ms`, claude-code.d.ts), and `$.http.fetch` takes no signal or timeout
+  // (HttpInit carries method/headers/body/auth/socketPath and nothing else).
+  // So a Jev endpoint that accepts the connection and never answers stalls
+  // every Bash, Grep and Read result behind it, forever, unmetered.
+  //
+  // 2000 is this repo's own number on this exact workload, not the article's:
+  // `plugin/config.default.json` runs the jevwire prune path at timeoutMs 2000
+  // over the same chunkChars 16000 x maxChunks 8, and jev-route's 3-question
+  // call measures p50 458 ms / max 719 ms over 18 live calls. Fail-open costs
+  // an unpruned dump; there is no cost to cutting a hung call short.
+  timeoutMs: 2000,
 };
 
 /**
@@ -184,6 +198,16 @@ export function vetoOnTerms(verdicts, chunks, terms) {
     (v === 'drop' && discriminating.some((t) => hays[i].includes(t)) ? 'unsure' : v));
 }
 
+/** Race sentinel; a unique object so no response body can impersonate it. */
+const TIMED_OUT = Symbol('jev-timeout');
+
+/**
+ * Round-trip of the last `judgeChunks` call, in milliseconds, or null where the
+ * clock was unavailable. The ledger carries it so the timeout above has a
+ * measured distribution to be retuned against instead of a borrowed number.
+ */
+export let lastLatencyMs = null;
+
 /**
  * One Jev request for ALL the chunks: the chunks go up once as `state.chunks`
  * and each question points at its own element by path, which is the batching
@@ -206,21 +230,39 @@ export async function judgeChunks($, key, userRequest, chunks, criteria = TARGET
     };
   });
   let res;
+  const startedAt = await $.clock.now().catch(() => null);
   try {
-    res = await $.http.fetch(CONFIG.endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: CONFIG.model,
-        state: { user_request: userRequest, chunks },
-        questions,
+    // `$.clock.sleep` is the one wait the engine meters against the hook's own
+    // budget, so the deadline cannot itself go missing. The losing promise is
+    // abandoned, not cancelled — `$.http.fetch` has no signal — which is fine:
+    // it settles into nothing and the hook has already moved on.
+    res = await Promise.race([
+      $.http.fetch(CONFIG.endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: CONFIG.model,
+          state: { user_request: userRequest, chunks },
+          questions,
+        }),
       }),
-    });
+      $.clock.sleep(CONFIG.timeoutMs).then(() => TIMED_OUT),
+    ]);
   } catch {
+    return keepAll;
+  }
+  lastLatencyMs = startedAt == null ? null : (await $.clock.now().catch(() => null)) - startedAt;
+  if (res === TIMED_OUT) {
+    // A timeout must not read as "judged everything keep". That confusion is
+    // this hook's oldest failure mode (DEVLOG: two days of an empty ledger read
+    // as a hook that never loaded), and it is also the only way the 2000 above
+    // ever gets retuned — a ledger full of jev-timeout is the evidence to raise
+    // it, and none is the evidence to leave it alone.
+    await appendLedger($, `jev-timeout: ${chunks.length} chunks unjudged after ${CONFIG.timeoutMs}ms — kept verbatim`);
     return keepAll;
   }
   if (!res || !res.ok) return keepAll;
@@ -324,6 +366,7 @@ export function refreshConfig() {
   CONFIG.endpoint = ENV.JEV_ENDPOINT || 'https://openrouter.ai/api/v1/systemone';
   CONFIG.model = ENV.JEV_MODEL || 'typesafe/jev-1.13';
   CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`;
+  CONFIG.timeoutMs = Number(ENV.JEV_TIMEOUT_MS) > 0 ? Number(ENV.JEV_TIMEOUT_MS) : 2000;
   LEDGER = ENV.JEV_LEDGER || `${ENV.HOME}/.openclaw/state/jev-prune.log`;
 }
 refreshConfig();
@@ -348,6 +391,7 @@ function hydrate($) {
         JEV_MODEL: await $.env.get('JEV_MODEL'),
         JEV_API_KEY_FILE: await $.env.get('JEV_API_KEY_FILE'),
         JEV_LEDGER: await $.env.get('JEV_LEDGER'),
+        JEV_TIMEOUT_MS: await $.env.get('JEV_TIMEOUT_MS'),
       });
     } catch {
       /* no `$.env` (Node): ENV already came from process.env */
@@ -437,7 +481,11 @@ async function prune(tool, $, e, next) {
     judgeChunks($, key, request, chunks, target.criteria),
   );
   const line = `jev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped`
-    + (unsure ? `, ${unsure} unsure drops vetoed` : '');
+    + (unsure ? `, ${unsure} unsure drops vetoed` : '')
+    // The round trip, so CONFIG.timeoutMs has a measured distribution to be
+    // retuned against. Every other number in this line describes the verdict;
+    // this is the only one that describes the call.
+    + (Number.isFinite(lastLatencyMs) ? `, ${lastLatencyMs}ms` : '');
   $.ui.log(line);
   // ponytail: the ui.log above is TUI-only and reaches no file unless --debug;
   // on a headless box the prune outcome would be unobservable and the threshold

@@ -19,6 +19,9 @@ function makeHost(userText = 'Find why the app cannot load its config file.') {
       return { status: res.status, ok: res.ok, headers: {}, text: await res.text() };
     } },
     fs: { read: async (p) => readFileSync(p, 'utf8') },
+    // Real clock: this test calls the real endpoint, so it runs under the real
+    // CONFIG.timeoutMs deadline rather than around it.
+    clock: { now: async () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) },
     ui: { log: (t) => logs.push(t) },
     session: { messages: async () => [{ role: 'user', text: userText, toolUses: [] }] },
   };
@@ -207,7 +210,7 @@ test('live: a real drop writes a ledger-style line', { skip: !hasKey && 'no api 
   // at least one to drop AND record a non-zero drop to the ledger.
   const host = makeHost();
   host.__writes = [];
-  host.clock = { now: async () => Date.now() };
+  host.clock = { now: async () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
   host.fs.write = async (path, text) => { if (path === LEDGER) host.__writes.push(text); };
   const out = noisyLog();
   const core = { ref: 7, text: out, result: { stdout: out, stderr: '', interrupted: false } };
