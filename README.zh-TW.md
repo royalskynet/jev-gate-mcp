@@ -278,7 +278,9 @@ frontmatter 裡的 `description:`——所以 `agent-glue/src/catalog.js` 去讀
 
 **shadow 模式現在會自己收「離開 shadow 所需的證據」。** shadow 只有在樣本能被
 評分時才有意義，所以語料 sink 出貨即開：每次 `apply_policy` 都往
-`~/.openclaw/state/jev-calibration.jsonl` 追加一行 JSONL（`JEV_CALIBRATION_LOG=<path>`
+`~/.openclaw/state/jev-calibration/<policy>.jsonl` 追加一行 JSONL——**一個 policy 一個檔**，
+因為 `calibrate.mjs` 要求整份檔的 provenance 一致，而 `policy` 就是其中一欄，
+共用單檔不論收多少真流量都評不了分（`JEV_CALIBRATION_LOG=<path>`
 改路徑，字面值 `off` 關掉）。每筆同時帶原始 `gate` 與被 shadow 蓋住的
 `public_outcome`，外加 `label: null` 等人填 —— `gateway/scripts/calibrate.mjs`
 會拒收未標註的檔，所以沒人動過的語料絕不會被誤當成證據。樣本的

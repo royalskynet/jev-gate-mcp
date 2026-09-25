@@ -195,7 +195,8 @@ const result = await guard.enforce({
 
 1. 保持 `shadow + uncalibrated + rollout_percent: 0` 收集真實 labels：**出貨即開**，
    gateway 會把每次 `apply_policy` 決策以 `calibrate.mjs` 的 JSONL 格式逐行寫到
-   `~/.openclaw/state/jev-calibration.jsonl`（projection 後的 state、answers、
+   `~/.openclaw/state/jev-calibration/<policy>.jsonl`，一個 policy 一個檔
+   （projection 後的 state、answers、
    raw `gate`、被蓋住的 `public_outcome`、`label: null`）。`JEV_CALIBRATION_LOG=<path>`
    改路徑，字面值 `off` 關掉。收完逐行把 `label` 填成「本來應該是什麼結果」。
    樣本的 `dataset_version` 已改為 `live-<policy>-v1`，不再繼承 spec 的

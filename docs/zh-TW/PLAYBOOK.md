@@ -178,7 +178,8 @@ provider token 路徑與 MCP 掛載方式見 `docs/zh-TW/README.md`；gateway �
 `registry.js` 會擋下任何「active 但未校準」的 policy。要轉正：
 
 1. 什麼都不用設：gateway 已經把每次決策以 `calibrate.mjs` 的 JSONL 格式逐行寫到
-   `~/.openclaw/state/jev-calibration.jsonl`（含投影後 state、answers、raw `gate`、
+   `~/.openclaw/state/jev-calibration/<policy>.jsonl`，一個 policy 一個檔
+   （含投影後 state、answers、raw `gate`、
    `public_outcome`、`label: null`）。`JEV_CALIBRATION_LOG=<path>` 改路徑，
    字面值 `off` 關掉。
 2. 逐行把 `label` 填成「本來應該是什麼結果」。樣本的 `dataset_version` 是

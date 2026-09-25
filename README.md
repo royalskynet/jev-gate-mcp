@@ -324,7 +324,10 @@ Two rules hold the whole thing up:
 
 **Shadow mode now collects the evidence it needs to end.** Shadow is only useful
 if the samples it produces can be scored, so the corpus sink ships on: every
-`apply_policy` appends one JSONL record to `~/.openclaw/state/jev-calibration.jsonl`
+`apply_policy` appends one JSONL record to
+`~/.openclaw/state/jev-calibration/<policy>.jsonl` — one file per policy, because
+`calibrate.mjs` requires per-record provenance to agree and `policy` is one of
+those fields, so a shared sink is unscoreable however much traffic it holds
 (`JEV_CALIBRATION_LOG=<path>` moves it, the literal `off` stops it). Each record
 carries the raw `gate` *and* the shadow-capped `public_outcome`, plus `label: null`
 for a human to fill in — `gateway/scripts/calibrate.mjs` refuses an unlabelled

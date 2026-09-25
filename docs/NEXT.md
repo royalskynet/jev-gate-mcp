@@ -157,11 +157,23 @@ session 的記憶，兩條線互不依賴，症狀也別互相排查。四層的
 與 `jev-nokey(Read): ...` 都算 hook 活著（後者是 key 讀不到，另一個問題）。
 `FAIL` 會把五個根因按順序印出來，第一個就是 `$CLAUDE_CODE_EXECPATH --version`。
 
-### 順帶
+### 順帶（2026-09-25 已修）
 
-`~/.openclaw/state/jev-calibration.jsonl` 尾巴那些 `provider:"unknown"` /
-`model: typesafe/jev-1.13-20260917` 是 `npm run gateway:acceptance` 自己寫的
-fixture，不是真實決策語料，別拿去校準。
+`~/.openclaw/state/jev-calibration.jsonl` 那些 `provider:"unknown"` /
+`model: typesafe/jev-1.13-20260917` 是 `npm run gateway:acceptance` 的
+`runDecisionReplay` 寫的：replay 重組**已錄下的** answers，不打 provider，
+`state` 是 `decision replay; original state withheld`，卻回顯真實 pinned model
+id，所以 sink 原本只擋 `fake/` 的那道濾網放它過去。2,266 行裡 2,258 行是
+replay 迴音，真流量只有 8 行；而且 state 被抽掉，那 2,258 行誰也標不了 `label`。
+
+修法在 sink（`gateway/src/calibration.js`）：預設槽改成一個 policy 一個檔
+（`jev-calibration/<policy>.jsonl`，因為 `calibrate.mjs` 要求整份檔 provenance
+一致，`policy` 就是其中一欄），並把「不是真流量」的判準從 `fake/` 放寬到
+「沒有 provider 或 provider 是 unknown/fake」——每條部署路徑都走 `buildGateway`，
+它一定會填 provider，所以沒填＝harness。舊檔存成
+`jev-calibration.jsonl.replay-polluted.archive`，8 行真樣本已依 policy 搬進新槽。
+`calibrate.mjs` 對每個新檔的失敗階段從 `provenance`（無解）變成 `validate`
+（缺 `label`，填了就能評分）。
 
 ### 本機（Mac mini M4）同病，2026-09-23 已修
 
