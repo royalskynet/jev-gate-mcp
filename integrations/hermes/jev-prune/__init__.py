@@ -62,15 +62,6 @@ def _ledger_path() -> Optional[Path]:
         return Path.home() / ".hermes" / "logs" / "jev-prune.jsonl"
 
 
-def _ledger_path() -> Optional[Path]:
-    try:
-        from hermes_constants import get_hermes_home  # type: ignore
-
-        return get_hermes_home() / "logs" / "jev-prune.jsonl"
-    except Exception:
-        return Path.home() / ".hermes" / "logs" / "jev-prune.jsonl"
-
-
 def _log(entry: Dict[str, Any]) -> None:
     """One JSONL line per judged-prunable call, keep or drop. A middleware that fires and
     keeps everything is otherwise indistinguishable from one that never loaded."""
@@ -250,6 +241,36 @@ def _selfcheck() -> None:
     # `request` is the execution payload key, not the user's request: reading it would
     # both miss the real binding and couple this plugin to a kwarg that breaks dispatch
     assert _request_of({"request": {"command": "ls -la"}}) == ""
+
+    # the middleware calls next_call exactly once and gets the real result back,
+    # whatever the prune decides (post-processing failure must not re-dispatch)
+    made = []
+    out = _on_tool_execution(
+        tool_name="terminal",
+        user_request="r",
+        args={"command": "ls"},
+        next_call=lambda args: made.append(args) or "z" * (max(_PRE_GATE_CHARS, 16000) + 100),
+    )
+    assert len(made) == 1, "next_call must fire exactly once"
+    assert isinstance(out, str)
+
+    # the ledger never carries request/result/credentials — only counts and reasons
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        old = os.environ.get("JEV_PRUNE_LEDGER")
+        os.environ["JEV_PRUNE_LEDGER"] = str(Path(td) / "logs" / "jev-prune.jsonl")
+        try:
+            _prune_result("terminal", {"user_request": "r"}, big, run=lambda _p: _Proc(dropped))
+        finally:
+            if old is None:
+                os.environ.pop("JEV_PRUNE_LEDGER", None)
+            else:
+                os.environ["JEV_PRUNE_LEDGER"] = old
+        entries = [json.loads(l) for l in (Path(td) / "logs" / "jev-prune.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert entries, "a judged call must leave a ledger line"
+        for e in entries:
+            assert "request" not in e and "result" not in e and "key" not in e, e
     print("jev-prune selfcheck OK")
 
 
