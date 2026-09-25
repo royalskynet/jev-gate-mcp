@@ -31,7 +31,6 @@
 import { compactMessages } from '../src/compact.js';
 import { askerFor, backendFor, compactAnthropic } from './compact-anthropic.mjs';
 import { ENV, fillEnv } from './env.mjs';
-import { homedir } from 'node:os';
 
 let LEDGER = '';
 
@@ -60,8 +59,9 @@ export let ENABLED = true;
  * ponytail: the defaults live here alone, so the two callers cannot drift.
  */
 export function refreshConfig() {
-  LEDGER = `${ENV.HOME || homedir()}/.openclaw/state/jev-compact.log`;
-  CONFIG.apiKeyFile = `${ENV.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`;
+  LEDGER = `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-compact.log`;
+  // Same override as hooks/jev.js, so one JEV_API_KEY_FILE points both at a Jev-only key.
+  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENROUTER_API_KEY.txt`;
   // Compact when the session passes this much of its context window. This is
   // the "fast" in fast compaction: acting at 60% costs one cheap pass, acting
   // at 100% costs a summary of everything.
