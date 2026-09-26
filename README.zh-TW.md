@@ -433,6 +433,16 @@ openclaw plugins inspect jev-gate --runtime --json   # hookCount 要是 1，不�
 逃生開關 `JEV_OPENCLAW_TRIAGE=off`。每次決策——不論有沒有改——都往
 `~/.openclaw/logs/jev-gate.jsonl` 寫一行。
 
+Hermes 裁剪與 OpenClaw 路由的統一觀測報表：
+
+```sh
+node scripts/savings-report-hermes-jev-prune.mjs
+node scripts/savings-report-hermes-jev-prune.mjs --json
+```
+
+報表並列兩種機制，不把裁剪字元與降級次數硬加成虛假的總數。OpenClaw ledger
+目前沒有 token 與模型價格，所以只報 triage／降級命中率，淨成本節省標為 unknown。
+
 ### Hermes：`integrations/hermes/jev-prune/`
 
 `tool_execution` middleware：包住真正的 tool 呼叫，回傳修剪過的結果。judge 沒有

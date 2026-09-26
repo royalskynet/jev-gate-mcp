@@ -10,6 +10,11 @@
  * no summarisation pass and no paraphrase. What survives is byte-for-byte what
  * was there.
  *
+ * Two backends, one per transcript shape, picked per call (see
+ * `./compact-anthropic.mjs`): Anthropic content blocks go to the vendored
+ * fast-jev-compaction core, OpenAI `tool_calls` go to `../src/compact.js`.
+ * `JEV_COMPACT_BACKEND=anthropic|openai` pins one.
+ *
  * The rules come from `../src/compact.js` and are a contract, not tuning:
  *   - user/assistant prose is never dropped or truncated, only tool call and
  *     tool result payloads may go;
@@ -24,6 +29,7 @@
  * Disable one. `JEV_COMPACT_ENABLED=0` turns this one off.
  */
 import { compactMessages } from '../src/compact.js';
+import { askerFor, backendFor, compactAnthropic } from './compact-anthropic.mjs';
 import { ENV, fillEnv } from './env.mjs';
 
 let LEDGER = '';
@@ -38,6 +44,7 @@ export const CONFIG = {
   pinLast: 6,
   minReductionChars: 4000,
   askChars: 1200,
+  backend: 'auto',
 };
 
 /** Whether the module answers `session.compact` at all; `JEV_COMPACT_ENABLED=0` turns it off. */
@@ -64,6 +71,8 @@ export function refreshConfig() {
   // How much of one call/result pair the judge is shown. The judgment is
   // "is this still needed", which the head of a payload answers.
   CONFIG.askChars = Number(ENV.JEV_COMPACT_ASK_CHARS ?? 1200);
+  // 'auto' detects the shape per transcript; 'anthropic'/'openai' pin a backend.
+  CONFIG.backend = ENV.JEV_COMPACT_BACKEND ?? 'auto';
   ENABLED = ENV.JEV_COMPACT_ENABLED !== '0';
 }
 refreshConfig();
@@ -86,6 +95,7 @@ function hydrate($) {
         JEV_COMPACT_MIN_REDUCTION: await $.env.get('JEV_COMPACT_MIN_REDUCTION'),
         JEV_COMPACT_PIN_LAST: await $.env.get('JEV_COMPACT_PIN_LAST'),
         JEV_COMPACT_ASK_CHARS: await $.env.get('JEV_COMPACT_ASK_CHARS'),
+        JEV_COMPACT_BACKEND: await $.env.get('JEV_COMPACT_BACKEND'),
       });
     } catch {
       /* no `$.env` (Node): ENV already came from process.env */
@@ -238,20 +248,23 @@ export const register = (on, options = {}) => {
       return next(e);
     }
     const request = userRequestOf(messages);
-    const out = await compactMessages({
-      messages,
-      minReductionChars: CONFIG.minReductionChars,
-      pinFirst: CONFIG.pinFirst,
-      pinLast: CONFIG.pinLast,
-      judgeHeadChars: CONFIG.askChars,
-      judge: (pair) => judgePair($, key, request, pair),
-    });
+    const backend = CONFIG.backend === 'auto' ? backendFor(messages) : CONFIG.backend;
+    const out = backend === 'anthropic'
+      ? await compactAnthropic({ messages, config: CONFIG, asker: askerFor((url, init) => $.http.fetch(url, init), key) })
+      : await compactMessages({
+        messages,
+        minReductionChars: CONFIG.minReductionChars,
+        pinFirst: CONFIG.pinFirst,
+        pinLast: CONFIG.pinLast,
+        judgeHeadChars: CONFIG.askChars,
+        judge: (pair) => judgePair($, key, request, pair),
+      });
     const before = JSON.stringify(messages).length;
     if (!out.compacted) {
-      await appendLedger($, `jev-compact: fell back to built-in (reducedBy ${out.reducedBy ?? 0} of ${before} chars, floor ${CONFIG.minReductionChars})`);
+      await appendLedger($, `jev-compact: fell back to built-in (backend=${backend}, reducedBy ${out.reducedBy ?? 0} of ${before} chars, floor ${CONFIG.minReductionChars}${out.reason ? `, ${out.reason}` : ''})`);
       return next(e);
     }
-    const line = `jev-compact: ${before} → ${before - (out.reducedBy ?? 0)} chars, ${out.reducedBy} dropped, ${out.messages.length}/${messages.length} messages, verbatim, trigger=${e?.trigger ?? '?'}`;
+    const line = `jev-compact: backend=${backend}, ${before} → ${before - (out.reducedBy ?? 0)} chars, ${out.reducedBy} dropped, ${out.messages.length}/${messages.length} messages, verbatim, trigger=${e?.trigger ?? '?'}`;
     $.ui.log(line);
     await appendLedger($, line);
     return { messages: out.messages };

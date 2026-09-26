@@ -408,6 +408,33 @@ one System One judgment per tool call/result pair (~350 in / ~35 out tokens,
 | pinned recent turns | `JEV_COMPACT_PIN_LAST` | 6 |
 | payload head shown to the judge | `JEV_COMPACT_ASK_CHARS` | 1,200 |
 | off switch | `JEV_COMPACT_ENABLED=0` | on |
+| backend | `JEV_COMPACT_BACKEND` | `auto` (`anthropic` / `openai` pin one) |
+
+#### Two backends, one per transcript shape
+
+The two hosts do not agree on what a transcript is:
+
+| host | shape | paired by | backend |
+|---|---|---|---|
+| Claude Code | `SessionMessage` — `{role, text, toolUses[], toolResults?[]}` | `tool_use_id` | `agent-glue/vendor/fast-jev` (vendored fast-jev-compaction) |
+| Codex | `assistant.tool_calls[]` + `{role:'tool', tool_call_id}` | `tool_call_id` | `agent-glue/src/compact.js` |
+
+`agent-glue/claude/compact-anthropic.mjs` picks per call — it looks for
+`toolUses`/`toolResults`, then for `tool_calls`/`role:'tool'`, and defaults to
+`anthropic` (a transcript with neither has no tool payloads to drop). The
+ledger line names the backend that ran.
+
+Why this exists: `agent-glue/src/compact.js` only ever knew the Codex shape, so
+on Claude Code it paired **nothing** and every pass reduced by 0 chars — and
+said so as a tidy "fell back to built-in", which is what a working fallback
+also looks like. A Jev compaction had never once succeeded on that host.
+`tests/agent-glue/compact-backend.test.mjs` pins both directions, the failing
+one included.
+
+The Anthropic backend is vendored, not re-implemented: it already does state
+fitting, request splitting and head-truncation, and it talks to OpenRouter's
+Decisions endpoint with `zdr: true, data_collection: deny`. Refresh it with
+`node scripts/vendor-fast-jev.mjs`; see `agent-glue/vendor/fast-jev/VENDORED.md`.
 
 The contract is `agent-glue/src/compact.js` and is not tuning: user/assistant
 prose is never dropped or truncated, a dropped call and its result go together,
@@ -424,7 +451,8 @@ still needed" is not answerable from a tool name.
 yields: at `session.start` it reads `~/.claude/settings.json`, and if
 `fast-jev-compaction@…` is still enabled it stands down and says so in
 `~/.openclaw/state/jev-compact.log`. Disable the standalone plugin to let this
-one run.
+one run — there is nothing left to lose by doing so, since its core is what the
+Anthropic backend here runs.
 
 ```sh
 npm run agents:acceptance   # plugin validate, full tests, build, gateway, both host smokes
