@@ -80,5 +80,6 @@ export async function compactAnthropic({ messages, config, asker }) {
     reducedBy,
     reason: '',
     stats: out.stats,
+    decisions: out.decisions,
   };
 }
