@@ -40,6 +40,7 @@ export const CONFIG = {
   // Every field below is filled by `refreshConfig`; see its comment for why.
   apiKeyFile: '',
   compactAtPercent: 60,
+  compactAtTokens: 200000,
   pinFirst: 1,
   pinLast: 6,
   minReductionChars: 4000,
@@ -58,12 +59,17 @@ export let ENABLED = true;
  * ponytail: the defaults live here alone, so the two callers cannot drift.
  */
 export function refreshConfig() {
-  LEDGER = `${ENV.HOME}/.openclaw/state/jev-compact.log`;
-  CONFIG.apiKeyFile = `${ENV.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`;
+  LEDGER = `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-compact.log`;
+  // Same override as hooks/jev.js, so one JEV_API_KEY_FILE points both at a Jev-only key.
+  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENROUTER_API_KEY.txt`;
   // Compact when the session passes this much of its context window. This is
   // the "fast" in fast compaction: acting at 60% costs one cheap pass, acting
   // at 100% costs a summary of everything.
   CONFIG.compactAtPercent = Number(ENV.JEV_COMPACT_AT_PERCENT ?? 60);
+  // Absolute ceiling, whichever comes first. A percentage alone scales with
+  // the window: 60% of a 1M window is 600k, far past where long-context
+  // quality falls off. 0 disables the ceiling.
+  CONFIG.compactAtTokens = Number(ENV.JEV_COMPACT_AT_TOKENS ?? 200000);
   // Below this the pass is not worth replacing the history for; the host's
   // own compaction runs instead.
   CONFIG.minReductionChars = Number(ENV.JEV_COMPACT_MIN_REDUCTION ?? 4000);
@@ -89,9 +95,12 @@ function hydrate($) {
     try {
       fillEnv({
         HOME: await $.env.get('HOME'),
+        USERPROFILE: await $.env.get('USERPROFILE'),
         OPENROUTER_API_KEY: await $.env.get('OPENROUTER_API_KEY'),
+        JEV_API_KEY_FILE: await $.env.get('JEV_API_KEY_FILE'),
         JEV_COMPACT_ENABLED: await $.env.get('JEV_COMPACT_ENABLED'),
         JEV_COMPACT_AT_PERCENT: await $.env.get('JEV_COMPACT_AT_PERCENT'),
+        JEV_COMPACT_AT_TOKENS: await $.env.get('JEV_COMPACT_AT_TOKENS'),
         JEV_COMPACT_MIN_REDUCTION: await $.env.get('JEV_COMPACT_MIN_REDUCTION'),
         JEV_COMPACT_PIN_LAST: await $.env.get('JEV_COMPACT_PIN_LAST'),
         JEV_COMPACT_ASK_CHARS: await $.env.get('JEV_COMPACT_ASK_CHARS'),
@@ -113,16 +122,21 @@ const CRITERIA = {
   drop: 'The payload has served its purpose: exploratory listing, a search that led nowhere, output already summarised into the conversation, or a check that has since been superseded.',
 };
 
-/** Resolve the provider key: plugin option, env, then the key file. */
+/**
+ * Resolve the provider key: plugin option, the key file, then env — file before
+ * env, as prune.js does. An inherited stale OPENROUTER_API_KEY used to beat a
+ * rotated JEV_API_KEY_FILE, so every judge call 401'd and failed open to keep:
+ * compaction "ran" and reduced nothing.
+ */
 export async function apiKey($, options = {}) {
   if (typeof options.apiKey === 'string' && options.apiKey) return options.apiKey;
-  if (ENV.OPENROUTER_API_KEY) return ENV.OPENROUTER_API_KEY;
   try {
-    const text = await $.fs.read(options.keyFile ?? CONFIG.apiKeyFile);
-    return String(text).trim() || null;
+    const text = String(await $.fs.read(options.keyFile ?? CONFIG.apiKeyFile)).trim();
+    if (text) return text;
   } catch {
-    return null;
+    /* fall through to the environment */
   }
+  return ENV.OPENROUTER_API_KEY || null;
 }
 
 /**
@@ -209,6 +223,15 @@ export function rivalCompactor(settings = {}) {
   return Object.entries(enabled).some(([name, on]) => on === true && name.startsWith('fast-jev-compaction@'));
 }
 
+/**
+ * The auto-trigger: past `compactAtPercent` of the window, or past
+ * `compactAtTokens` absolute, whichever comes first. Pure so it is testable.
+ */
+export function shouldCompact(context = {}) {
+  if ((context?.percent ?? 0) >= CONFIG.compactAtPercent) return true;
+  return CONFIG.compactAtTokens > 0 && (context?.tokens ?? 0) >= CONFIG.compactAtTokens;
+}
+
 /** @type {import('claude-code').Register} */
 export const register = (on, options = {}) => {
   let compacting = false;
@@ -220,14 +243,14 @@ export const register = (on, options = {}) => {
   on('session.start', async ($, e, next) => {
     await hydrate($);
     try {
-      const settings = JSON.parse(await $.fs.read(`${ENV.HOME}/.claude/settings.json`));
+      const settings = JSON.parse(await $.fs.read(`${ENV.HOME || ENV.USERPROFILE}/.claude/settings.json`));
       standDown = rivalCompactor(settings);
     } catch {
       standDown = false; // unreadable settings is not a reason to stop working
     }
     await appendLedger($, standDown
       ? 'jev-compact: standing down — fast-jev-compaction is also enabled; disable one of the two'
-      : `jev-compact: registered (at ${CONFIG.compactAtPercent}%, pinLast ${CONFIG.pinLast}, enabled=${ENABLED})`);
+      : `jev-compact: registered (at ${CONFIG.compactAtPercent}% or ${CONFIG.compactAtTokens} tokens, pinLast ${CONFIG.pinLast}, enabled=${ENABLED})`);
     return next(e);
   });
 
@@ -277,7 +300,7 @@ export const register = (on, options = {}) => {
     if (!ENABLED || standDown || compacting) return next(e);
     try {
       const { context } = await $.session.usage();
-      if ((context?.percent ?? 0) < CONFIG.compactAtPercent) return next(e);
+      if (!shouldCompact(context)) return next(e);
       compacting = true;
       await $.session.compact();
     } catch (error) {

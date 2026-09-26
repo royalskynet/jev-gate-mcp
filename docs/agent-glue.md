@@ -32,7 +32,7 @@ skills/jev-agent/   兩端共用操作規則
 - **觀測**：`~/.openclaw/state/jev-prune.log`（每筆被判定的 prune，keep 也寫）。
 - **快速壓縮（已併入本 plugin）**：`agent-glue/claude/compact-hook.mjs` 註冊
   `session.compact`（逐字壓縮）與 `turn.complete`（context 百分比觸發，
-  `JEV_COMPACT_AT_PERCENT` 預設 60）。契約在 `agent-glue/src/compact.js`：
+  `JEV_COMPACT_AT_PERCENT` 預設 60，或 `JEV_COMPACT_AT_TOKENS` 絕對上限預設 200000，先到先觸發）。契約在 `agent-glue/src/compact.js`：
   user/assistant 文字逐字保留、call 與其 result 成對刪、首尾 turn 釘住、
   judge 失敗或縮減未達 `JEV_COMPACT_MIN_REDUCTION`（預設 4000 字元）就把**原始**
   messages 還給 host 走內建壓縮。`JEV_COMPACT_ENABLED=0` 關閉。

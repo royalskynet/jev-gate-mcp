@@ -9,6 +9,7 @@
  */
 import { pruneText, judgeChunks, TARGETS, CONFIG } from '../../hooks/jev.js';
 import { appendFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 /**
  * CLI ledger: separate from the hook ledger by design (#4/#6 option 2). The
@@ -17,7 +18,7 @@ import { appendFileSync } from 'node:fs';
  * hook-liveness probe reads a CLI run as hook activity (hooks/jev.js:358/371/391
  * are the hook-side probe's meaning and stay untouched).
  */
-export const CLI_LEDGER = process.env.JEV_CLI_LEDGER || `${process.env.HOME}/.openclaw/state/jev-prune-cli.log`;
+export const CLI_LEDGER = process.env.JEV_CLI_LEDGER || `${process.env.HOME || homedir()}/.openclaw/state/jev-prune-cli.log`;
 
 /**
  * Append one `jev-cli(...)` line to the CLI ledger. Never throws: a broken

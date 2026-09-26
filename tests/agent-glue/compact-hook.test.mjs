@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  pairState, userRequestOf, judgePair, rivalCompactor, apiKey, CONFIG,
+  pairState, userRequestOf, judgePair, rivalCompactor, apiKey, CONFIG, shouldCompact,
 } from '../../agent-glue/claude/compact-hook.mjs';
 import { compactMessages } from '../../agent-glue/src/compact.js';
 
@@ -71,7 +71,7 @@ test('compact-hook: stands down when the standalone fast-jev plugin is also enab
   assert.equal(rivalCompactor({}), false);
 });
 
-test('compact-hook: the key comes from the option, then env, then the file', async () => {
+test('compact-hook: the key comes from the option, then the file, then env', async () => {
   // This box exports OPENROUTER_API_KEY from the shell profile, so the suite
   // is polluted with a live key on dev machines; pin it to absent so the
   // assertion measures the precedence, not the ambient env (same save/restore
@@ -84,6 +84,12 @@ test('compact-hook: the key comes from the option, then env, then the file', asy
     assert.equal(await apiKey(host, {}), 'from-file');
     const noFile = fakeHost();
     assert.equal(await apiKey(noFile, {}), null);
+    // An inherited stale env key must not beat the dedicated key file: that
+    // ordering made every judge call 401 and compaction reduce nothing.
+    process.env.OPENROUTER_API_KEY = 'stale-env';
+    assert.equal(await apiKey(host, {}), 'from-file');
+    // With no file the environment is still a fallback.
+    assert.equal(await apiKey(noFile, {}), 'stale-env');
   } finally {
     if (prev === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = prev;
@@ -136,4 +142,22 @@ test('compact-hook: judgeHeadChars defaults to 0 — no payload reaches the judg
   });
   assert.equal(JSON.stringify(seen).includes('secret-argument-value'), false);
   assert.equal(JSON.stringify(seen).includes('secret-result-value'), false);
+});
+
+test('compact-hook: on a 1M window the absolute token ceiling fires long before the percentage', () => {
+  // 60% of 1M is 600k — past where long-context quality falls off. The
+  // ceiling is what keeps a big-window session in the good range.
+  const oneM = 1_000_000;
+  assert.equal(shouldCompact({ tokens: 150_000, window: oneM, percent: 15 }), false);
+  assert.equal(shouldCompact({ tokens: CONFIG.compactAtTokens, window: oneM, percent: 20 }), true);
+  // On a 200k window the percentage still fires first (120k < 200k).
+  assert.equal(shouldCompact({ tokens: 120_000, window: 200_000, percent: 60 }), true);
+  // A ceiling of 0 turns the absolute trigger off, leaving the percentage alone.
+  const saved = CONFIG.compactAtTokens;
+  CONFIG.compactAtTokens = 0;
+  try {
+    assert.equal(shouldCompact({ tokens: 900_000, window: oneM, percent: 50 }), false);
+  } finally {
+    CONFIG.compactAtTokens = saved;
+  }
 });
