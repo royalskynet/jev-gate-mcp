@@ -10,7 +10,7 @@
  * context and compaction proceeds — fail-open.
  */
 import { readFileSync, existsSync } from 'node:fs';
-import { readEvent, respond, appendLedger, runtimePath, boundedSummary } from './io.mjs';
+import { readEvent, respond, respondNothing, appendLedger, runtimePath } from './io.mjs';
 
 const event = await readEvent();
 const session = event?.session_id ?? 'anon';
@@ -29,4 +29,11 @@ try {
 }
 
 appendLedger('codex-compact.log', `postcompact\tsession=${session}\trestored=${restored.length}`);
-respond({ decision: 'continue', additionalContext: restored });
+// PostCompact has no `additionalContext` and no `decision` — common fields
+// only. `systemMessage` is the one channel that survives, so the restored
+// prose rides there; empty restoration stays silent.
+if (restored.length) {
+  respond({ systemMessage: `jev-agent restored ${restored.length} verbatim turn(s) after compaction:\n${restored.join('\n')}` });
+} else {
+  respondNothing();
+}

@@ -13,7 +13,7 @@
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { readEvent, respond, appendLedger, runtimePath, REPO_ROOT, RUNTIME_DIR, boundedSummary } from './io.mjs';
+import { readEvent, respondNothing, appendLedger, runtimePath, RUNTIME_DIR, REPO_ROOT, boundedSummary } from './io.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 const event = await readEvent();
@@ -58,4 +58,8 @@ try {
 
 const root = REPO_ROOT;
 void root; // (REPO_ROOT import kept for the runtime path contract)
-respond({ snapshot: path.basename(key), boundedSummary: boundedSummary(snapshot) });
+// PreCompact takes the common fields only (continue/stopReason/systemMessage/
+// suppressOutput). `{snapshot, boundedSummary}` was not a wire Codex knows, so
+// it failed the event. The snapshot is a side effect; nothing to say here.
+void path.basename(key); void boundedSummary(snapshot);
+respondNothing();

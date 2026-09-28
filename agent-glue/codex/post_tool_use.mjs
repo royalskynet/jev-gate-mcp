@@ -8,9 +8,9 @@
  * untouched. Rewriting tool feedback for the model is reserved for a
  * calibrated policy path, never added while all five policies are shadow.
  */
-import { readEvent, respond, appendLedger } from './io.mjs';
+import { readEvent, respondNothing, appendLedger } from './io.mjs';
 
 const event = await readEvent();
 const tool = typeof event?.tool_name === 'string' ? event.tool_name : '?';
 appendLedger('codex-tooluse.log', `posttool\t${tool}\tadvisory`);
-respond({ decision: 'allow' });
+respondNothing(); // PostToolUse takes only `block`; silence is the advisory no-op

@@ -13,7 +13,7 @@
  * status quo" and the notice says so. It never guesses a tier without a Jev
  * answer.
  */
-import { readEvent, respond, appendLedger, boundedSummary } from './io.mjs';
+import { readEvent, respondContext, appendLedger, boundedSummary } from './io.mjs';
 import { triage } from '../src/triage.js';
 import { liveTransport } from '../src/live.js';
 
@@ -44,5 +44,5 @@ appendLedger(
 
 // Advisory only: the hook cannot change the model, so it just lets the prompt
 // through with a single-line notice the model can (but need not) act on.
-respond({ decision: 'allow', additionalContext: [{ type: 'text', text: notice }] });
+respondContext('UserPromptSubmit', notice);
 

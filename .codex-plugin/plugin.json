@@ -1,5 +1,5 @@
 {
-  "name": "jev-agent",
+  "name": "jev-gate",
   "description": "Jev agent glue for Codex: advisory route, compaction snapshot/restoration, and completion verification. All decisions are advisory while the five gateway policies stay shadow/uncalibrated.",
-  "hooks": "./hooks.json"
+  "hooks": "./.codex-plugin/hooks.json"
 }

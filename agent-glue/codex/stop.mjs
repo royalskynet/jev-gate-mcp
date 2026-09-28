@@ -14,7 +14,7 @@
  * `pass` always lets the stop through.
  */
 import { readFileSync } from 'node:fs';
-import { readEvent, respond, appendLedger, boundedSummary } from './io.mjs';
+import { readEvent, respond, respondNothing, appendLedger, boundedSummary } from './io.mjs';
 import { verifyCompletion } from '../src/verify.js';
 
 const event = await readEvent();
@@ -62,15 +62,14 @@ appendLedger(
 );
 
 if (!needsRerun) {
-  respond({ decision: 'allow', stop_hook_active: false });
+  respondNothing(); // `block` is the only decision Stop takes; a pass is silence
 } else {
+  // Stop's block carries its text in `reason`, not in an additionalContext array.
   respond({
     decision: 'block',
-    stop_hook_active: true,
-    additionalContext: [
+    reason:
       `Completion verification returned ${verdict.verdict} (${verdict.note}). ` +
-        'Do not claim the task is done on self-report alone. Run one verifiable check ' +
-        '(a command whose output confirms the outcome) and show its raw output before continuing.',
-    ],
+      'Do not claim the task is done on self-report alone. Run one verifiable check ' +
+      '(a command whose output confirms the outcome) and show its raw output before continuing.',
   });
 }
