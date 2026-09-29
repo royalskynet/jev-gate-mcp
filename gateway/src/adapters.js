@@ -99,11 +99,36 @@ export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai
 // the same answer shape as Jev (choice/score/noul with probabilities), so the
 // stateless gateway contract `(state, questions, opts) => result` applies here
 // unchanged — opts is ignored (no model override on local weights).
-export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs } = {}) {
+export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load } = {}) {
   let sessionPromise = null;
+  let idleTimer = null;
+  // Idle unload: release the ONNX session after JEV_LAYA_IDLE_MS (default
+  // 600000ms = 10min) of no calls, so a gateway that triages rarely keeps ~0
+  // resident memory between requests. Laya has no idempotent "release then
+  // reuse" path — `close()` frees the session and the instance must not be
+  // used afterwards — so we drop the cached promise and re-load on the next
+  // call. The timer is unref'd so an idle process can still exit.
+  const idleMs = Math.max(0, Number(process.env.JEV_LAYA_IDLE_MS) || 600000);
+  const unload = async () => {
+    idleTimer = null;
+    const pending = sessionPromise;
+    sessionPromise = null;
+    if (!pending) return;
+    try {
+      const laya = await pending;
+      if (laya?.close) await laya.close();
+    } catch { /* already gone — nothing to release */ }
+  };
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { void unload(); }, idleMs);
+    if (typeof idleTimer.unref === 'function') idleTimer.unref();
+  };
   return async function layaAdapter(state, questions, _opts) {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
     if (!sessionPromise) {
       sessionPromise = (async () => {
+        if (load) return load();
         const { Laya } = await import('@receptron/laya');
         const dir = modelDir || process.env.JEV_LAYA_MODEL_DIR || path.join(os.homedir(), '.jevgate', 'laya-multilingual');
         return Laya.load({ modelDir: dir });
@@ -113,13 +138,17 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs } = {}
       sessionPromise.catch(() => { sessionPromise = null; });
     }
     const laya = await deadline(sessionPromise, timeoutMs, 'laya load');
-    const result = await deadline(laya.systemOne(state, questions), timeoutMs, 'laya systemOne');
-    return {
-      model: result.model,
-      answers: result.answers,
-      usage: result.usage ?? { input_tokens: 0, output_tokens: 0 },
-      latency_ms: null, // local runtime reports no wall time; gateway records its own
-    };
+    try {
+      const result = await deadline(laya.systemOne(state, questions), timeoutMs, 'laya systemOne');
+      return {
+        model: result.model,
+        answers: result.answers,
+        usage: result.usage ?? { input_tokens: 0, output_tokens: 0 },
+        latency_ms: null, // local runtime reports no wall time; gateway records its own
+      };
+    } finally {
+      armIdle();
+    }
   };
 }
 

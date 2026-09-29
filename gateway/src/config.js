@@ -62,7 +62,16 @@ export function buildGateway(cfg = {}) {
     // the rest.
     const layaAdapter = makeLayaAdapter();
     const key = readKey(cfg.apiKeyFile);
-    const fallback = key ? makeOpenrouterAdapter({ apiKey: key, model: cfg.model }) : null;
+    // Pick the fallback adapter by the key's type (inferred from the file
+    // basename, never the value): a typesafe key hitting the OpenRouter
+    // endpoint 401s (fix 9708 class), so a TYPESAFE_ key uses the native
+    // TypeSafe adapter and everything else the OpenRouter adapter.
+    const keyType = path.basename(cfg.apiKeyFile).toUpperCase().includes('TYPESAFE') ? 'typesafe' : 'openrouter';
+    const fallback = key
+      ? (keyType === 'typesafe'
+        ? makeTypesafeAdapter({ apiKey: key, model: cfg.model })
+        : makeOpenrouterAdapter({ apiKey: key, model: cfg.model }))
+      : null;
     rawAdapter = async (state, questions, opts = {}) => {
       try {
         return await layaAdapter(state, questions, opts);
