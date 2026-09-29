@@ -12,7 +12,7 @@
 // ORT memory pressure: `sessionOptions` are passed straight through a receptron
 // `Laya.load({ ..., sessionOptions })` (laya.js:46 spread), and `loadLaya`
 // always sets the CPU-memory-audit knobs that keep resident set size down.
-import { readFile, stat, cp, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, stat, mkdir, mkdtemp, readdir, symlink, rename, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -42,44 +42,52 @@ async function hasAliases(dir) {
   }
 }
 
-// A fresh per-process shadow for one source model dir. Refresh when the source
-// files are newer than our copy (so model/tokenizer updates take effect).
-async function shadowDirFor(src) {
+// One shared shadow per source tokenizer version (keyed by source path +
+// tokenizer size/mtime), never per process: every hook invocation loads Laya,
+// so a per-pid copy of the 500MB+ bundle leaked gigabytes into tmpdir. Only
+// tokenizer.json is rewritten; the ONNX graph and configs are symlinked. The
+// shadow is built in a temp dir and renamed into place so concurrent loaders
+// either win the rename or reuse the winner's copy.
+export async function shadowDirFor(src) {
   const base = path.join(os.tmpdir(), 'jevgate-laya-shadows');
-  const slug = crypto.createHash('sha1').update(path.resolve(src)).digest('hex').slice(0, 12);
-  const dir = path.join(base, `${process.pid}-${slug}`);
+  const srcTok = path.join(src, 'tokenizer', 'tokenizer.json');
+  const st = await stat(srcTok);
+  const slug = crypto.createHash('sha1')
+    .update(`${path.resolve(src)}\0${st.size}\0${st.mtimeMs}`).digest('hex').slice(0, 16);
+  const dir = path.join(base, slug);
+  if (await hasAliases(dir)) return dir;
+
+  await mkdir(base, { recursive: true });
+  const tmp = await mkdtemp(path.join(base, `.tmp-${slug}-`));
   try {
-    const [sTok, sOnnx, xTok, xOnnx] = await Promise.all([
-      stat(path.join(src, 'tokenizer', 'tokenizer.json')),
-      stat(path.join(src, 'laya.onnx')),
-      stat(path.join(dir, 'tokenizer', 'tokenizer.json')).catch(() => null),
-      stat(path.join(dir, 'laya.onnx')).catch(() => null),
-    ]);
-    const fresh = xTok && xOnnx && xTok.mtimeMs >= sTok.mtimeMs && xOnnx.mtimeMs >= sOnnx.mtimeMs;
-    if (fresh) return dir;
-  } catch {
-    // fall through to rebuild
-  }
-  await mkdir(dir, { recursive: true });
-  // Copy the whole bundle, then rewrite only our shadow tokenizer copy.
-  await cp(src, dir, { recursive: true });
-  const tokPath = path.join(dir, 'tokenizer', 'tokenizer.json');
-  const tok = JSON.parse(await readFile(tokPath, 'utf8'));
-  const added = tok.added_tokens ?? [];
-  const byAlias = new Map(added.map((t) => [t.content, t.id]));
-  const present = new Set(added.map((t) => t.content));
-  for (const [name, alias] of ALIASES) {
-    if (present.has(name)) continue;
-    const id = byAlias.get(alias);
-    if (id === undefined) {
-      throw new Error(`tokenizer lacks ${name} and ${alias} — cannot alias ${name}`);
+    await mkdir(path.join(tmp, 'tokenizer'));
+    for (const f of await readdir(src)) {
+      if (f !== 'tokenizer') await symlink(path.resolve(src, f), path.join(tmp, f));
     }
-    added.push({ content: name, id, lstrip: false, rstrip: false, single_word: false, specialized: false, normal: true });
+    for (const f of await readdir(path.join(src, 'tokenizer'))) {
+      if (f !== 'tokenizer.json') await symlink(path.resolve(src, 'tokenizer', f), path.join(tmp, 'tokenizer', f));
+    }
+    const tok = JSON.parse(await readFile(srcTok, 'utf8'));
+    const added = tok.added_tokens ?? [];
+    const byAlias = new Map(added.map((t) => [t.content, t.id]));
+    const present = new Set(added.map((t) => t.content));
+    for (const [name, alias] of ALIASES) {
+      if (present.has(name)) continue;
+      const id = byAlias.get(alias);
+      if (id === undefined) {
+        throw new Error(`tokenizer lacks ${name} and ${alias} — cannot alias ${name}`);
+      }
+      added.push({ content: name, id, lstrip: false, rstrip: false, single_word: false, specialized: false, normal: true });
+    }
+    tok.added_tokens = added;
+    await writeFile(path.join(tmp, 'tokenizer', 'tokenizer.json'), JSON.stringify(tok));
+    await rename(tmp, dir);
+  } catch (err) {
+    await rm(tmp, { recursive: true, force: true });
+    // Lost the race to a concurrent loader: its copy is equivalent.
+    if (await hasAliases(dir)) return dir;
+    throw err;
   }
-  tok.added_tokens = added;
-  await mkdir(path.dirname(tokPath), { recursive: true });
-  const { writeFile } = await import('node:fs/promises');
-  await writeFile(tokPath, JSON.stringify(tok));
   return dir;
 }
 
