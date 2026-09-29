@@ -63,45 +63,19 @@ export function liveJudge() {
 let layaJudgeCache;
 
 /**
- * A local Laya judge for the low-stakes triage questions (difficulty/kind) —
- * 缺口 2 低賭注本地化. Same lazy fail-soft shape as the other live handles:
- * no model dir / failed load -> null, and the caller keeps the cloud answers.
+ * Legacy local judge entry: restricted to the same classification pilot as
+ * the gateway. Other questions fail; difficulty/verification cannot bypass
+ * provider routing through this helper. Loading remains lazy.
  * @returns {Promise<((state, questions)=>Promise<object>) | null>}
  */
 export function localLayaJudge() {
   layaJudgeCache ??= (async () => {
     try {
-      const { loadLaya } = await import('../../gateway/src/laya-loader.js');
-      // Shared loader: resolves JEV_LAYA_MODEL_DIR or the int8 default, adds
-      // the [CLS]/[SEP]/[MASK]/[PAD] tokenizer aliases in a shadow copy, and
-      // passes ORT CPU-memory options — same path as the gateway adapter.
-      const modelDir = ENV.JEV_LAYA_MODEL_DIR || undefined;
-      const laya = await loadLaya({ modelDir });
-      // Idle unload: same contract as gateway makeLayaAdapter — release the
-      // session after JEV_LAYA_IDLE_MS (default 600000ms) of no triage calls.
-      const idleMs = Math.max(0, Number(ENV.JEV_LAYA_IDLE_MS) || 600000);
-      let idleTimer = null;
-      let current = laya;
-      const unload = async () => {
-        idleTimer = null;
-        const inst = current;
-        current = null;
-        if (inst) { try { if (inst.close) await inst.close(); } catch { /* already gone */ } }
-      };
-      const armIdle = () => {
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => { void unload(); }, idleMs);
-        if (typeof idleTimer.unref === 'function') idleTimer.unref();
-      };
+      const { makeLayaAdapter } = await import('../../gateway/src/adapters.js');
+      const { makeLayaRouter } = await import('../../gateway/src/laya-routing.js');
+      const run = makeLayaRouter({ local: makeLayaAdapter({ modelDir: ENV.JEV_LAYA_MODEL_DIR }), cloud: null });
       return async (state, questions) => {
-        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-        try {
-          if (!current) current = await loadLaya({ modelDir });
-          const r = await current.systemOne(state, questions);
-          return r.answers;
-        } finally {
-          armIdle();
-        }
+        return (await run(state, questions)).answers;
       };
     } catch {
       return null; // no local model -> caller keeps the status quo transport answers

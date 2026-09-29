@@ -22,6 +22,8 @@
  * injected so callers control lifetime and so tests can prove bucket-miss.
  */
 
+import { TASK_KIND } from '../../gateway/src/classification-profiles.js';
+
 export const DEFAULT_TRIAGE = {
   // tier ladder, index 0 is the cheapest; the decision never lands cheaper
   // than the floor allows. `null` (status quo) is a valid outcome.
@@ -143,16 +145,7 @@ export function triageQuestions(catalog = []) {
         'hard — large or unfamiliar scope, open-ended, lots of context, high chance something breaks if rushed',
       ],
     },
-    kind: {
-      type: 'choice',
-      instructions: 'What kind of task is this? Pick the single best fit.',
-      criteria: {
-        coding: 'writing, editing, debugging or reasoning about code',
-        writing: 'prose, docs, content, summaries, review of writing',
-        research: 'reading, searching, gathering and synthesizing information',
-        general: 'anything else — planning, meta, mixed or unclear',
-      },
-    },
+    kind: TASK_KIND,
     costly_mistake: {
       type: 'noul',
       instructions: 'Is a mistake here likely to be costly — e.g. destructive, irreversible, on production, involving secrets, payment or user data?',
@@ -240,28 +233,9 @@ export async function triage(input = {}, deps = {}) {
     return { ...base, unchanged: true, tier: null, specialty: null, confidence: null, skills: [], failOpen: true, notice: 'transport-fail-open' };
   }
 
-  // Localization (缺口 2, 低賭注): when a `localJudge` is injected, run the
-  // low-stakes difficulty/kind questions through the local Laya model and keep
-  // only the costly_mistake (and skill) answers on the cloud jev transport. The
-  // local judge is advisory and fail-open — if it is absent or throws, the
-  // remote answers (res.answers) stand unchanged. decideTier's floor rules are
-  // verbatim untouched: they run over whichever answer set survived.
-  let answers = res.answers;
-  const localJudge = deps.localJudge;
-  if (localJudge) {
-    try {
-      const qs = triageQuestions();
-      const state = featuresOnly
-        ? { features: { char_bucket: bucket, has_danger_word: danger, has_code: textFeatures(input.text).has_code } }
-        : { user_request: slice, char_bucket: bucket };
-      const local = await localJudge(state, { difficulty: qs.difficulty, kind: qs.kind });
-      if (local && typeof local === 'object' && (local.difficulty || local.kind)) {
-        answers = { ...res.answers, ...local };
-      }
-    } catch {
-      // local judge failed -> keep the cloud answers; never block on advisory.
-    }
-  }
+  // Provider routing belongs to the gateway. Never override Jev's difficulty
+  // or risk with a second, uncalibrated local judgment after the cloud call.
+  const answers = res.answers;
 
   const decision = decideTier(answers, { cfg, tierNames: tiers, danger });
   const cheapTier = tiers[0];

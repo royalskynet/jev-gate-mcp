@@ -10,6 +10,7 @@ import { JevGateway } from './gateway.js';
 import { makeBreaker } from './breaker.js';
 import { makeTelemetry } from './telemetry.js';
 import { makeMetrics } from './metrics.js';
+import { makeLayaRouter } from './laya-routing.js';
 
 export const DEFAULTS = Object.freeze({
   provider: process.env.JEV_PROVIDER ?? 'openrouter',
@@ -46,65 +47,41 @@ export function buildGateway(cfg = {}) {
     ? makeFakeAdapter(FakeMode.SUCCESS)
     : () => { throw new Error('invalid fake mode'); };
 
-  // Telemetry sink is created before the adapters so the Laya dual-channel can
-  // emit a `laya_fallback` event on every fallback path (no credentials ever go
+  // Telemetry sink is created before the adapters so the Laya router can
+  // emit route/fallback events (no credentials ever go
   // near it — the allowlist in telemetry.js drops anything not named).
   const telemetry = cfg.telemetry
     ? makeTelemetry({ level: cfg.telemetryLevel, destination: process.stderr })
     : undefined;
   let rawAdapter;
+  let policyAdapter;
+  let policyProvider;
   if (cfg.provider === 'fake') {
     rawAdapter = fake;
   } else if (cfg.provider === 'laya') {
-    // Laya is local and needs no credential. Dual-channel: Laya answers the
-    // request directly; on any Laya failure (load timeout while the bundle
-    // warms, throw, breaker open) the OpenRouter adapter retries once. A Laya
-    // result is used as-is (its answers can still be malformed → the gateway's
-    // per-question validation rejects them, exactly as for a remote provider).
-    // The whole rawAdapter sits inside the breaker, so a throwing Laya opens
-    // the breaker — open state then short-circuits the next call straight to
-    // the fallback until the breaker closes. Both channels share the gateway's
-    // total deadline; the Laya attempt spends part of it on load, the fallback
-    // the rest.
-    const layaAdapter = makeLayaAdapter();
+    // Only fixed, short advisory classifications may use local weights.
+    // Injection is internal JS wiring for offline tests, never MCP arguments.
+    const layaAdapter = cfg.layaAdapter ?? makeLayaAdapter();
     const key = readKey(cfg.apiKeyFile);
     // Pick the fallback adapter by the key's type (inferred from the file
     // basename, never the value): a typesafe key hitting the OpenRouter
     // endpoint 401s (fix 9708 class), so a TYPESAFE_ key uses the native
     // TypeSafe adapter and everything else the OpenRouter adapter.
     const keyType = path.basename(cfg.apiKeyFile).toUpperCase().includes('TYPESAFE') ? 'typesafe' : 'openrouter';
-    const fallback = key
+    policyProvider = keyType;
+    const fallback = cfg.jevAdapter ?? (key
       ? (keyType === 'typesafe'
         ? makeTypesafeAdapter({ apiKey: key, model: cfg.model })
         : makeOpenrouterAdapter({ apiKey: key, model: cfg.model }))
-      : null;
-    const emitFallback = (err) => {
-      // Cost reasons: event= is allowlisted; only classification + provider
-      // + model labels escape. Never state/questions/answers/credentials.
-      telemetry?.record({
-        event: 'laya_fallback',
-        provider: 'laya',
-        resolved_model: cfg.model,
-        error_class: err?.category ?? err?.constructor?.name ?? 'unknown',
-        error_code: err?.code ?? 'ERR_UNKNOWN',
-      });
-    };
-    rawAdapter = async (state, questions, opts = {}) => {
-      try {
-        return await layaAdapter(state, questions, opts);
-      } catch (err) {
-        emitFallback(err);
-        if (!fallback) {
-          // No usable OpenRouter key (checked at startup; a missing file makes
-          // fallback null) → Laya is the only channel; surface its failure so
-          // the gateway fail-closes like any other provider error.
-          throw err;
-        }
-        // OpenRouter failing here → the gateway sees the (classified) error
-        // and fail-closes exactly as today.
-        return fallback(state, questions, opts);
-      }
-    };
+      : null);
+    policyAdapter = fallback ?? (async () => { throw new Error('Jev policy provider has no configured credential'); });
+    rawAdapter = makeLayaRouter({ local: layaAdapter, cloud: fallback,
+      record: cfg.recordRoutingSample,
+      onRoute: ({ local, cloud, fallback: count }) => telemetry?.record({
+        event: count ? 'laya_fallback' : 'provider_route',
+        provider: local && cloud ? 'hybrid' : local ? 'laya' : keyType,
+      }),
+    });
   } else {
     const key = readKey(cfg.apiKeyFile);
     if (cfg.provider === 'typesafe') {
@@ -123,23 +100,28 @@ export function buildGateway(cfg = {}) {
   // auth/invalid-request fail closed for the caller but never take the provider
   // offline (see src/breaker.js).
   const breaker = makeBreaker(rawAdapter, cfg.breaker);
+  // A failed local load must never divert a pinned policy to local weights.
+  const policyBreaker = policyAdapter ? makeBreaker(policyAdapter, cfg.breaker) : breaker;
   const metrics = cfg.metrics ?? makeMetrics();
   const gw = new JevGateway({
     evaluateAdapter: breaker.fire,
-    policyAdapter: breaker.fire,
+    policyAdapter: policyBreaker.fire,
     registry,
     telemetry,
     provider: cfg.provider,
+    policyProvider,
     breakerState: breaker.state,
+    policyBreakerState: policyBreaker.state,
     metrics,
   });
   // Wire a global control handle for operators/admins via env at startup.
   return {
     gateway: gw, registry, cfg, breaker, telemetry, metrics,
     readiness: () => ({
-      ready: breaker.state() !== 'open',
+      ready: breaker.state() !== 'open' && policyBreaker.state() !== 'open',
       provider: cfg.provider,
       breaker_state: breaker.state(),
+      policy_breaker_state: policyBreaker.state(),
       policy_count: registry.ids().length,
     }),
   };

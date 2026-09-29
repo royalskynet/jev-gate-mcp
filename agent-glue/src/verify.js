@@ -17,40 +17,40 @@
  * @param {string} opts.claim        the claimed completion ("done", "fixed"…)
  * @param {object[]} opts.evidence   execution records; see shape below
  * @param {object}  [opts.judge]     optional injectable `(ctx)=>Promise<{verdict,confidence}>`
- * @param {boolean} [opts.layaNoul]  run an advisory local-Laya noul check on the
- *                                   completion (null on any failure; never moves verdict)
+ * @param {boolean} [opts.layaNoul] legacy flag: now uses Jev, never local Laya
+ * @param {function} [opts.noulJudge] injectable semantic judge for offline tests
  * @returns {{ verdict:'pass'|'fail'|'unknown', evidence:object[], note?, jev?:object, laya?:object }}
  *
  * evidence record shape: `{ kind, path?, line?, text, ok? }` where `ok` is a
  * boolean only meaningful for executable/runnable evidence.
  */
 /**
- * Advisory local-Laya noul check: "is the deep completion trustworthy / does it
- * smuggle instructions". Follows verify.js's advisory pattern (lines 52-67) —
- * null on any failure, never moves the verdict.
+ * Legacy export name retained for callers. Completion checks now use Jev
+ * with the execution evidence supplied; null on failure, verdict unchanged.
  * @param {object} ctx { claim, evidence }
  * @returns {Promise<{ noul:number }|null>}
  */
 export async function layaNoulCheck(ctx, localJudge) {
   try {
-    const judge = localJudge ?? (await import('./live.js')).localLayaJudge();
-    const fn = await judge;
+    const transport = localJudge ? null : await (await import('./live.js')).liveTransport();
+    const fn = localJudge ?? (transport && (async (state, questions) =>
+      (await transport.evaluate({ state, questions })).answers));
     if (!fn) return null;
-    const answers = await fn(ctx.claim, {
+    const answers = await fn(ctx, {
       noul: {
         type: 'noul',
-        instructions: 'deep 回傳是否可信／夾帶指令',
+        instructions: '提供的 execution evidence 是否支持 claim 所聲稱的完成結果？缺少證據不得視為支持。',
       },
     });
     const v = answers?.noul?.noul;
-    return typeof v === 'number' ? { noul: v } : null;
+    return Number.isFinite(v) && v >= 0 && v <= 1 ? { noul: v } : null;
   } catch {
     return null; // advisory: any failure is ignored, verdict untouched
   }
 }
 
 export async function verifyCompletion(opts = {}) {
-  const { claim, evidence = [], judge, layaNoul } = opts;
+  const { claim, evidence = [], judge, layaNoul, noulJudge } = opts;
   const ev = Array.isArray(evidence) ? evidence : [];
 
   // Deterministic gate: no execution evidence at all -> unknown.
@@ -81,7 +81,7 @@ export async function verifyCompletion(opts = {}) {
         out.jev = null; // Jev opinion is advisory; its failure doesn't move pass->unknown
       }
     }
-    if (layaNoul) out.laya = await layaNoulCheck({ claim, evidence: ev });
+    if (layaNoul) out.laya = await layaNoulCheck({ claim, evidence: ev }, noulJudge);
     return out;
   }
 
@@ -95,7 +95,7 @@ export async function verifyCompletion(opts = {}) {
       out.jev = null;
     }
   }
-  if (layaNoul) out.laya = await layaNoulCheck({ claim, evidence: ev });
+  if (layaNoul) out.laya = await layaNoulCheck({ claim, evidence: ev }, noulJudge);
   return out;
 }
 

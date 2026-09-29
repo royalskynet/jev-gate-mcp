@@ -208,14 +208,15 @@ test('verify: a Jev judge failure never turns a deterministic pass into unknown'
   assert.equal(r.jev, null);
 });
 
-test('verify: laya noul is advisory, verdict untouched even on failure', async () => {
+test('verify: legacy noul flag is advisory, verdict untouched even on failure', async () => {
   const r = await verifyCompletion({
     claim: 'done',
     evidence: [{ kind: 'Bash', text: 'ok', ok: true }],
     layaNoul: true,
+    noulJudge: async () => { throw new Error('offline judge unavailable'); },
   });
   assert.equal(r.verdict, 'pass', 'laya noul must never change the verdict');
-  assert.ok(r.laya === null || typeof r.laya.noul === 'number', 'advisory result is null or a numeric noul');
+  assert.equal(r.laya, null);
 });
 
 test('verify: layaNoulCheck returns a numeric noul from a working local judge', async () => {

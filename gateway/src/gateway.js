@@ -95,14 +95,16 @@ export class JevGateway {
    * @param {string} [deps.provider] provider label for telemetry
    * @param {()=>string} [deps.breakerState] current breaker state for telemetry
    */
-  constructor({ evaluateAdapter, registry, killSwitch = isKillSwitched, policyAdapter, telemetry, provider, breakerState, metrics }) {
+  constructor({ evaluateAdapter, registry, killSwitch = isKillSwitched, policyAdapter, telemetry, provider, policyProvider, breakerState, policyBreakerState, metrics }) {
     this._eval = evaluateAdapter;
     this._policyEval = policyAdapter ?? evaluateAdapter;
     this._reg = registry;
     this._kill = killSwitch;
     this._tel = telemetry;
     this._provider = provider;
+    this._policyProvider = policyProvider ?? provider;
     this._breakerState = breakerState;
+    this._policyBreakerState = policyBreakerState ?? breakerState;
     this._metrics = metrics;
   }
 
@@ -113,8 +115,8 @@ export class JevGateway {
     if (!this._tel) return fields;
     return this._tel.record({
       correlation_id: fields.correlation_id ?? randomUUID(),
-      provider: this._provider,
-      breaker_state: typeof this._breakerState === 'function' ? this._breakerState() : undefined,
+      provider: fields.tool === 'jev_apply_policy' ? this._policyProvider : this._provider,
+      breaker_state: fields.tool === 'jev_apply_policy' ? this._policyBreakerState?.() : this._breakerState?.(),
       ...fields,
     });
   }
@@ -135,7 +137,9 @@ export class JevGateway {
     const correlationId = randomUUID();
     let result;
     try {
-      result = await deadline(this._eval(state, questions, model ? { model } : {}), LIMITS.deadlineMs);
+      result = await deadline(this._eval(state, questions, {
+        ...(model ? { model } : {}), deadlineAtMs: Date.now() + LIMITS.deadlineMs,
+      }), LIMITS.deadlineMs);
     } catch (e) {
       this._emit({ event: 'evaluate', tool: 'jev_evaluate', correlation_id: correlationId, error_class: 'provider', error_code: e?.code ?? 'ERR_PROVIDER', coverage: 'incomplete' });
       throw ERR.provider(classified(e), isRetryable(e));
@@ -208,7 +212,7 @@ export class JevGateway {
         calibration_status: spec.calibration_status ?? 'unknown',
         evaluation_dataset_version: spec.evaluation_dataset_version ?? null,
         gate: 'deny', coverage: 'incomplete', error_class: 'provider', error_code: e?.code ?? 'ERR_PROVIDER',
-        breaker_state: this._breakerState?.(), ...digests,
+        breaker_state: this._policyBreakerState?.(), ...digests,
       });
       const failed = failClosed(spec, correlation, null, { code: e?.code ?? 'ERR_PROVIDER', message: classified(e) }, digests);
       this._metrics?.recordDecision({ policy: spec.id, outcome: 'deny', mode: spec.mode, coverage: 'incomplete' });
@@ -227,7 +231,7 @@ export class JevGateway {
           calibration_status: spec.calibration_status ?? 'unknown',
           evaluation_dataset_version: spec.evaluation_dataset_version ?? null,
           gate: 'deny', coverage: 'incomplete', error_class: sig.category ?? 'malformed', error_code: sig.code ?? 'ERR_MISSING_ANSWER',
-          breaker_state: this._breakerState?.(), ...digests,
+          breaker_state: this._policyBreakerState?.(), ...digests,
         });
         const failed = failClosed(spec, correlation, result, sig, digests);
         this._metrics?.recordDecision({ policy: spec.id, outcome: 'deny', mode: spec.mode, coverage: 'incomplete', latency_ms: result.latency_ms });
@@ -257,7 +261,7 @@ export class JevGateway {
       resolved_model: result.model ?? null, gate: outcome, shadow_outcome: shadowCapped ? gate : null, coverage: 'complete',
       latency_ms: result.latency_ms ?? null,
       error_class: null,
-      breaker_state: this._breakerState?.(),
+      breaker_state: this._policyBreakerState?.(),
       activation_reason: activation.reason,
       ...digests,
     };
@@ -274,7 +278,7 @@ export class JevGateway {
       policy: spec.id,
       policy_version: spec.version,
       model: result.model ?? spec.model ?? null,
-      provider: this._provider ?? 'unknown',
+      provider: this._policyProvider ?? 'unknown',
       // A sample's dataset is where the SAMPLE came from, not the fixture set
       // the spec was smoke-tested against. Stamping the spec's
       // `synthetic-harness-*` here made calibrate.mjs mark every live record
