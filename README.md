@@ -410,6 +410,8 @@ one System One judgment per tool call/result pair (~350 in / ~35 out tokens,
 | payload head shown to the judge | `JEV_COMPACT_ASK_CHARS` | 1,200 |
 | off switch | `JEV_COMPACT_ENABLED=0` | on |
 | backend | `JEV_COMPACT_BACKEND` | `auto` (`anthropic` / `openai` pin one) |
+| judge endpoint / model | `JEV_ENDPOINT` / `JEV_MODEL` (shared with prune) | OpenRouter decisions / `~typesafe/jev-latest`; a non-OpenRouter endpoint gets no `provider` field |
+| show outcome lines in the session | `JEV_UI_LOG=1` | off — SDK hosts (Happy, desktop) render every `ui.log` as a message; read `~/.openclaw/state/jev-*.log` instead |
 
 #### Two backends, one per transcript shape
 
