@@ -227,7 +227,7 @@ export async function triage(input = {}, deps = {}) {
   const slice = sliceText(input.text, cfg.ask_chars);
   const fingerprint = configFingerprint(cfg);
   const catFp = catalogFingerprint(catalog);
-  const cacheKey = JSON.stringify([slice, bucket, fingerprint, Boolean(input.has_images), Boolean(input.pinned), input.profile ?? 'default', catFp]);
+  const cacheKey = JSON.stringify([slice, bucket, fingerprint, Boolean(input.has_images), Boolean(input.pinned), input.profile ?? 'default', catFp, Boolean(deps.localJudge)]);
 
   const hit = cache.get(cacheKey);
   if (hit) {
@@ -240,7 +240,30 @@ export async function triage(input = {}, deps = {}) {
     return { ...base, unchanged: true, tier: null, specialty: null, confidence: null, skills: [], failOpen: true, notice: 'transport-fail-open' };
   }
 
-  const decision = decideTier(res.answers, { cfg, tierNames: tiers, danger });
+  // Localization (缺口 2, 低賭注): when a `localJudge` is injected, run the
+  // low-stakes difficulty/kind questions through the local Laya model and keep
+  // only the costly_mistake (and skill) answers on the cloud jev transport. The
+  // local judge is advisory and fail-open — if it is absent or throws, the
+  // remote answers (res.answers) stand unchanged. decideTier's floor rules are
+  // verbatim untouched: they run over whichever answer set survived.
+  let answers = res.answers;
+  const localJudge = deps.localJudge;
+  if (localJudge) {
+    try {
+      const qs = triageQuestions();
+      const state = featuresOnly
+        ? { features: { char_bucket: bucket, has_danger_word: danger, has_code: textFeatures(input.text).has_code } }
+        : { user_request: slice, char_bucket: bucket };
+      const local = await localJudge(state, { difficulty: qs.difficulty, kind: qs.kind });
+      if (local && typeof local === 'object' && (local.difficulty || local.kind)) {
+        answers = { ...res.answers, ...local };
+      }
+    } catch {
+      // local judge failed -> keep the cloud answers; never block on advisory.
+    }
+  }
+
+  const decision = decideTier(answers, { cfg, tierNames: tiers, danger });
   const cheapTier = tiers[0];
   // Large context must never downgrade: a big context stays on the standard
   // (non-cheapest) model even for an easy task — saving there is not worth the
@@ -249,12 +272,12 @@ export async function triage(input = {}, deps = {}) {
   const out = {
     ...base,
     tier,
-    specialty: res.answers.kind?.choice ?? null,
+    specialty: answers.kind?.choice ?? null,
     confidence: decision.confidence,
     latency_ms: res.latency_ms ?? (Date.now() - t0),
     cached: false,
     unchanged: tier === null,
-    skills: answerSkills(res.answers, catalog, cfg),
+    skills: answerSkills(answers, catalog, cfg),
     notice: decision.notice,
     catalogFp: catFp,
   };

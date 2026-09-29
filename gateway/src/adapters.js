@@ -3,6 +3,8 @@
 // TypeSafe /v1/systemone shape). Fakes are deterministic and cover the failure
 // space the conformance suite exercises — valid, missing, foreign, malformed,
 // timeout, rate-limit, upstream failure — with zero provider cost.
+import os from 'node:os';
+import path from 'node:path';
 import { JevDecisionModel } from 'jevwire';
 import { ERR, LIMITS } from './core.js';
 
@@ -83,6 +85,52 @@ export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai
   // JevDecisionModel appends `/v1/systemone`; the base must stop at `/api`.
   const m = new JevDecisionModel({ apiKey, baseUrl, model, timeoutMs, maxRetries: LIMITS.maxRetries, fetch: fetchImpl, sleep });
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: opts.model });
+}
+
+// --- Laya: local open-weights Jev (multilingual checkpoint, local model dir) ---
+// No apiKey. `Laya.load({ modelDir })` serves a pre-downloaded bundle from
+// $JEV_LAYA_MODEL_DIR (default ~/.jevgate/laya-multilingual) — never hits the
+// network at runtime, so the first request loads the ONNX session (a few
+// seconds for the 647MB fp16 graph) and stays inside the gateway deadline.
+// On any load failure (missing files / load timeout) this throws and the
+// config-level dual-channel falls back to OpenRouter. One session is reused
+// process-wide (never closed) so concurrency cannot race a release and a warm
+// answer costs one forward pass (~140ms on Apple silicon). `systemOne` returns
+// the same answer shape as Jev (choice/score/noul with probabilities), so the
+// stateless gateway contract `(state, questions, opts) => result` applies here
+// unchanged — opts is ignored (no model override on local weights).
+export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs } = {}) {
+  let sessionPromise = null;
+  return async function layaAdapter(state, questions, _opts) {
+    if (!sessionPromise) {
+      sessionPromise = (async () => {
+        const { Laya } = await import('@receptron/laya');
+        const dir = modelDir || process.env.JEV_LAYA_MODEL_DIR || path.join(os.homedir(), '.jevgate', 'laya-multilingual');
+        return Laya.load({ modelDir: dir });
+      })();
+      // A failed download must not poison every later request: drop the cached
+      // promise so the next call retries the load.
+      sessionPromise.catch(() => { sessionPromise = null; });
+    }
+    const laya = await deadline(sessionPromise, timeoutMs, 'laya load');
+    const result = await deadline(laya.systemOne(state, questions), timeoutMs, 'laya systemOne');
+    return {
+      model: result.model,
+      answers: result.answers,
+      usage: result.usage ?? { input_tokens: 0, output_tokens: 0 },
+      latency_ms: null, // local runtime reports no wall time; gateway records its own
+    };
+  };
+}
+
+function deadline(promise, ms, what) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(ERR.timeout(`${what} exceeded ${ms}ms`)), ms);
+    promise.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
 }
 
 // --- Deterministic fakes ---

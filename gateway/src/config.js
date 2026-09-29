@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { killSwitchGlobal, killSwitchPolicy } from './core.js';
 import { loadRegistry } from './registry.js';
-import { makeFakeAdapter, FakeMode, makeOpenrouterAdapter, makeTypesafeAdapter } from './adapters.js';
+import { makeFakeAdapter, FakeMode, makeLayaAdapter, makeOpenrouterAdapter, makeTypesafeAdapter } from './adapters.js';
 import { JevGateway } from './gateway.js';
 import { makeBreaker } from './breaker.js';
 import { makeTelemetry } from './telemetry.js';
@@ -49,6 +49,35 @@ export function buildGateway(cfg = {}) {
   let rawAdapter;
   if (cfg.provider === 'fake') {
     rawAdapter = fake;
+  } else if (cfg.provider === 'laya') {
+    // Laya is local and needs no credential. Dual-channel: Laya answers the
+    // request directly; on any Laya failure (load timeout while the bundle
+    // warms, throw, breaker open) the OpenRouter adapter retries once. A Laya
+    // result is used as-is (its answers can still be malformed → the gateway's
+    // per-question validation rejects them, exactly as for a remote provider).
+    // The whole rawAdapter sits inside the breaker, so a throwing Laya opens
+    // the breaker — open state then short-circuits the next call straight to
+    // the fallback until the breaker closes. Both channels share the gateway's
+    // total deadline; the Laya attempt spends part of it on load, the fallback
+    // the rest.
+    const layaAdapter = makeLayaAdapter();
+    const key = readKey(cfg.apiKeyFile);
+    const fallback = key ? makeOpenrouterAdapter({ apiKey: key, model: cfg.model }) : null;
+    rawAdapter = async (state, questions, opts = {}) => {
+      try {
+        return await layaAdapter(state, questions, opts);
+      } catch (err) {
+        if (!fallback) {
+          // No usable OpenRouter key (checked at startup; a missing file makes
+          // fallback null) → Laya is the only channel; surface its failure so
+          // the gateway fail-closes like any other provider error.
+          throw err;
+        }
+        // OpenRouter failing here → the gateway sees the (classified) error
+        // and fail-closes exactly as today.
+        return fallback(state, questions, opts);
+      }
+    };
   } else {
     const key = readKey(cfg.apiKeyFile);
     if (cfg.provider === 'typesafe') {

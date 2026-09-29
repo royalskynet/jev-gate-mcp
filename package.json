@@ -23,6 +23,7 @@
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "@prometheus-io/client": "^0.16.1",
+    "@receptron/laya": "^0.1.2",
     "ajv": "^8.20.0",
     "jevwire": "github:Brainwires/jevwire#main",
     "opossum": "^9.0.0",

@@ -15,7 +15,7 @@
  */
 import { readEvent, respondContext, appendLedger, boundedSummary } from './io.mjs';
 import { triage } from '../src/triage.js';
-import { liveTransport } from '../src/live.js';
+import { liveTransport, localLayaJudge } from '../src/live.js';
 
 const event = await readEvent();
 const prompt = typeof event?.prompt === 'string' ? event.prompt : '';
@@ -23,9 +23,11 @@ const prompt = typeof event?.prompt === 'string' ? event.prompt : '';
 // The live gateway when the provider is configured, otherwise undefined -> the
 // triage's own fail-open path (status quo, one ledger line saying so).
 const transport = (await liveTransport()) ?? undefined;
+// 缺口 2 低賭注本地化: local Laya answers difficulty/kind (fail-soft).
+const localJudge = (await localLayaJudge()) ?? undefined;
 const decision = await triage(
   { text: prompt, contextChars: Number(process.env.JEV_CTX_CHARS ?? 0) },
-  { transport },
+  { transport, localJudge },
 );
 
 const notice =

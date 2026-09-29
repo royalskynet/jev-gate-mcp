@@ -60,8 +60,36 @@ export function liveJudge() {
   return judgeCache;
 }
 
+let layaJudgeCache;
+
+/**
+ * A local Laya judge for the low-stakes triage questions (difficulty/kind) —
+ * 缺口 2 低賭注本地化. Same lazy fail-soft shape as the other live handles:
+ * no model dir / failed load -> null, and the caller keeps the cloud answers.
+ * @returns {Promise<((state, questions)=>Promise<object>) | null>}
+ */
+export function localLayaJudge() {
+  layaJudgeCache ??= (async () => {
+    try {
+      const { Laya } = await import('@receptron/laya');
+      const { default: path } = await import('node:path');
+      const { default: os } = await import('node:os');
+      const dir = ENV.JEV_LAYA_MODEL_DIR || path.join(os.homedir(), '.jevgate', 'laya-multilingual');
+      const laya = await Laya.load({ modelDir: dir });
+      return async (state, questions) => {
+        const r = await laya.systemOne(state, questions);
+        return r.answers;
+      };
+    } catch {
+      return null; // no local model -> caller keeps the status quo transport answers
+    }
+  })();
+  return layaJudgeCache;
+}
+
 /** Test seam: drop the memoized provider handles. */
 export function resetLive() {
   transportPromise = undefined;
   judgeCache = undefined;
+  layaJudgeCache = undefined;
 }

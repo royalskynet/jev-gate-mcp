@@ -133,6 +133,9 @@ export async function spawnDecision(input = {}, deps = {}) {
   // one. Tests inject their own; production gets the in-process gateway (null
   // when there is no credential, which still fail-opens — but on purpose).
   const transport = deps.transport ?? (await liveTransport()) ?? undefined;
+  // 缺口 2 低賭注本地化: local Laya answers difficulty/kind (fail-soft; null
+  // keeps the cloud answers). Tests inject their own judge through `deps`.
+  const localJudge = deps.localJudge ?? (await localLayaJudge()) ?? undefined;
   const decision = await triage(
     {
       text: input.prompt ?? '',
@@ -141,7 +144,7 @@ export async function spawnDecision(input = {}, deps = {}) {
       has_images: input.has_images ?? false,
       skills: catalog,
     },
-    { ...deps, transport },
+    { ...deps, transport, localJudge },
   );
   if (decision.unchanged || decision.failOpen) {
     return { change: false, model: undefined, skills: decision.skills, decision, reason: 'status-quo' };
