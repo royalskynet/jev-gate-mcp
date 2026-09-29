@@ -2100,3 +2100,50 @@ git 已同步。接續者先修 A（adapters.js sigmoid＋單測），驗證需�
 - 英文移至 `README.en.md`；`README.zh-TW.md` 保留為相容入口。原本完整內容移至
   `docs/REFERENCE.en.md`／`docs/REFERENCE.zh-TW.md`，更新相對連結。
 - 只改文件；檢查文件連結、語言入口及 diff，不重跑模型或新增付費呼叫。
+
+## 29. 權重落地、runtime 選型與量測順序（2026-09-30）
+
+- **權重落地**：`scripts/fetch-laya-bundle.mjs` 合併進 main（ff 到 324b3b7），本機
+  M4 跑完落 `~/.jevgate/laya-multilingual-int8`，`laya.onnx` 540,524,682 bytes /
+  sha256 `33f86af3…46baf`，與 §24 記的指紋一致。`--self-check` pass，
+  `laya-bundle-rename` + `laya-loader` 測試 5 通過 0 失敗。
+  `laya-routing-smoke` 7/8，未命中的是 §24 已記的「你們的營業時間是幾點？」→ billing，
+  屬重現既有行為，不是退步。
+- `JEV_PROVIDER=laya` 寫在 `~/.claude/settings.json` 的 `env`（stdio MCP 子程序繼承），
+  **下次 session 啟動才生效**，不為此重啟。
+
+### 上游共識修正 §24 的「中文」歸因
+
+DEVLOG §24 引 issue #124 的「中文繼續用 multilingual」仍成立，但根因描述要換：
+
+- [#156](https://github.com/NandhaKishorM/laya/issues/156)（closed）：noul 崩壞的觸發是
+  **option 標籤字**（`true`/`false`、`yes`/`no`），不是語言也不是位置；`positive`/`negative`
+  正常。§26 問題 B 把它歸到「`temperature_by_options` 空」是不完整的。
+- [#131](https://github.com/NandhaKishorM/laya/issues/131)（open）：multilingual 的 `score`
+  有位置偏誤，英文 first-listed 0/290 被選，「mass follows the slot, not the text」。
+- [#127](https://github.com/NandhaKishorM/laya/issues/127)（open PR）：上游正以
+  `lang_temperatures` 修中文校正並收入 `research/eval_zh/`。中文校正等上游，不自訓。
+
+`laya-routing.js` 的閘門天生躲過兩個雷：只放行兩個寫死 schema（都是 `choice`，標籤語意化
+如 `coding`／`billing`／`no_match`，踩不到 #156）、沒有 `score` 題型（踩不到 #131）、
+且 `Policies bypass this router`，所以 `completion-claims` 走的 noul 從不進本機。
+`general`／`no_match` 都排最後，#131 的位置偏誤只會多退雲端——失敗方向是花錢不是答錯。
+
+### 不改用 MLX
+
+ZLHAOOO/laya-mlx-zh 是 MLX + safetensors。node 側 MLX binding 存在
+（frost-beta/node-mlx、mlx-node、mlx-ts），但那些解的是「跑 decoder LLM」。Laya 是
+non-autoregressive encoder＋自訂 decision head，輸入五個張量（`input_ids`／`attention_mask`／
+`marker_pos`／`marker_mask`／`qtype`），`laya_mlx` 那包裝的就是 typed-question 打包與溫度校正。
+走 MLX 等於用 `mx.*` 原語在 JS 重寫這層，並作廢已踩完的 tokenizer 別名／shadow 共用／
+閒置卸載／`act_logits` 改名四個坑與 `laya-loader.test.mjs`。ONNX 路的那層在圖裡面。
+瓶頸不在推論速度（warm ~20ms），重估時機＝MLX 版出現非 heads-only 的圖結構改動。
+
+### 量測順序：corpus 先於換權重
+
+`recordRoutingSample` 唯一呼叫點是 `laya-routing.js:28` 的 `makeLayaRouter`，而它只在
+`config.js:61` 的 `cfg.provider === 'laya'` 分支建立。所以「先開 corpus 量，再決定換不換
+權重」是做不到的——沒跑 laya 就沒有 router，沒 router 就沒 corpus。而 laya 分支本身就是
+hybrid（local 先答、cloud 當 fallback 兼 teacher、每筆落 `routing-samples.jsonl`），
+量測台已內建。正確順序：落地權重 → 切 provider → corpus 自己長 → 有分母才談中文微調。
+在那之前，「中文精準度存疑」與 8 題合成 smoke 同級，都是沒有分母的猜測。
