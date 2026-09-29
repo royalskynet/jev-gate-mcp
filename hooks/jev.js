@@ -452,18 +452,7 @@ async function prune(tool, $, e, next) {
   const r = await next(e);
   if (r?.isError) return r;
   const { text: out, persisted } = await resolvePersisted($, target.get(r?.result));
-  if (typeof out !== 'string' || out.length < target.thresholdChars) {
-    // ponytail: observation window, remove after the 2026-09-29 verdict
-    // (`scripts/prune-verdict.mjs`, DEVLOG §23.6). Raising the threshold makes
-    // the hit rate go up by arithmetic, so the ledger alone cannot tell whether
-    // the change was right; what has to be watched is what we stopped judging.
-    // Half a chunk up only, so this stays tens of lines a day rather than one
-    // per Bash call — `appendLedger` rewrites the whole file per line.
-    if (typeof out === 'string' && out.length >= CONFIG.chunkChars / 2) {
-      await appendLedger($, `jev-skip(${tool}): ${out.length} chars, under threshold ${target.thresholdChars}`);
-    }
-    return r;
-  }
+  if (typeof out !== 'string' || out.length < target.thresholdChars) return r;
 
   const key = await apiKey($);
   if (!key) {
