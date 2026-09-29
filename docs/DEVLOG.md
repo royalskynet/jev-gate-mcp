@@ -2036,3 +2036,15 @@ sigmoid 補正（`1/(1+e^-x)`）；或更正確地在綑綁時照官方 export �
 
 **接手成本**：無未提交 diff、無未 push commit（已 ff 到 origin/main @ b024d49）；本機
 git 已同步。接續者先修 A（adapters.js sigmoid＋單測），驗證需先落地模型檔。
+
+## 27. 合併與 GitHub 中英文件（2026-09-29）
+
+- 使用者授權合併主分支、處理相關 PR／Issue，並補齊 GitHub 中英說明。
+- 文件 PR #9 已核對現有壓縮接口與 UI log 行為，補中英 PR 說明後合併。
+  其繁中設定表一併補入 `README.zh-TW.md`。
+- 本次分支整合主分支新增的診斷紀錄；DEV LOG 的內容衝突保留雙方段落，並以 §26
+  開頭註記更正舊提案，不把單一 logit 的 sigmoid 當正式修復。
+- 英文／繁中 README 及 gateway 文件補齊分流條件、設定、模型資源、費用限制、
+  私有資料與訓練界線、驗證及重啟要求。Issue #10 保留追蹤模型語意品質，不誤關。
+- 整合後重跑：275 項離線測試，273 通過、2 跳過、0 失敗；build、gateway acceptance
+  與 `git diff --check` 通過。使用 §25 的隔離環境，沒有為這輪驗證呼叫真實 JEV。
