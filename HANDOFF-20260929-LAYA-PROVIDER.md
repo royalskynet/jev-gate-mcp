@@ -1,5 +1,7 @@
 # HANDOFF 2026-09-29 — Laya 唯一來源 + 三缺口（進行中，未驗收）
 
+> **已結案（2026-09-29）**：A–D 段與落點全部完成並實測，改用 int8 bundle；結果與坑見 `docs/DEVLOG.md` §24。本文以下為歷史狀態。
+
 > 本文記錄截至 2026-09-29 的**實際落盤狀態**。核心決策：jev 唯一來源由 OpenRouter
 > 切到**本地 Laya**（多語言 checkpoint），OpenRouter jev 降為 fallback。派 deep 實作，
 > 因中途叫停，以下「已完成」＝程式碼已改且 `npm test` 全綠，但 **A 段唯一驗收

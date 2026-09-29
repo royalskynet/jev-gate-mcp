@@ -1842,3 +1842,57 @@ skipped (>= half a chunk, would have been judged at the old threshold): 0
 腳本自帶 `--selftest`（parse、summarise、bands 三個斷言，無網路無檔案），
 hook 那行由 `tests/hook.live.test.js` 釘住：半個 chunk 以下不留痕、給出的那段要留。
 待辦寫進 memory `project_jev_prune_threshold_verdict`，09-29 後執行。
+
+## 24. 本地 Laya 取代付費 Jev：int8、tokenizer 別名、閒置卸載（2026-09-29）
+
+目標：jev 判斷改走本地開源權重（免費、不出網），付費雲端只當 fallback；本機磁碟與
+記憶體壓到最低。runtime 用 `@receptron/laya`（onnxruntime-node）。
+
+**選型（官方＋社群，實測為準）**
+
+| bundle | 磁碟 | 結論 |
+|---|---|---|
+| receptron 官方 fp32 | ~1.7GB，官方寫 ~2GB RAM | 太重 |
+| 社群 fp16（下載量最高） | 647MB | 能跑，但 fp16 只在 WebGPU/WASM 驗過；CPU 上 RSS 峰值 1.5–2.0GB、warm 48ms |
+| 社群 weight-only int8（MatMulNBits block 32，embedding fp16、head fp32） | 540MB | **採用**：RSS 峰值 1.2–1.9GB、warm ~20ms、冷載 ~3.2s |
+| 社群 dynamic int8 | 332MB | 不採：作者自標 untested，社群實測會改答案 |
+| 雲端免費額度路線 | 0 | 不採：找不到 Jev 在免費模型清單的證據，且需另開帳號 |
+
+int8 vs fp16 一致性：`scripts/laya-agree.mjs` 22 題中英 choice/score/noul，top decision
+全一致，連跑 3 次無崩潰。
+
+**撞到的坑**
+
+1. **tokenizer 特殊符號命名不合**：receptron `Laya.load` 寫死 `[CLS]/[SEP]/[MASK]/[PAD]`，
+   多語 checkpoint 的 tokenizer 叫 `<bos>/<eos>/<mask>/<pad>`（id 2/1/4/0），load 直接
+   `special token [CLS] missing`。不是 fp16/CPU 問題。解法：程式內補別名到 shadow
+   tokenizer，模型目錄保持上游原檔（手改模型檔一重抓就靜默失效，之後全走付費 fallback）。
+2. **shadow 每進程整包複製 → tmpdir 半天 14GB**：第一版 shadow 以 pid 為鍵、`cp` 整個
+   bundle。hook 每則 prompt 載一次模型，每次 540MB。改為以 tokenizer 路徑＋size＋mtime
+   為鍵共用一份，只寫 `tokenizer.json`，graph/config 用 symlink，暫存目錄 atomic rename
+   處理並行競態。3 進程並行後 shadow 共 13MB。`gateway/test/laya-loader.test.mjs` 釘住
+   「graph 是 symlink、並行只產生一個目錄、無殘留 .tmp」。
+3. **fallback adapter 錯配**：laya 分支固定建 OpenRouter adapter，但部署的 key 是 TypeSafe
+   原生 key → 401（同 §compact 那類）。改為依 key 檔名判型選 adapter，不讀值。
+4. **int8 輸出名**：社群 int8 圖輸出叫 `act_logits`，receptron 讀 `act_probs`，組 bundle
+   時對齊。
+5. **ORT 在 macOS 退出時偶發** `libc++abi: recursive_mutex lock failed`：只在一次性腳本
+   雙模型並行時見過一次，重跑 3 次未重現；長駐 gateway 不受影響。重現時先確認退出前有 `close()`。
+
+**記憶體管理**
+
+- lazy load：第一次呼叫才載。
+- 閒置卸載：`JEV_LAYA_IDLE_MS`（預設 600000）無呼叫即 `close()` 釋放 ORT session。實測
+  RSS：boot 76MB → warm 1.9GB → idle 後 500MB → 下次呼叫自動重載。
+- ORT `sessionOptions`：`enableCpuMemArena:false`、`enableMemPattern:false`、
+  `intraOpNumThreads:2`。
+- 瓶頸在**載入峰值**，不是常駐；int8 對峰值的改善有限，主要贏在延遲與磁碟。
+
+**可觀測**：每次走 fallback 發 telemetry `laya_fallback`（只含 error class/code）。
+Laya 靜默壞掉時帳單會先告訴你，這個事件讓你先知道。
+
+**驗收方式備忘**：macOS `wc -c < file` 輸出帶前導空白，`test "$(wc -c < f)" = N` 字串比
+永遠 false；比大小用 `-eq`/`-gt`。
+
+**下一步**：重開 session 讓 `JEV_PROVIDER=laya` 生效，實呼一次 `jev_evaluate` 確認 provider=laya。
+換模型前需重抓 fp16 當 `laya-agree` 參考（本機已刪以省 647MB）。
