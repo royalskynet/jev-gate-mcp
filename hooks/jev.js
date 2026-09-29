@@ -393,6 +393,7 @@ function hydrate($) {
         JEV_API_KEY_FILE: await $.env.get('JEV_API_KEY_FILE'),
         JEV_LEDGER: await $.env.get('JEV_LEDGER'),
         JEV_TIMEOUT_MS: await $.env.get('JEV_TIMEOUT_MS'),
+        JEV_UI_LOG: await $.env.get('JEV_UI_LOG'),
       });
     } catch {
       /* no `$.env` (Node): ENV already came from process.env */
@@ -487,7 +488,8 @@ async function prune(tool, $, e, next) {
     // retuned against. Every other number in this line describes the verdict;
     // this is the only one that describes the call.
     + (Number.isFinite(lastLatencyMs) ? `, ${lastLatencyMs}ms` : '');
-  $.ui.log(line);
+  // SDK hosts (Happy) render each ui.log as a message: one per tool call. Opt-in.
+  if (ENV.JEV_UI_LOG === '1') $.ui.log(line);
   // ponytail: the ui.log above is TUI-only and reaches no file unless --debug;
   // on a headless box the prune outcome would be unobservable and the threshold
   // impossible to tune, so mirror it to a ledger. Ledger writes on EVERY

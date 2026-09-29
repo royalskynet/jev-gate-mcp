@@ -107,3 +107,22 @@ test('askerFor adapts the engine fetch to what JevClient expects', async () => {
   assert.equal(out.compacted, true);
   assert.ok(out.messages[1].toolUses.length === 1, 'the call itself must survive');
 });
+
+// Why: the compact asker ignored JEV_ENDPOINT/JEV_MODEL, so a typesafe key went
+// to OpenRouter's URL and 401'd on every pass — and typesafe's own API 400s on
+// OpenRouter's `provider` field. Both failures fall back silently to built-in.
+test('askerFor honours the configured endpoint/model and drops provider off OpenRouter', async () => {
+  const seen = [];
+  const fetch = async (url, init) => {
+    seen.push({ url, body: JSON.parse(init.body) });
+    return { ok: true, status: 200, text: JSON.stringify({ answers: { q: { type: 'choice', choice: 'keep' } } }) };
+  };
+  const q = { q: { type: 'choice', instructions: 'i', criteria: { keep: 'k', drop: 'd' } } };
+  await askerFor(fetch, 'k', { endpoint: 'https://api.typesafe.ai/v1/systemone', model: 'jev-latest' }).ask({}, q);
+  await askerFor(fetch, 'k').ask({}, q);
+  assert.equal(seen[0].url, 'https://api.typesafe.ai/v1/systemone');
+  assert.equal(seen[0].body.model, 'jev-latest');
+  assert.equal('provider' in seen[0].body, false);
+  assert.match(seen[1].url, /^https:\/\/openrouter\.ai\//);
+  assert.ok(seen[1].body.provider, 'OpenRouter keeps its ZDR routing');
+});

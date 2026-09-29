@@ -43,8 +43,15 @@ export function backendFor(messages = []) {
  * direction. Takes the fetch itself rather than `$`, because the hook
  * validator refuses to see `$` passed anywhere.
  */
-export function askerFor(httpFetch, key) {
+export function askerFor(httpFetch, key, { endpoint = '', model = '' } = {}) {
   const fetcher = async (url, init) => {
+    // The vendored request always adds OpenRouter's `provider` routing;
+    // typesafe's direct API answers 400 to that field, so it goes off-OpenRouter.
+    if (!url.startsWith('https://openrouter.ai/')) {
+      const body = JSON.parse(init.body);
+      delete body.provider;
+      init = { ...init, body: JSON.stringify(body) };
+    }
     const res = await httpFetch(url, init);
     return {
       ok: Boolean(res?.ok),
@@ -52,7 +59,7 @@ export function askerFor(httpFetch, key) {
       text: async () => String(res?.text ?? ''),
     };
   };
-  return new JevClient({ apiKey: key, fetch: fetcher });
+  return new JevClient({ apiKey: key, fetch: fetcher, baseUrl: endpoint || undefined, model: model || undefined });
 }
 
 /**

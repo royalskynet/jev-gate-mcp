@@ -93,6 +93,7 @@ function hydrate($) {
     try {
       fillEnv({
         JEV_TELEMETRY: await $.env.get('JEV_TELEMETRY'),
+        JEV_UI_LOG: await $.env.get('JEV_UI_LOG'),
         JEV_TRIAGE_ENABLED: await $.env.get('JEV_TRIAGE_ENABLED'),
         JEV_TRIAGE_MODEL_CHEAP: await $.env.get('JEV_TRIAGE_MODEL_CHEAP'),
         JEV_TRIAGE_MODEL_MEDIUM: await $.env.get('JEV_TRIAGE_MODEL_MEDIUM'),
@@ -158,7 +159,7 @@ export const register = (on) => {
     await hydrate($);
     const d = await spawnDecision(input || {}, {});
     if (!d.change) return next(input); // default: leave the subagent's model to the engine
-    $.ui.log(`jev-triage: subagent on ${d.model} (tier=${d.decision?.tier})`);
+    if (ENV.JEV_UI_LOG === '1') $.ui.log(`jev-triage: subagent on ${d.model} (tier=${d.decision?.tier})`);
     return next({ ...(input || {}), model: d.model });
   });
 };

@@ -35,8 +35,8 @@ import { ENV, fillEnv } from './env.mjs';
 let LEDGER = '';
 
 export const CONFIG = {
-  endpoint: 'https://openrouter.ai/api/v1/systemone',
-  model: 'typesafe/jev-1.13',
+  endpoint: '',
+  model: '',
   // Every field below is filled by `refreshConfig`; see its comment for why.
   apiKeyFile: '',
   compactAtPercent: 60,
@@ -62,6 +62,11 @@ export function refreshConfig() {
   LEDGER = `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-compact.log`;
   // Same override as hooks/jev.js, so one JEV_API_KEY_FILE points both at a Jev-only key.
   CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENROUTER_API_KEY.txt`;
+  // Same endpoint/model pair as hooks/jev.js. Left unread, a typesafe key file
+  // was sent to OpenRouter's URL, every judge 401'd, and every compaction fell
+  // back to the slow built-in summary. Unset, each backend keeps its default.
+  CONFIG.endpoint = ENV.JEV_ENDPOINT || '';
+  CONFIG.model = ENV.JEV_MODEL || '';
   // Compact when the session passes this much of its context window. This is
   // the "fast" in fast compaction: acting at 60% costs one cheap pass, acting
   // at 100% costs a summary of everything.
@@ -98,6 +103,9 @@ function hydrate($) {
         USERPROFILE: await $.env.get('USERPROFILE'),
         OPENROUTER_API_KEY: await $.env.get('OPENROUTER_API_KEY'),
         JEV_API_KEY_FILE: await $.env.get('JEV_API_KEY_FILE'),
+        JEV_ENDPOINT: await $.env.get('JEV_ENDPOINT'),
+        JEV_MODEL: await $.env.get('JEV_MODEL'),
+        JEV_UI_LOG: await $.env.get('JEV_UI_LOG'),
         JEV_COMPACT_ENABLED: await $.env.get('JEV_COMPACT_ENABLED'),
         JEV_COMPACT_AT_PERCENT: await $.env.get('JEV_COMPACT_AT_PERCENT'),
         JEV_COMPACT_AT_TOKENS: await $.env.get('JEV_COMPACT_AT_TOKENS'),
@@ -164,7 +172,7 @@ export function pairState(pair) {
 export async function judgePair($, key, userRequest, pair) {
   let res;
   try {
-    res = await $.http.fetch(CONFIG.endpoint, {
+    res = await $.http.fetch(CONFIG.endpoint || 'https://openrouter.ai/api/v1/systemone', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${key}`,
@@ -172,7 +180,7 @@ export async function judgePair($, key, userRequest, pair) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: CONFIG.model,
+        model: CONFIG.model || 'typesafe/jev-1.13',
         state: { user_request: userRequest, pair: pairState(pair) },
         questions: { q: { type: 'choice', instructions: INSTRUCTIONS, criteria: CRITERIA } },
       }),
@@ -273,7 +281,7 @@ export const register = (on, options = {}) => {
     const request = userRequestOf(messages);
     const backend = CONFIG.backend === 'auto' ? backendFor(messages) : CONFIG.backend;
     const out = backend === 'anthropic'
-      ? await compactAnthropic({ messages, config: CONFIG, asker: askerFor((url, init) => $.http.fetch(url, init), key) })
+      ? await compactAnthropic({ messages, config: CONFIG, asker: askerFor((url, init) => $.http.fetch(url, init), key, CONFIG) })
       : await compactMessages({
         messages,
         minReductionChars: CONFIG.minReductionChars,
@@ -288,7 +296,8 @@ export const register = (on, options = {}) => {
       return next(e);
     }
     const line = `jev-compact: backend=${backend}, ${before} → ${before - (out.reducedBy ?? 0)} chars, ${out.reducedBy} dropped, ${out.messages.length}/${messages.length} messages, verbatim, trigger=${e?.trigger ?? '?'}`;
-    $.ui.log(line);
+    // ponytail: SDK hosts (Happy) turn every ui.log into a visible message; the ledger already has it.
+    if (ENV.JEV_UI_LOG === '1') $.ui.log(line);
     await appendLedger($, line);
     return { messages: out.messages };
   });
