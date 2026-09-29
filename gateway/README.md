@@ -15,8 +15,8 @@ is **Node 22 or 24**.
 
 ## Layout
 
-For `JEV_PROVIDER=laya`, see the [English routing and data guide](../README.md#laya--jev-limited-local-classification-pilot)
-or [繁中分工與資料說明](../README.zh-TW.md).
+For `JEV_PROVIDER=laya`, see the [English routing and data guide](../docs/REFERENCE.en.md#laya-routing)
+or [繁中分工與資料說明](../docs/REFERENCE.zh-TW.md).
 Only approved short classifications can run locally; all policies and other
 judgments use Jev. This is a limited pilot, not a model-accuracy certification.
 

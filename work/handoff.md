@@ -19,7 +19,9 @@
 - checkout：`/Users/m2/jev-gate-mcp`。
 - 分支：`fix/laya-jev-task-routing`；基底：`b024d49bc531680946ba6adc766432b1c3b741aa`。
 - 使用者已授權 commit、push、合併主分支與處理相關 PR／Issue，並要求 GitHub 中英說明。
-  主分支合併狀態以 Git／PR 為準；沒有同步其他 checkout 的既有修改。
+  PR #9、#11 已合併至 main（#11 merge commit `f72c070`），本工作區已切回 main。
+  Issue #10 已補中英處理紀錄，保留模型品質追蹤；沒有同步其他 checkout 的既有修改。
+- 首頁後續改為繁中白話導覽；英文 `README.en.md`，原完整內容在 `docs/REFERENCE.*.md`。
 - 重點測試 41/41；完整離線 275 項，273 通過、0 失敗、2 跳過；build、gateway acceptance、
   diff whitespace 檢查通過。真實 JEV 連線未驗證。
 - 完整測試使用不存在的 key 路徑、停用資料紀錄，排除既有 live 測試；不要直接裸跑

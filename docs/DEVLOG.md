@@ -2048,3 +2048,11 @@ git 已同步。接續者先修 A（adapters.js sigmoid＋單測），驗證需�
   私有資料與訓練界線、驗證及重啟要求。Issue #10 保留追蹤模型語意品質，不誤關。
 - 整合後重跑：275 項離線測試，273 通過、2 跳過、0 失敗；build、gateway acceptance
   與 `git diff --check` 通過。使用 §25 的隔離環境，沒有為這輪驗證呼叫真實 JEV。
+
+## 28. 首頁改為繁中優先、白話導覽（2026-09-29）
+
+- 使用者指出 README 過於像開發日誌。依 Genie 與 humanizer 規則重寫，首頁以繁中
+  說明用途、具體例子、LAYA／JEV 分工、費用／硬體／資料與開始方式。
+- 英文移至 `README.en.md`；`README.zh-TW.md` 保留為相容入口。原本完整內容移至
+  `docs/REFERENCE.en.md`／`docs/REFERENCE.zh-TW.md`，更新相對連結。
+- 只改文件；檢查文件連結、語言入口及 diff，不重跑模型或新增付費呼叫。
