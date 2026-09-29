@@ -1986,3 +1986,53 @@ Laya 靜默壞掉時帳單會先告訴你，這個事件讓你先知道。
   **正在執行的 MCP 必須重新啟動才會載入新版，尚未驗證重啟後的真實流量**。
   Codex plugin cache 是另一份含既有修改的 checkout，本次不覆蓋、不宣稱已同步。
   接續狀態見 `work/handoff.md`。
+## 26. issue #10 另一工作階段的診斷紀錄（2026-09-29，歷史提案）
+
+> 合併註記：以下保留另一工作階段原始診斷，**目前實作以 §25 為準**。
+> 單一 action logit 做 sigmoid 不能還原多類 softmax，因此未採該修法；實作是隔離
+> `rl_agent` 欄位。溫度校準不能改變排序或修好真假顛倒，亦不能從少量一致性測試
+> 排除量化影響；noul 品質根因尚未定論。下方「模型已刪」是該工作階段的環境紀錄，
+> 不適用於本次有現存權重且完成 8 題試跑的工作區。保留 Issue #10 追蹤語意品質。
+
+對應 GitHub issue #10「Laya provider: noul scores don't discriminate true/false
+claims; rl_agent.act_probability > 1」。**兩個獨立問題，拆開判**，尚未動程式碼。
+
+### 問題 A：`act_probability` ~1400（積分層 bug，可修，低風險）
+
+根因：receptron 官方 export（`export_onnx.py:38`）輸出 `act_probs` 時**已做過
+`torch.softmax(act,-1)`**，故 `@receptron/laya` 的 `laya.ts` 讀到 `act_probs` 後不再 softmax，
+直接吐 `act[0]`。但本專案採的社群 int8 bundle 圖輸出叫 `act_logits`（未 softmax 的 raw
+logit），§24 坑 #4「組 bundle 對齊」只改名未補 softmax → receptron 把 raw logit 當機率。
+
+修法（不 fork receptron）：`makeLayaAdapter` 對 `answer.rl_agent.act_probability` 做
+sigmoid 補正（`1/(1+e^-x)`）；或更正確地在綑綁時照官方 export 把 softmax 節點塞回圖。
+
+**重要**：grep 全 repo，`act_probability`/`rl_agent` 只出現在 DEVLOG，gateway 決策邏輯
+從不讀它——純 audit 欄，錯不致命。低風險直修。
+
+### 問題 B：`noul` 分不出真假（模型本質，非程式 bug）
+
+`noul = softmax(decision logits)[1]` 機制正確。病灶在**模型未校正**：
+
+- 多語 checkpoint `temperature=[1,1,1]` + **空 `temperature_by_options`**（對照英文版有
+  fitted 溫度：`noul:2=1.9834` 等）。§24 採的社群 int8 只驗 `argmax_match` 未驗機率刻度。
+- 量化**非**元兇：Torim98 manifest 載 int8 max diff 0.64、argmax 100%——解釋不了 noul
+  在「sky is blue/green、2+2=4/5」上接近反轉。
+- 社群同病：receptron issue #8 裡 [openpave-jev](https://github.com/cnrai/openpave-jev)
+  自述「noul 對 completed-work 陳述接近反轉」，並自備 `lib/calibrate.js` 的 per-bucket
+  溫度 fitting 輪子（`temperBinary`＝logit/T 再 sigmoid，正是 noul 校正需要的）。
+- 附帶：issue repro 用「sky is blue／2+2=4」在測**世界知識**，非 Laya/Jev 設計的**任務
+  判斷**（這 diff 完整嗎、該不該升級）——決策模型無世界知識，噪聲＋反轉屬預期。
+
+### 判決（官方＋社群智慧，未落地）
+
+1. **A（act）**：膠水 sigmoid 修掉，直改、附單測。
+2. **B（noul）**：本地多語 Laya 的 noul **不值得信**。政策題型盤點——`completion-claims`
+   全 noul、`context-screening`/`proposed-action-risk`/`diff-risk` 混 noul——分題型拆呼叫
+   會拆散單次 batch（receptron 一次 forward 全題），成本大增。**傾向往後退**：noul 議題
+   另開 issue 追校正（openpave-jev 輪子或本機重 fit），本輪只修 A。
+3. 環境未備：本機 `~/.jevgate`／`~/.cache/receptron-laya` 皆空，int8 bundle 已刪——修 A
+   後無法本機實跑 `jev_evaluate` 驗證，需重抓 bundle 或降回 fp16。
+
+**接手成本**：無未提交 diff、無未 push commit（已 ff 到 origin/main @ b024d49）；本機
+git 已同步。接續者先修 A（adapters.js sigmoid＋單測），驗證需先落地模型檔。
