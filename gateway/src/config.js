@@ -46,6 +46,12 @@ export function buildGateway(cfg = {}) {
     ? makeFakeAdapter(FakeMode.SUCCESS)
     : () => { throw new Error('invalid fake mode'); };
 
+  // Telemetry sink is created before the adapters so the Laya dual-channel can
+  // emit a `laya_fallback` event on every fallback path (no credentials ever go
+  // near it — the allowlist in telemetry.js drops anything not named).
+  const telemetry = cfg.telemetry
+    ? makeTelemetry({ level: cfg.telemetryLevel, destination: process.stderr })
+    : undefined;
   let rawAdapter;
   if (cfg.provider === 'fake') {
     rawAdapter = fake;
@@ -72,10 +78,22 @@ export function buildGateway(cfg = {}) {
         ? makeTypesafeAdapter({ apiKey: key, model: cfg.model })
         : makeOpenrouterAdapter({ apiKey: key, model: cfg.model }))
       : null;
+    const emitFallback = (err) => {
+      // Cost reasons: event= is allowlisted; only classification + provider
+      // + model labels escape. Never state/questions/answers/credentials.
+      telemetry?.record({
+        event: 'laya_fallback',
+        provider: 'laya',
+        resolved_model: cfg.model,
+        error_class: err?.category ?? err?.constructor?.name ?? 'unknown',
+        error_code: err?.code ?? 'ERR_UNKNOWN',
+      });
+    };
     rawAdapter = async (state, questions, opts = {}) => {
       try {
         return await layaAdapter(state, questions, opts);
       } catch (err) {
+        emitFallback(err);
         if (!fallback) {
           // No usable OpenRouter key (checked at startup; a missing file makes
           // fallback null) → Laya is the only channel; surface its failure so
@@ -105,9 +123,6 @@ export function buildGateway(cfg = {}) {
   // auth/invalid-request fail closed for the caller but never take the provider
   // offline (see src/breaker.js).
   const breaker = makeBreaker(rawAdapter, cfg.breaker);
-  const telemetry = cfg.telemetry
-    ? makeTelemetry({ level: cfg.telemetryLevel, destination: process.stderr })
-    : undefined;
   const metrics = cfg.metrics ?? makeMetrics();
   const gw = new JevGateway({
     evaluateAdapter: breaker.fire,

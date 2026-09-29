@@ -71,11 +71,12 @@ let layaJudgeCache;
 export function localLayaJudge() {
   layaJudgeCache ??= (async () => {
     try {
-      const { Laya } = await import('@receptron/laya');
-      const { default: path } = await import('node:path');
-      const { default: os } = await import('node:os');
-      const dir = ENV.JEV_LAYA_MODEL_DIR || path.join(os.homedir(), '.jevgate', 'laya-multilingual');
-      const laya = await Laya.load({ modelDir: dir });
+      const { loadLaya } = await import('../../gateway/src/laya-loader.js');
+      // Shared loader: resolves JEV_LAYA_MODEL_DIR or the int8 default, adds
+      // the [CLS]/[SEP]/[MASK]/[PAD] tokenizer aliases in a shadow copy, and
+      // passes ORT CPU-memory options — same path as the gateway adapter.
+      const modelDir = ENV.JEV_LAYA_MODEL_DIR || undefined;
+      const laya = await loadLaya({ modelDir });
       // Idle unload: same contract as gateway makeLayaAdapter — release the
       // session after JEV_LAYA_IDLE_MS (default 600000ms) of no triage calls.
       const idleMs = Math.max(0, Number(ENV.JEV_LAYA_IDLE_MS) || 600000);
@@ -95,7 +96,7 @@ export function localLayaJudge() {
       return async (state, questions) => {
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
         try {
-          if (!current) current = await Laya.load({ modelDir: dir });
+          if (!current) current = await loadLaya({ modelDir });
           const r = await current.systemOne(state, questions);
           return r.answers;
         } finally {

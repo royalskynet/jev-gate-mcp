@@ -87,19 +87,22 @@ export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: opts.model });
 }
 
-// --- Laya: local open-weights Jev (multilingual checkpoint, local model dir) ---
-// No apiKey. `Laya.load({ modelDir })` serves a pre-downloaded bundle from
-// $JEV_LAYA_MODEL_DIR (default ~/.jevgate/laya-multilingual) — never hits the
-// network at runtime, so the first request loads the ONNX session (a few
-// seconds for the 647MB fp16 graph) and stays inside the gateway deadline.
-// On any load failure (missing files / load timeout) this throws and the
-// config-level dual-channel falls back to OpenRouter. One session is reused
-// process-wide (never closed) so concurrency cannot race a release and a warm
-// answer costs one forward pass (~140ms on Apple silicon). `systemOne` returns
-// the same answer shape as Jev (choice/score/noul with probabilities), so the
-// stateless gateway contract `(state, questions, opts) => result` applies here
-// unchanged — opts is ignored (no model override on local weights).
-export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load } = {}) {
+// --- Laya: local open-weights Jev (quantized int8 checkpoint, local model dir) ---
+// No apiKey. `loadLaya` serves a pre-downloaded bundle from $JEV_LAYA_MODEL_DIR
+// (default ~/.jevgate/laya-multilingual-int8) — never hits the network at
+// runtime, so the first request loads the ONNX session (a few seconds for the
+// 540MB int8 graph) and stays inside the gateway deadline. It also adds the
+// `[CLS]/[SEP]/[MASK]/[PAD]` tokenizer aliases in a shadow copy (upstream lacks
+// them; receptron's id() requires them) and passes ORT CPU-memory options that
+// keep the resident set small. On any load failure (missing files / load
+// timeout) this throws and the config-level dual-channel falls back to
+// OpenRouter. One session is reused process-wide (never closed) so concurrency
+// cannot race a release and a warm answer costs one forward pass (~100ms on
+// Apple silicon for the int8 graph). `systemOne` returns the same answer shape
+// as Jev (choice/score/noul with probabilities), so the stateless gateway
+// contract `(state, questions, opts) => result` applies here unchanged — opts
+// is ignored (no model override on local weights).
+export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load, sessionOptions } = {}) {
   let sessionPromise = null;
   let idleTimer = null;
   // Idle unload: release the ONNX session after JEV_LAYA_IDLE_MS (default
@@ -129,9 +132,23 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load 
     if (!sessionPromise) {
       sessionPromise = (async () => {
         if (load) return load();
-        const { Laya } = await import('@receptron/laya');
-        const dir = modelDir || process.env.JEV_LAYA_MODEL_DIR || path.join(os.homedir(), '.jevgate', 'laya-multilingual');
-        return Laya.load({ modelDir: dir });
+        const { loadLaya } = await import('./laya-loader.js');
+        // Default bundle: the quantized int8 checkpoint. JEV_LAYA_MODEL_DIR
+        // still wins; the fp16 bundle stays available for a manual switch.
+        const dir = modelDir
+          || process.env.JEV_LAYA_MODEL_DIR
+          || path.join(os.homedir(), '.jevgate', 'laya-multilingual-int8');
+        return loadLaya({
+          modelDir: dir,
+          // receptron's Laya.load spreads these through (laya.js:46). They
+          // keep onnxruntime's CPU memory arena from staging the whole graph.
+          sessionOptions: {
+            enableCpuMemArena: false,
+            enableMemPattern: false,
+            intraOpNumThreads: 2,
+            ...(sessionOptions ?? {}),
+          },
+        });
       })();
       // A failed download must not poison every later request: drop the cached
       // promise so the next call retries the load.
