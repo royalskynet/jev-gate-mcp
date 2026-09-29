@@ -15,13 +15,20 @@ is **Node 22 or 24**.
 
 ## Layout
 
+For `JEV_PROVIDER=laya`, see the [English routing and data guide](../README.md#laya--jev-limited-local-classification-pilot)
+or [繁中分工與資料說明](../README.zh-TW.md).
+Only approved short classifications can run locally; all policies and other
+judgments use Jev. This is a limited pilot, not a model-accuracy certification.
+
 | path | role |
 |---|---|
 | `src/core.js` | limits, runtime flags (kill switch), typed errors |
 | `src/schema.js` | Zod v4 input + output schemas (advertised as `outputSchema`) |
 | `src/gateway.js` | Gateway Core: validation, answer checking, Gate composition, fail-safe |
 | `src/registry.js` | immutable, versioned Decision Policy registry |
-| `src/adapters.js` | OpenRouter Provider Adapter (via `jevwire`); native TypeSafe kept for the offline contract fixture only (all Jev live rides the single OpenRouter key); deterministic fakes |
+| `src/adapters.js` | TypeSafe / OpenRouter adapters via `jevwire`, local LAYA adapter, deterministic fakes |
+| `src/laya-routing.js` | approved local classifications, per-question Jev routing and fallback |
+| `src/routing-corpus.js` | private unlabelled local-classification samples; no automatic training |
 | `src/server.js` | v2 `McpServer` tool surface (`outputSchema` + `structuredContent`) |
 | `src/config.js` | deployment wiring and provider/keys |
 | `src/stdio.js` | v2 `serveStdio(factory)` entry (the only transport) |

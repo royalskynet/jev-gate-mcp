@@ -1,36 +1,21 @@
 /**
- * agent-glue retriever — semantic search over the fix store, locally.
+ * agent-glue retriever — fix store search, with optional Jev relevance scoring.
  *
  * B 段缺口 1 語意檢索（fail-open 降回原序，advisory）:
  *   `fixindex find "<症狀>"` 拿候選（env `FIXINDEX_DIR`/`FIXINDEX_INDEX` 已在
- *   shell 提供），再用本機 Laya `score` 重排關聯度輸出前 N。
+ *   shell 提供），再用 JEV `score` 重排關聯度輸出前 N。
  *
  * 全程 advisory 且 fail-open：
  *   - `fixindex` 本身失敗 → 回 `[]`（呼叫端保有原序，不猜）；
- *   - Laya 不可用（無模型目錄／載入失敗）→ 直接回 `fixindex` 原序前 N，不重排；
- *   - Laya 載入是 lazy 的，只在真的需要重排時才 load。
+ *   - JEV 不可用或答案不完整 → 直接回 `fixindex` 原序前 N，不重排；
+ *   - transport 是 lazy 的，只在真的有候選時才取得。
  */
 
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import path from 'node:path';
-import os from 'node:os';
 
 const execFile = promisify(execFileCb);
 
-let layaPromise = null;
-/** Lazy Laya handle; a failed load clears the cache so the next call retries. */
-function loadLaya(modelDir) {
-  if (!layaPromise) {
-    layaPromise = (async () => {
-      const { Laya } = await import('@receptron/laya');
-      const dir = modelDir || process.env.JEV_LAYA_MODEL_DIR || path.join(os.homedir(), '.jevgate', 'laya-multilingual');
-      return Laya.load({ modelDir: dir });
-    })();
-    layaPromise.catch(() => { layaPromise = null; });
-  }
-  return layaPromise;
-}
 
 /** One fixindex hit as a short, score-able candidate label. */
 function candidateLabel(hit) {
@@ -40,12 +25,12 @@ function candidateLabel(hit) {
 }
 
 /**
- * Semantic retrieval: fixindex candidates reranked by local Laya score.
+ * Semantic retrieval: fixindex candidates reranked by Jev score.
  * @param {string} query  the symptom / keyword to search for
  * @param {object} [opts]
  * @param {number}  [opts.limit]     how many fixindex candidates to fetch (default 10)
  * @param {number}  [opts.topN]      how many to return after reranking (default 5)
- * @param {string}  [opts.modelDir]  override the local Laya model dir
+ * @param {object}  [opts.transport] injected gateway transport for offline tests
  * @param {object}  [opts.fixindex]  { command, args } override for the fixindex CLI
  * @param {object}  [opts.execFile]  injected execFile impl for tests
  * @returns {Promise<object[]>} reranked hits, each `{ key, file, heading, score }` sorted desc
@@ -70,24 +55,22 @@ export async function retrieve(query = '', opts = {}) {
   }
   if (!hits.length) return [];
 
-  // 2) Rerank with local Laya score; on any Laya failure keep the original order.
+  // 2) Semantic relevance is not a local classification. Use Jev, one ordinal
+  // score per candidate; labels themselves are not ordinal score levels.
   const keepOriginal = () => hits.slice(0, topN);
-  let laya;
   try {
-    laya = await loadLaya(opts.modelDir);
-  } catch {
-    return keepOriginal();
-  }
-
-  try {
-    const labels = hits.map(candidateLabel);
-    const r = await laya.systemOne(
-      query,
-      { relevance: { type: 'score', instructions: 'Rate how relevant each candidate fix is to the symptom.', criteria: labels } },
-    );
-    const probs = r.answers.relevance.probabilities ?? {};
+    const transport = opts.transport ?? await (await import('./live.js')).liveTransport();
+    if (!transport) return keepOriginal();
+    const candidates = hits.map(candidateLabel);
+    const questions = Object.fromEntries(candidates.map((_, i) => [`fix_${i}`, {
+      type: 'score', instructions: `Rate how relevant candidates[${i}] is to query.`,
+      criteria: ['unrelated', 'same broad topic', 'partially useful', 'directly addresses the symptom'],
+    }]));
+    const r = await transport.evaluate({ state: { query, candidates }, questions });
+    if (r.coverage !== 'complete' || candidates.some((_, i) =>
+      !Number.isFinite(r.answers?.[`fix_${i}`]?.score))) return keepOriginal();
     const scored = hits
-      .map((h, i) => ({ ...h, score: probs[String(i)] ?? 0 }))
+      .map((h, i) => ({ ...h, score: r.answers[`fix_${i}`].score }))
       .sort((a, b) => b.score - a.score);
     return scored.slice(0, topN);
   } catch {

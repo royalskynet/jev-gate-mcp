@@ -1897,7 +1897,102 @@ Laya 靜默壞掉時帳單會先告訴你，這個事件讓你先知道。
 **下一步**：重開 session 讓 `JEV_PROVIDER=laya` 生效，實呼一次 `jev_evaluate` 確認 provider=laya。
 換模型前需重抓 fp16 當 `laya-agree` 參考（本機已刪以省 647MB）。
 
-## 25. issue #10 檢修：noul 不辨真假 + act_probability>1（2026-09-29，診斷完成未修）
+## 25. LAYA／JEV 按用途分工與待標註資料（2026-09-29）
+
+使用者確認：先讓 LAYA 試行短文字、固定選項的任務／主題分類，其餘交給 JEV。
+這取代 §24「全部本機、只有出錯才雲端」的安排。這是試行用途清單，**不是中文品質已校準**。
+沿用現有 INT8 模型，不下載新權重、不重訓、不改全域 hooks、不增加 MCP 工具。
+
+### 實作與驗收計畫
+
+- [x] 先加離線分流測試：固定分類本機成功不呼叫雲端；其他題目與所有 policy 直接 JEV；
+  混合批次只把分類送本機；本機失敗／無匹配／格式錯誤併入一次 JEV 請求。
+- [x] 移除 triage 在雲端回答後又用本機 difficulty/kind 覆蓋的旁路；難度留給 JEV。
+  本機 action head 原始值不再作為 probability 暴露；不修改原模型檔。
+- [x] 收集本機分類題目的私有 JSONL；JEV 僅在本來就需要 fallback 時留下參考答案，
+  不為蒐集而加倍呼叫。label 一律 null，人工確認後才可作為評分／訓練標籤。
+- [x] 跑完整離線測試、build 與 acceptance；本機 smoke 不呼叫雲端。
+
+### 證據與限制
+
+- [官方分階段導入](https://nandhakishorm.github.io/laya/staged-adoption/)：按用途驗收，
+  高信心不是正確保證；沒有跨情境通用門檻。
+- [中文實測與作者回覆 #124](https://github.com/NandhaKishorM/laya/issues/124)：
+  中文繼續用 multilingual；高信心錯答仍存在。
+- [壓縮討論 #44](https://github.com/NandhaKishorM/laya/issues/44)：校準不能修復資訊保留排序；
+  與 Jev 的一致率不是正確率。prune/compact/verify/review 不交給本機分類器。
+- Issue #10 的本機診斷是 12 題答對 8 題（原 issue 4 題答對 2 題），不是通用準確率。
+  §24 的 22 題是 INT8/FP16 **答案一致性**，並非全部答對。
+- `act_probs` 實為未經 softmax 的 action logits；不是答對率 0%。此次隔離不可信附加欄位，
+  不宣稱修復權重／語意能力，也不宣稱 issue #10 的真假判斷已解決。
+- 分工仍 advisory；既有授權、執行證據、policy shadow/uncalibrated/rollout 0 均保留。
+  JEV 也是參考判斷，不是標準答案；獨立測試集不得混入後續訓練集。
+
+### 已落地的行為
+
+- `gateway/src/classification-profiles.js` 定義固定的任務類型、訊息主題題型。
+  router 比對完整題型，不能只靠 question id 冒充分類題。文字最多 320 字元，
+  只接受文字或 `user_request`／`char_bucket` 形狀；長文、額外上下文、明顯否定／
+  多步驟等轉 JEV。這些排除規則不保證辨識全部複雜語句。
+- 明確指定 model、任意新題型與所有 policy 走 JEV。任務分類的 `general`、主題的
+  `no_match`、本機錯誤或答案格式不合法也交回 JEV；成功的本機答案不重問雲端。
+  一批題目中的 JEV 部分與 fallback 合併一次請求，不為蒐集教師答案額外呼叫。
+- triage 的難度／風險留給 JEV；移除雲端回答後又被本機答案覆蓋的旁路。
+  verify 的舊 `layaNoul` 旗標保留相容性，但內部改詢問 JEV 並帶入執行證據。
+  fix store 關聯度改為 JEV 逐候選評分；失敗或答案不完整即保留原序。
+- 移除本機回應的 `rl_agent` 附加欄位，避免將約 1455 的原始 action logits 當機率。
+  typed choice 的答案與分布不改寫，原始模型檔不改動。
+- 審查補強：gateway 傳入絕對截止時間，router 在本機返回後再檢查，逾時不得新增
+  雲端呼叫；policy 通道的 breaker 狀態獨立反映於 readiness 與遙測。
+  **已啟動的 ONNX／雲端工作仍不會由外層 timeout 主動取消**。
+
+### 資料如何累積、評分與訓練
+
+- 使用者已授權累積分類資料。預設寫入 repo 外的
+  `~/.jevgate/routing-samples.jsonl`，權限 `0600`；`JEV_ROUTING_LOG=off` 可停用。
+  檔案包含原始分類文字，屬私有待標註資料，不提交 Git，也不寫入一般遙測。
+- 每次本機嘗試記錄題型版本、題目摘要雜湊、輸入、答案、fallback 原因，以及已經
+  發生的 JEV fallback 答案。人工正解欄位固定 `label:null`、`label_source:null`，
+  `split:unassigned`、`training_eligible:false`；假模型與離線測試不混入正式資料。
+- **目前是蒐集功能，不是自動評分或邊用邊訓練**。後續先人工去識別、確認正解、
+  去重並切分獨立測試／訓練集，再按題型計算答對率與 fallback 比率；樣本不足先保留
+  試行。評分和批次訓練工具尚未實作，不根據模型自信分數自動啟用訓練。
+- 當前權重：`~/.jevgate/laya-multilingual-int8/laya.onnx`，540,524,682 bytes，
+  SHA-256 `33f86af38198a1c4ad00f9c2312c28f8e8abf6ddfed1e9e8e82e4dcb5f446baf`。
+  corpus 的模型名稱尚不含逐筆 bundle 指紋。換權重／tokenizer／runtime 前必須封存
+  舊資料並記錄新版本；未完成來源核對的混合資料不可直接當跨版本校準或訓練依據。
+
+### 驗證結果與接續
+
+- 分流、資料、agent glue 重點測試：41/41 通過；兩項審查回歸先確認失敗，再修正通過。
+- 完整離線測試：275 項，273 通過、0 失敗、2 跳過。使用缺少 key 的測試設定，
+  並排除現有 live 測試及一項必須取得真實 JEV 答案的 Codex 測試：
+
+  ```sh
+  JEV_PROVIDER=typesafe JEV_API_KEY_FILE=/tmp/jev-no-live-key \
+    JEV_ROUTING_LOG=off JEV_CALIBRATION_LOG=off JEV_TELEMETRY=off \
+    node --test --test-skip-pattern='^live:|^codex adapters: the advisory actually carries a Jev answer'
+  ```
+
+- 同一組離線環境下 `npm run build`、`npm run gateway:acceptance` 通過；
+  `git diff --check` 通過。早期完整測試曾因既有測試自動偵測 key 而嘗試連線失敗，
+  上述結果以修正隔離設定後重跑為準；不宣稱已驗證真實 JEV 服務。
+- `scripts/laya-routing-smoke.mjs` 用現有權重、8 題合成中文題、不呼叫雲端、不寫 corpus：
+  任務分類 4/4、主題分類 3/4，合計 7/8；「你們的營業時間是幾點？」誤判 billing。
+  這只是診斷，不是可泛化的 87.5% 正確率，也不拿來訓練。
+- 獨立唯讀複查確認上述三項修正，未發現新的交付阻擋項目。
+- 分支 `fix/laya-jev-task-routing`，基底 `b024d49bc531680946ba6adc766432b1c3b741aa`。
+  已確認 Claude 的 `jev_gate` MCP 指向本 checkout 的 `gateway/src/stdio.js`；
+  **正在執行的 MCP 必須重新啟動才會載入新版，尚未驗證重啟後的真實流量**。
+  Codex plugin cache 是另一份含既有修改的 checkout，本次不覆蓋、不宣稱已同步。
+  接續狀態見 `work/handoff.md`。
+## 26. issue #10 另一工作階段的診斷紀錄（2026-09-29，歷史提案）
+
+> 合併註記：以下保留另一工作階段原始診斷，**目前實作以 §25 為準**。
+> 單一 action logit 做 sigmoid 不能還原多類 softmax，因此未採該修法；實作是隔離
+> `rl_agent` 欄位。溫度校準不能改變排序或修好真假顛倒，亦不能從少量一致性測試
+> 排除量化影響；noul 品質根因尚未定論。下方「模型已刪」是該工作階段的環境紀錄，
+> 不適用於本次有現存權重且完成 8 題試跑的工作區。保留 Issue #10 追蹤語意品質。
 
 對應 GitHub issue #10「Laya provider: noul scores don't discriminate true/false
 claims; rl_agent.act_probability > 1」。**兩個獨立問題，拆開判**，尚未動程式碼。
@@ -1941,3 +2036,15 @@ sigmoid 補正（`1/(1+e^-x)`）；或更正確地在綑綁時照官方 export �
 
 **接手成本**：無未提交 diff、無未 push commit（已 ff 到 origin/main @ b024d49）；本機
 git 已同步。接續者先修 A（adapters.js sigmoid＋單測），驗證需先落地模型檔。
+
+## 27. 合併與 GitHub 中英文件（2026-09-29）
+
+- 使用者授權合併主分支、處理相關 PR／Issue，並補齊 GitHub 中英說明。
+- 文件 PR #9 已核對現有壓縮接口與 UI log 行為，補中英 PR 說明後合併。
+  其繁中設定表一併補入 `README.zh-TW.md`。
+- 本次分支整合主分支新增的診斷紀錄；DEV LOG 的內容衝突保留雙方段落，並以 §26
+  開頭註記更正舊提案，不把單一 logit 的 sigmoid 當正式修復。
+- 英文／繁中 README 及 gateway 文件補齊分流條件、設定、模型資源、費用限制、
+  私有資料與訓練界線、驗證及重啟要求。Issue #10 保留追蹤模型語意品質，不誤關。
+- 整合後重跑：275 項離線測試，273 通過、2 跳過、0 失敗；build、gateway acceptance
+  與 `git diff --check` 通過。使用 §25 的隔離環境，沒有為這輪驗證呼叫真實 JEV。

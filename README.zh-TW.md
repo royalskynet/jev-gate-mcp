@@ -14,6 +14,47 @@
 gateway 有自己的 [README](gateway/README.md)，glue 看
 [`docs/agent-glue.md`](docs/agent-glue.md)。
 
+## LAYA＋Jev：有限範圍的本機分類試行
+
+設定 `JEV_PROVIDER=laya` 後，**Decision Gateway** 只把核准的簡短固定選項分類
+交給現有 LAYA 模型，其餘判斷交給 Jev。這不會把獨立的 prune／壓縮 hook 改成本機 LAYA。
+
+| 請求 | 分工 |
+|---|---|
+| 完整符合 `TASK_KIND`／`MESSAGE_TOPIC` 題型、最多 320 字元的合格獨立短文 | 先由 LAYA 分類 |
+| 本機錯誤、格式不合法、`no_match`，或任務類型為 `general` | Jev 接手 |
+| 其他題型、明確指定模型、長文／額外上下文、難度、風險、驗證、審查、關聯度及所有 policy | Jev |
+
+固定題型從 [`classification-profiles.js`](gateway/src/classification-profiles.js) 匯入。
+比對完整題型，不能只改題目名稱就走本機。明顯否定、多步驟或依賴前文的語句會排除，
+但規則不能辨識所有模糊情況。混合批次只把合格分類題送給 LAYA；其餘題目與本機
+fallback 合併一次 Jev 請求，本機成功的題目不重問。
+
+設定範例見 [`.env.example`](.env.example)：使用 `JEV_PROVIDER=laya`，
+`JEV_LAYA_MODEL_DIR` 指向**已下載**的模型，`JEV_API_KEY_FILE` 指向 Jev 金鑰檔。
+檔名包含 `TYPESAFE` 時使用 TypeSafe 原生接口，否則分流使用 OpenRouter。
+`JEV_MODEL` 設定雲端模型。沒有雲端金鑰時，需 Jev 的工作會報錯，不會擴大本機用途。
+程式不自動下載權重。現有 INT8 模型磁碟約 540 MB，先前量到載入峰值約 1.2–1.9 GB RSS，
+仍有記憶體成本。首次使用才載入，`JEV_LAYA_IDLE_MS` 控制閒置卸載，預設十分鐘。
+
+**費用：**純分類且本機成功時，可省下一次 Jev 呼叫。混合題仍需 Jev，本機失敗也可能
+由 Jev 接手。尚未量到整體淨節省；不為蒐集教師答案額外呼叫雲端。
+
+**資料：**本機分類嘗試預設寫入私有 `~/.jevgate/routing-samples.jsonl`，權限 `0600`，
+包含輸入文字。設 `JEV_ROUTING_LOG=off` 可停用。檔案不應提交 Git，使用前需人工
+檢查與去識別。Jev fallback 答案只是教師參考，`label` 固定為 `null`，
+`training_eligible` 為 `false`。**目前不自動評分、不自動訓練**；後續需人工正解、
+去重、獨立訓練／測試集。尚未逐筆記錄 bundle 指紋，換模型、tokenizer 或 runtime
+前要封存資料並記錄版本，不能混用後宣稱正確率。
+
+**驗證與限制：**離線測試 273 通過、2 跳過，build 與 gateway acceptance 通過。
+8 題合成中文題答對 7 題（任務類型 4/4、主題 3/4），不是通用準確率。
+不可信的 `rl_agent` 原始 action logits 已移除，不轉成看似有效的機率。
+policy 維持既有 advisory／shadow 設定。更新 checkout 後必須重啟 MCP；獨立安裝的
+plugin cache 需另外更新。本次未驗證真實雲端與重啟後流量。
+語意品質後續追蹤見 [Issue #10](https://github.com/royalskynet/jev-gate-mcp/issues/10)，
+完整離線命令及證據見 [DEV LOG §25](docs/DEVLOG.md)。
+
 ## Prune plugin
 
 Claude Code plugin，用 Jev（System One）的 keep/drop 判斷，在 tool output
@@ -352,6 +393,9 @@ transport 任何失敗都保持現狀，絕不往上或往下猜。
 | 釘住最近 turn | `JEV_COMPACT_PIN_LAST` | 6 |
 | 給 judge 看的 payload 開頭 | `JEV_COMPACT_ASK_CHARS` | 1,200 |
 | 關閉 | `JEV_COMPACT_ENABLED=0` | 預設開 |
+| 後端 | `JEV_COMPACT_BACKEND` | `auto`；可固定 `anthropic`／`openai` |
+| judge 端點／模型 | `JEV_ENDPOINT`／`JEV_MODEL`（與 prune 共用） | Anthropic 後端預設 OpenRouter decisions／`~typesafe/jev-latest`；非 OpenRouter 端點移除 `provider` 欄位 |
+| 工作階段顯示結果訊息 | `JEV_UI_LOG=1` | 預設關閉；持久紀錄見 `~/.openclaw/state/jev-*.log` |
 
 契約在 `agent-glue/src/compact.js`，是契約不是調參：user/assistant 文字
 永不被刪或截斷；被刪的 call 與它的 result 一起走；首尾 turn 釘住；

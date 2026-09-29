@@ -14,6 +14,59 @@ They share a repo and a provider key, nothing else. The rest of this page is the
 prune plugin; the gateway has its own [README](gateway/README.md), and the glue
 has [`docs/agent-glue.md`](docs/agent-glue.md).
 
+## LAYA + Jev: limited local classification pilot
+
+With `JEV_PROVIDER=laya`, the **Decision Gateway** uses the existing local LAYA
+model only for approved, short, fixed-choice classifications. Jev handles other
+judgments. This setting does not move the separate prune/compaction hooks to LAYA.
+
+| Request | Provider |
+|---|---|
+| Exact `TASK_KIND` or `MESSAGE_TOPIC` schema, eligible standalone text up to 320 characters | LAYA first |
+| Local error, malformed answer, `no_match`, or task-kind `general` | Jev fallback |
+| Other schemas, explicit model, longer/context-rich requests, difficulty, risk, verification, review, relevance, or any policy | Jev |
+
+Import the approved schemas from [`classification-profiles.js`](gateway/src/classification-profiles.js).
+Only their full schema matches are eligible; a matching question name alone is
+insufficient. Obvious negation/multi-step/context-dependent wording is excluded
+conservatively; these checks do not recognize every ambiguous request. In mixed
+batches, only eligible questions go to LAYA. Remaining questions and fallbacks
+share one Jev request; successful local answers are not asked again.
+
+Use [`.env.example`](.env.example) as a configuration reference. Set `JEV_PROVIDER=laya`,
+`JEV_LAYA_MODEL_DIR` to an **already downloaded** bundle, and `JEV_API_KEY_FILE`
+to the Jev credential file. A basename containing `TYPESAFE` selects native
+TypeSafe; otherwise the hybrid path uses OpenRouter. `JEV_MODEL` configures the
+cloud adapter. Missing cloud credentials produce errors for cloud work; they do
+not expand local eligibility. No weights are downloaded automatically. The
+current INT8 bundle is about 540 MB on disk; previously measured load peaks were
+about 1.2–1.9 GB RSS. Local does not mean memory-free. Loading remains lazy, with
+idle unloading controlled by `JEV_LAYA_IDLE_MS` (default ten minutes).
+
+**Cost:** a successful local-only classification avoids a Jev request. Mixed
+batches still call Jev, and local failures can fall back to it. Net savings have
+not been measured. No extra teacher calls are made just to collect examples.
+
+**Data:** local classification attempts are saved to the private, mode-`0600`
+`~/.jevgate/routing-samples.jsonl` by default; set `JEV_ROUTING_LOG=off` to disable.
+It contains the input text. Keep it outside Git and review/redact it before use.
+Jev fallback answers are teacher suggestions, not gold labels: `label` stays
+`null`, `training_eligible` stays `false`. There is **no automatic scoring or
+training**. Human labels, deduplication, and separate training/test sets are
+required. Per-record bundle fingerprints are not yet recorded; archive datasets
+and record model/tokenizer/runtime versions before changing the bundle.
+
+**Validation and limits:** 273 offline tests passed, two skipped; build and
+gateway acceptance passed. Eight synthetic Chinese checks produced 7/8 correct
+(task kind 4/4, topic 3/4), not a general accuracy benchmark. Untrusted
+`rl_agent` action logits are omitted, not converted into fabricated probabilities.
+Policies remain advisory/shadow as configured. After updating this checkout,
+restart its MCP process; separately installed plugin caches need their own
+update. Live cloud behavior and post-restart traffic were not verified in this
+change. See [Issue #10](https://github.com/royalskynet/jev-gate-mcp/issues/10) for
+the remaining semantic-quality problem and [DEV LOG §25](docs/DEVLOG.md) for
+the exact offline command and evidence.
+
 ## Prune plugin
 
 A Claude Code plugin that prunes long tool output with a Jev (System One)
@@ -410,7 +463,7 @@ one System One judgment per tool call/result pair (~350 in / ~35 out tokens,
 | payload head shown to the judge | `JEV_COMPACT_ASK_CHARS` | 1,200 |
 | off switch | `JEV_COMPACT_ENABLED=0` | on |
 | backend | `JEV_COMPACT_BACKEND` | `auto` (`anthropic` / `openai` pin one) |
-| judge endpoint / model | `JEV_ENDPOINT` / `JEV_MODEL` (shared with prune) | OpenRouter decisions / `~typesafe/jev-latest`; a non-OpenRouter endpoint gets no `provider` field |
+| judge endpoint / model | `JEV_ENDPOINT` / `JEV_MODEL` (shared with prune) | Anthropic backend: OpenRouter decisions / `~typesafe/jev-latest`; a non-OpenRouter endpoint gets no `provider` field |
 | show outcome lines in the session | `JEV_UI_LOG=1` | off — SDK hosts (Happy, desktop) render every `ui.log` as a message; read `~/.openclaw/state/jev-*.log` instead |
 
 #### Two backends, one per transcript shape

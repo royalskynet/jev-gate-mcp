@@ -91,14 +91,13 @@ export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai
 // No apiKey. `loadLaya` serves a pre-downloaded bundle from $JEV_LAYA_MODEL_DIR
 // (default ~/.jevgate/laya-multilingual-int8) — never hits the network at
 // runtime, so the first request loads the ONNX session (a few seconds for the
-// 540MB int8 graph) and stays inside the gateway deadline. It also adds the
+// 540MB int8 graph). The gateway owns the overall deadline. It also adds the
 // `[CLS]/[SEP]/[MASK]/[PAD]` tokenizer aliases in a shadow copy (upstream lacks
 // them; receptron's id() requires them) and passes ORT CPU-memory options that
 // keep the resident set small. On any load failure (missing files / load
-// timeout) this throws and the config-level dual-channel falls back to
-// OpenRouter. One session is reused process-wide (never closed) so concurrency
-// cannot race a release and a warm answer costs one forward pass (~100ms on
-// Apple silicon for the int8 graph). `systemOne` returns the same answer shape
+// timeout) this throws; the router may use the configured Jev provider while
+// the request still has time. One session is reused until idle unloading;
+// a warm answer costs one forward pass. `systemOne` returns the same answer shape
 // as Jev (choice/score/noul with probabilities), so the stateless gateway
 // contract `(state, questions, opts) => result` applies here unchanged — opts
 // is ignored (no model override on local weights).
@@ -157,9 +156,17 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
     const laya = await deadline(sessionPromise, timeoutMs, 'laya load');
     try {
       const result = await deadline(laya.systemOne(state, questions), timeoutMs, 'laya systemOne');
+      // This bundle's action head exposes raw logits under act_probability.
+      // It is unused for typed classification and cannot authorize anything.
+      // Quarantine the entire extension; never clamp/sigmoid it into fake certainty.
+      const answers = Object.fromEntries(Object.entries(result.answers ?? {}).map(([id, answer]) => {
+        if (!answer || typeof answer !== 'object') return [id, answer];
+        const { rl_agent, ...typed } = answer;
+        return [id, typed];
+      }));
       return {
         model: result.model,
-        answers: result.answers,
+        answers,
         usage: result.usage ?? { input_tokens: 0, output_tokens: 0 },
         latency_ms: null, // local runtime reports no wall time; gateway records its own
       };
