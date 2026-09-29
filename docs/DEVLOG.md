@@ -1897,6 +1897,50 @@ Laya 靜默壞掉時帳單會先告訴你，這個事件讓你先知道。
 **下一步**：重開 session 讓 `JEV_PROVIDER=laya` 生效，實呼一次 `jev_evaluate` 確認 provider=laya。
 換模型前需重抓 fp16 當 `laya-agree` 參考（本機已刪以省 647MB）。
 
+### 24.1 bundle 出處與在第二台機器重建（2026-09-30）
+
+設定跟著 git 走，**權重不會跟著走**（fix 9730）。第二台機器 `git pull` 之後
+`~/.jevgate/laya-multilingual-int8/` 是空的，此時切 `JEV_PROVIDER=laya` 比不切更糟：每
+次判斷先試載 ONNX、失敗、再 fallback 打雲端，多付一次失敗開銷卻省不到錢。先抓權重，
+再切 provider。
+
+bundle 不是單一上游 repo，是三處組起來的——這是先前只存在於操作紀憶、沒寫進文件的部分：
+
+| 檔案 | 來源（HF repo / 檔名） | 大小 | sha256（前 16） |
+|---|---|---|---|
+| `laya.onnx` | `yehor-oleksiuk/laya-multilingual-onnx` → `model_int8.onnx` | 540,524,684 | `22fdf8b58fb9242d` |
+| `tokenizer/tokenizer.json` | 同上 → `tokenizer.json` | 34,363,188 | `609d8f4c067cd395` |
+| `tokenizer/tokenizer_config.json` | 同上 → `tokenizer_config.json` | 524 | `6c6b2d8e3c84ce0e` |
+| `laya_config.json` | `killkli/open-jev-laya-multilingual-onnx` → `laya_config.json` | 115 | `7de12d5029e6834f` |
+| （fp16 參考用）`laya.onnx` | `killkli/open-jev-laya-multilingual-onnx` → `onnx/laya_fp16.onnx` | 646,982,318 | `e5a1308865d26b8e` |
+
+只有 killkli 那份有 runtime 要的 `laya_config.json`（max_len 1024 / head_max_len 256）；
+int8 圖只有 yehor 那份有。兩邊 tokenizer 位元相同，所以 int8 與 fp16 兩個 bundle 共用同
+一份 vocab，`scripts/laya-agree.mjs` 的「config-identical」前提成立。
+
+下載後還要做 §24 坑 4 的那一步：圖輸出 `act_logits` 改名 `act_probs`。改名的是 protobuf
+字串，短一個 byte，所有外層 message 的 length varint 都要跟著縮——不是 `sed` 能做的事。
+`scripts/fetch-laya-bundle.mjs` 把整套包起來：
+
+```
+node scripts/fetch-laya-bundle.mjs              # int8，落到 JEV_LAYA_MODEL_DIR 或 ~/.jevgate/laya-multilingual-int8
+node scripts/fetch-laya-bundle.mjs --fp16       # fp16 參考，落到 ~/.jevgate/laya-multilingual
+node scripts/fetch-laya-bundle.mjs --self-check <bundle-dir>   # 不下載，驗算術
+```
+
+- URL 釘 commit 不釘 `main`：鏡像悄悄重新量化時，沒有 checksum 的 pull 會靜默換掉權重。
+- 每個檔案下載後比 size＋sha256；改名後再比一次成品（`540,524,682` /
+  `33f86af38198a1c4`），對不上就中止，不會留下半套 bundle 讓 runtime 靜默 fallback。
+- 斷線續傳走 `curl -C -`。**注意**：續傳對一個「已完成但長度不同」的檔案會從尾端接上去
+  ——本機已有改名後的成品（比上游短 2 bytes）時重跑，會被接回上游長度而算錯 sha。腳本
+  先驗 sha 命中就跳過下載避開這條；手動 `curl -C -` 到既有 bundle 則會踩。
+- 改名邏輯的驗收在 `gateway/test/laya-bundle-rename.test.mjs`（合成 protobuf，含 length
+  varint 由 2 bytes 縮成 1 byte 的邊界），不需要權重就能跑。實機另驗過一次反向：把已組好
+  的 M2 bundle 改名回 `act_logits`，位元還原成上游 `model_int8.onnx`（sha 完全相同），
+  證明腳本在第二台機器組出來的會是同一份檔案。
+
+裝完跑一次：`JEV_LAYA_MODEL_DIR=<dir> node scripts/laya-routing-smoke.mjs`。
+
 ## 25. LAYA／JEV 按用途分工與待標註資料（2026-09-29）
 
 使用者確認：先讓 LAYA 試行短文字、固定選項的任務／主題分類，其餘交給 JEV。
