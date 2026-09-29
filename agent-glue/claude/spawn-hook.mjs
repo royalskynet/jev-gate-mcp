@@ -16,7 +16,7 @@
  * list is advisory only and never affects model choice.
  */
 import { triage, DEFAULT_TRIAGE } from '../src/triage.js';
-import { liveTransport } from '../src/live.js';
+import { liveTransport, localLayaJudge } from '../src/live.js';
 import { ENV, fillEnv } from './env.mjs';
 
 // The shipped tier ladder, cheapest first. Same mapping the community
@@ -134,8 +134,13 @@ export async function spawnDecision(input = {}, deps = {}) {
   // when there is no credential, which still fail-opens — but on purpose).
   const transport = deps.transport ?? (await liveTransport()) ?? undefined;
   // 缺口 2 低賭注本地化: local Laya answers difficulty/kind (fail-soft; null
-  // keeps the cloud answers). Tests inject their own judge through `deps`.
-  const localJudge = deps.localJudge ?? (await localLayaJudge()) ?? undefined;
+  // keeps the cloud answers). Only auto-engage on the real gateway path — when
+  // a transport is injected (tests control the verdict) the caller supplies
+  // `deps.localJudge` explicitly; otherwise the local model would override the
+  // injected transport's difficulty/kind.
+  const localJudge = deps.transport === undefined
+    ? (deps.localJudge ?? (await localLayaJudge()) ?? undefined)
+    : deps.localJudge;
   const decision = await triage(
     {
       text: input.prompt ?? '',

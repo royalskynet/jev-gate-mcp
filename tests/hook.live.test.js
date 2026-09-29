@@ -14,6 +14,7 @@ function makeHost(userText = 'Find why the app cannot load its config file.') {
   const logs = [];
   return {
     logs,
+    env: { get: async (name) => (name === 'JEV_UI_LOG' ? '1' : process.env[name] ?? '') },
     http: { fetch: async (url, init) => {
       const res = await fetch(url, init);
       return { status: res.status, ok: res.ok, headers: {}, text: await res.text() };

@@ -208,6 +208,29 @@ test('verify: a Jev judge failure never turns a deterministic pass into unknown'
   assert.equal(r.jev, null);
 });
 
+test('verify: laya noul is advisory, verdict untouched even on failure', async () => {
+  const r = await verifyCompletion({
+    claim: 'done',
+    evidence: [{ kind: 'Bash', text: 'ok', ok: true }],
+    layaNoul: true,
+  });
+  assert.equal(r.verdict, 'pass', 'laya noul must never change the verdict');
+  assert.ok(r.laya === null || typeof r.laya.noul === 'number', 'advisory result is null or a numeric noul');
+});
+
+test('verify: layaNoulCheck returns a numeric noul from a working local judge', async () => {
+  const { layaNoulCheck } = await import('../../agent-glue/src/verify.js');
+  const stub = async () => ({ noul: { type: 'noul', noul: 0.9 } });
+  const r = await layaNoulCheck({ claim: 'done', evidence: [] }, stub);
+  assert.equal(r.noul, 0.9);
+});
+
+test('verify: layaNoulCheck returns null on judge failure', async () => {
+  const { layaNoulCheck } = await import('../../agent-glue/src/verify.js');
+  const bad = async () => { throw new Error('laya down'); };
+  assert.equal(await layaNoulCheck({ claim: 'done', evidence: [] }, bad), null);
+});
+
 test('review: staged order — risk filter first, empty pass -> skip', async () => {
   const r = await reviewDiff({ files: [{ path: 'docs/note.txt', added: 3 }], riskThreshold: 100 });
   assert.equal(r.stage, 'risk-filter');

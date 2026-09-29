@@ -76,9 +76,31 @@ export function localLayaJudge() {
       const { default: os } = await import('node:os');
       const dir = ENV.JEV_LAYA_MODEL_DIR || path.join(os.homedir(), '.jevgate', 'laya-multilingual');
       const laya = await Laya.load({ modelDir: dir });
+      // Idle unload: same contract as gateway makeLayaAdapter — release the
+      // session after JEV_LAYA_IDLE_MS (default 600000ms) of no triage calls.
+      const idleMs = Math.max(0, Number(ENV.JEV_LAYA_IDLE_MS) || 600000);
+      let idleTimer = null;
+      let current = laya;
+      const unload = async () => {
+        idleTimer = null;
+        const inst = current;
+        current = null;
+        if (inst) { try { if (inst.close) await inst.close(); } catch { /* already gone */ } }
+      };
+      const armIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => { void unload(); }, idleMs);
+        if (typeof idleTimer.unref === 'function') idleTimer.unref();
+      };
       return async (state, questions) => {
-        const r = await laya.systemOne(state, questions);
-        return r.answers;
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+        try {
+          if (!current) current = await Laya.load({ modelDir: dir });
+          const r = await current.systemOne(state, questions);
+          return r.answers;
+        } finally {
+          armIdle();
+        }
       };
     } catch {
       return null; // no local model -> caller keeps the status quo transport answers
