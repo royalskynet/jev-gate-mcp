@@ -256,9 +256,18 @@ export const register = (on, options = {}) => {
     } catch {
       standDown = false; // unreadable settings is not a reason to stop working
     }
+    // The percent trigger needs `$.session.compact()` to start a compaction of
+    // its own. SDK hosts (Happy, `-p`) do not offer it, so the "fast" half of
+    // this module is inert there and only the host's own wall reaches us. That
+    // was observable exactly once in four days — a single throw from whichever
+    // turn happened to cross the threshold — so say it up front instead.
+    const canSelfCompact = typeof $.session?.compact === 'function';
     await appendLedger($, standDown
       ? 'jev-compact: standing down — fast-jev-compaction is also enabled; disable one of the two'
       : `jev-compact: registered (at ${CONFIG.compactAtPercent}% or ${CONFIG.compactAtTokens} tokens, pinLast ${CONFIG.pinLast}, enabled=${ENABLED})`);
+    if (!standDown && ENABLED && !canSelfCompact) {
+      await appendLedger($, `jev-compact: percent trigger inert — this host has no $.session.compact(), so the ${CONFIG.compactAtPercent}% target cannot fire; compaction only rides the host's own wall (autoCompactWindow minus its buffer) or /compact`);
+    }
     return next(e);
   });
 

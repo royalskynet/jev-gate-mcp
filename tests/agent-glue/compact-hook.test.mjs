@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  pairState, userRequestOf, judgePair, rivalCompactor, apiKey, CONFIG, shouldCompact,
+  pairState, userRequestOf, judgePair, rivalCompactor, apiKey, CONFIG, shouldCompact, register,
 } from '../../agent-glue/claude/compact-hook.mjs';
 import { compactMessages } from '../../agent-glue/src/compact.js';
 
@@ -160,4 +160,40 @@ test('compact-hook: on a 1M window the absolute token ceiling fires long before 
   } finally {
     CONFIG.compactAtTokens = saved;
   }
+});
+
+test('compact-hook: says so at session start when the host cannot self-compact', async () => {
+  // Happy and `-p` have no $.session.compact(), so the percent trigger is
+  // inert there. Before this, the only evidence was one throw from whichever
+  // turn happened to cross the threshold — four days of silence otherwise.
+  const handlers = {};
+  const on = (event, fn) => { handlers[event] = fn; };
+  register(on, {});
+
+  // fakeHost's read only serves `files`, so appendLedger's read-then-write
+  // would overwrite each line; let the ledger accumulate like a real file.
+  const appendingHost = () => {
+    const h = fakeHost();
+    const read = h.fs.read.bind(h.fs);
+    h.fs.read = async (p) => (p in h.written ? h.written[p] : read(p));
+    return h;
+  };
+
+  const ledgerOf = (written) => Object.entries(written)
+    .filter(([p]) => p.includes('jev-compact.log'))
+    .map(([, v]) => v).join('');
+
+  const headless = appendingHost();
+  headless.session = {};
+  await handlers['session.start'](headless, {}, (e) => e);
+  const inert = ledgerOf(headless.written);
+  assert.match(inert, /registered \(at /);
+  assert.match(inert, /percent trigger inert/);
+
+  const tui = appendingHost();
+  tui.session = { async compact() {} };
+  await handlers['session.start'](tui, {}, (e) => e);
+  const live = ledgerOf(tui.written);
+  assert.match(live, /registered \(at /);
+  assert.equal(/percent trigger inert/.test(live), false, 'a host that can self-compact gets no notice');
 });
