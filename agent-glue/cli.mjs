@@ -109,14 +109,30 @@ switch (sub) {
       respond({ messages, compacted: false, reason: 'no key', reducedBy: 0 });
       break;
     }
-    respond(await compactMessages({
+    // judgePair maps a failed call (429 quota, 401, 5xx) to 'keep', so a dead
+    // judge would still be called once per pair. Abort the pass on the first
+    // failed response instead: compactMessages turns the throw into
+    // `judge-failed` and the host falls back without N wasted round trips.
+    let failed = null;
+    const watched = { ...node$, http: { fetch: async (url, init) => {
+      let res;
+      try { res = await node$.http.fetch(url, init); } catch (e) { failed = 'network'; throw e; }
+      if (!res.ok) failed = res.status;
+      return res;
+    } } };
+    const result = await compactMessages({
       messages,
       pinFirst,
       pinLast,
       minReductionChars,
       judgeHeadChars: 0,
-      judge: (pair) => judgePair(node$, key, '', pair),
-    }));
+      judge: async (pair) => {
+        const choice = await judgePair(watched, key, '', pair);
+        if (failed !== null) throw new Error(`judge HTTP ${failed}`);
+        return choice;
+      },
+    });
+    respond(failed !== null ? { ...result, reason: `judge-http-${failed}` } : result);
     break;
   }
   default: {

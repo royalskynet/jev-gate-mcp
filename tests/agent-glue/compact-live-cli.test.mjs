@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CLI = path.join(ROOT, 'agent-glue', 'cli.mjs');
 
-function startServer() {
+function startServer(status = 200) {
   const bodies = [];
   const server = createServer((req, res) => {
     let body = '';
@@ -25,7 +25,7 @@ function startServer() {
       bodies.push(JSON.parse(body));
       // Connection: close so undici's keep-alive pool releases the socket;
       // otherwise server.close() waits on a live connection and the test hangs.
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Connection': 'close' });
+      res.writeHead(status, { 'Content-Type': 'application/json', 'Connection': 'close' });
       res.end(JSON.stringify({ answers: { q: { choice: 'drop' } } }));
     });
   });
@@ -102,6 +102,35 @@ test('compact-live: no payload or user request crosses the wire, even with judge
       assert.equal(body.state.pair.result, '', 'no result payload crosses the wire');
       assert.equal(body.state.pair.arguments, '', 'no argument payload crosses the wire');
     }
+  } finally {
+    server.close();
+    server.closeAllConnections();
+  }
+});
+
+// The free Zen quota runs out daily (429 FreeUsageLimitError). judgePair
+// answers 'keep' on a failed call, so without an abort every pair would still
+// cost a round trip; the host would pay N x latency to get nothing back.
+test('compact-live: a 429 judge aborts the pass after one call, reason judge-http-429', async () => {
+  const { server, bodies, port } = await startServer(429);
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-compact-live-'));
+    const keyFile = path.join(dir, 'key.txt');
+    fs.writeFileSync(keyFile, 'test-key');
+    const two = bigMessages();
+    // A second unpinned pair, so "stops after one" is distinguishable from "judged all".
+    two.splice(3, 0,
+      { role: 'assistant', content: 'again', tool_calls: [{ id: 'b', function: { name: 'Bash', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'b', content: 'y'.repeat(9000) });
+    const r = await runCli(
+      { messages: two },
+      { JEV_ENDPOINT: `http://127.0.0.1:${port}/zen/v1/systemone`, JEV_API_KEY_FILE: keyFile },
+    );
+    assert.equal(r.status, 0, `stderr=${r.stderr}`);
+    const v = JSON.parse(r.stdout);
+    assert.equal(v.compacted, false);
+    assert.equal(v.reason, 'judge-http-429');
+    assert.equal(bodies.length, 1, 'no further judge calls after the first failure');
   } finally {
     server.close();
     server.closeAllConnections();
