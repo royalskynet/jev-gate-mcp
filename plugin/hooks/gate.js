@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { makeStopGate, makeNextGate } from '../lib/gate.js';
+import { makeStopGate, makeNextGate, logAsync } from '../lib/gate.js';
 import { readEvidence } from '../lib/transcript.js';
 import { unsupportedIds, idBlock } from '../lib/idcheck.js';
 import { DEFAULT_CONFIG } from '../lib/judge.js';
@@ -28,7 +28,18 @@ export async function handleStop(payload) {
   // the whole transcript because quoting a hash from an earlier round is honest.
   try {
     const ids = unsupportedIds(claim, readEvidence(payload?.transcript_path, 400000, { allRounds: true }) || evidence);
-    if (ids.length && !cfg.shadow) return idBlock(ids);
+    if (ids.length) {
+      // Every hit is recorded whether or not it acts. Staged rollouts stop
+      // checking the moment the rollout ends; a permanent ledger is what makes
+      // the false-positive rate knowable next month instead of during a window.
+      // The denominator is already there: the judge below logs every Stop.
+      await logAsync(cfg, {
+        event: cfg.shadow ? 'idcheck_observe' : 'idcheck_block',
+        gate: 'stop',
+        ids,
+      });
+      if (!cfg.shadow) return idBlock(ids);
+    }
   } catch {
     // Fail open, like every other guard in this hook.
   }

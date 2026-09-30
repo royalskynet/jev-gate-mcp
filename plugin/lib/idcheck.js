@@ -91,7 +91,7 @@ export function idBlock(ids) {
   return {
     decision: 'block',
     reason:
-      `(jev-gate) ${ids.length === 1 ? 'this identifier' : 'these identifiers'} appear in the claim but in no tool output this session: ` +
+      `(jev-gate) ${ids.length === 1 ? 'this identifier appears' : 'these identifiers appear'} in the claim but in no tool output this session: ` +
       `${ids.slice(0, 5).join(', ')}. An id can only be quoted, not derived, so this is an invented result. ` +
       'Run the command and quote what it returned, or remove the id. Saying plainly that something is unverified is fine — inventing its id is not.',
   };

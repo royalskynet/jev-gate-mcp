@@ -228,10 +228,12 @@ test('live: a real drop writes a ledger-style line', { skip: !hasKey && 'no api 
   );
 });
 
-test('a near-miss under the threshold is recorded; a small output leaves no trace', async () => {
-  // Observation window (DEVLOG §23.6): the ledger cannot show what pruning gave
-  // up when the threshold rose, because those calls stopped happening. Half a
-  // chunk up is the give-up band; below it the line count would swamp the file.
+test('the closed observation window writes nothing, at any size under threshold', async () => {
+  // DEVLOG §23.6 opened a temporary window that logged `jev-skip(...)` for the
+  // band the raised threshold gave up. The verdict landed and `72e3324` dropped
+  // the instrumentation; this test still asserted the line and failed from that
+  // commit on. Inverted rather than deleted: the give-up band is exactly the
+  // noise that swamped the ledger, so a re-add should trip something.
   const writes = [];
   const $ = {
     ...makeHost(),
@@ -245,6 +247,5 @@ test('a near-miss under the threshold is recorded; a small output leaves no trac
   await run('y'.repeat(CONFIG.chunkChars / 2 - 1));
   assert.equal(writes.length, 0, 'below half a chunk must stay out of the ledger');
   await run('y'.repeat(CONFIG.chunkChars - 1));
-  assert.equal(writes.length, 1, 'the give-up band must be recorded');
-  assert.match(writes[0], /jev-skip\(Bash\): 15999 chars, under threshold 16000/);
+  assert.equal(writes.length, 0, 'the observation window is closed — no skip logging');
 });

@@ -45,7 +45,12 @@ export function shadow(decideFn, cfg, label = 'gate') {
   };
 }
 
-async function logAsync(cfg, event) {
+/**
+ * Exported because the deterministic identifier check decides without calling
+ * `shadow()`, so it would otherwise act without leaving a ledger line — the one
+ * record of what the gate stopped and whether it was right to.
+ */
+export async function logAsync(cfg, event) {
   try {
     await fsP.mkdir(dirname(cfg.gateLog), { recursive: true });
   } catch { /* ignore */ }
