@@ -462,7 +462,7 @@ node scripts/live-probe.mjs   # 需要 provider key，花幾美分
 | 能力 | Claude Code | openclaw | Hermes |
 |---|---|---|---|
 | prune（改寫 tool 結果） | `tool.call` | ✗ — `tool_result_persist` 是同步的（async handler 的回傳被記 log 然後丟掉），`after_tool_call` 只能觀察 | `tool_execution` middleware |
-| 快速壓縮 | `session.compact` | ✗ — `before_compaction` / `after_compaction` 只能觀察 | 未接（未來可用 `llm_request` middleware） |
+| 快速壓縮 | `session.compact` | `api.registerCompactionProvider()`（2026.9 起），需設 `agents.defaults.compaction.provider = "jev-compact"` 才啟用；任何例外都退回內建摘要器 | 未接（未來可用 `llm_request` middleware） |
 | triage（模型路由） | `agent.spawn` | `before_model_resolve` → `providerOverride` / `modelOverride` | 未接（`llm_request`） |
 | gate（阻斷呼叫） | `PreToolUse` | `before_tool_call` | `pre_tool_call` — 阻斷與 shadow 模式矛盾，故不接 |
 

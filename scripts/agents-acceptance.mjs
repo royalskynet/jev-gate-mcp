@@ -71,12 +71,15 @@ stage('codex hooks smoke', () => {
   });
   const s = JSON.parse(stop);
   if (s.decision !== 'block') throw new Error('bare stop with no evidence must block once: got ' + s.decision);
-  if (s.stop_hook_active !== true) throw new Error('first block must set stop_hook_active');
+  // Codex's Stop output is { decision, reason }; stop_hook_active is an *input*
+  // the host sets on the retry, and an unknown output field is rejected (e1ec87c).
+  if (!s.reason) throw new Error('block must carry its text in reason');
+  if ('stop_hook_active' in s) throw new Error('stop_hook_active is input-only; Codex rejects it in output');
   const stop2 = run(process.execPath, ['agent-glue/codex/stop.mjs'], {
     input: JSON.stringify({ session_id: 'acc', stop_hook_active: true, transcript_path: null }),
   });
-  const s2 = JSON.parse(stop2);
-  if (s2.decision !== 'allow') throw new Error('already-active stop must not re-block');
+  // A pass is silence: block is the only decision Stop takes.
+  if (stop2.trim()) throw new Error('already-active stop must not re-block: got ' + stop2.trim());
   return 'stop=block-once-then-allow';
 });
 

@@ -565,7 +565,7 @@ each host's hook contract lets a plugin *change*, not by what the capability is:
 | capability | Claude Code | openclaw | Hermes |
 |---|---|---|---|
 | prune (rewrite a tool result) | `tool.call` | ✗ — `tool_result_persist` is synchronous (an async handler's result is logged and discarded), `after_tool_call` observes | `tool_execution` middleware |
-| fast compaction | `session.compact` | ✗ — `before_compaction` / `after_compaction` observe only | not wired (an `llm_request` middleware could carry it) |
+| fast compaction | `session.compact` | `api.registerCompactionProvider()` (2026.9+), opt-in with `agents.defaults.compaction.provider = "jev-compact"`; any throw falls back to the built-in summarizer | not wired (an `llm_request` middleware could carry it) |
 | triage (model routing) | `agent.spawn` | `before_model_resolve` → `providerOverride` / `modelOverride` | not wired (`llm_request`) |
 | gate (block a call) | `PreToolUse` | `before_tool_call` | `pre_tool_call` — blocking contradicts shadow mode, so not wired |
 

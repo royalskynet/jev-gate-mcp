@@ -15,7 +15,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 import { pruneCommand } from '../agent-glue/src/prune.js';
-import ocPlugin, { decideTurn, DEFAULT_CHEAP, DEFAULT_MIN_CHARS } from '../integrations/openclaw/index.mjs';
+import ocPlugin, { decideTurn, pluginConfigOf, DEFAULT_CHEAP, DEFAULT_MIN_CHARS } from '../integrations/openclaw/index.mjs';
+import { makeProvider, toCompactShape, PROVIDER_ID } from '../integrations/openclaw/compact-provider.mjs';
 import { TARGETS } from '../hooks/jev.js';
 
 // Sized off the live threshold, not a literal: raising `thresholdChars` used to
@@ -143,6 +144,72 @@ test('openclaw: a broken transport keeps the turn on its own model', async () =>
   );
   assert.equal(override, null);
   assert.equal(entry.outcome, 'status-quo');
+});
+
+test('openclaw: triage:false in plugin config spends no request', async () => {
+  let asked = false;
+  const spy = { evaluate: async () => { asked = true; return {}; } };
+  const r = await decideTurn({ prompt: 'a real turn '.repeat(40) }, { triage: false }, { transport: spy, now: 'T' });
+  assert.equal(r.override, null);
+  assert.equal(r.entry.outcome, 'off');
+  assert.equal(asked, false);
+});
+
+// api.config is the whole openclaw config; the plugin's own block is
+// api.pluginConfig. Reading the former made every plugin setting a no-op.
+test('openclaw: register reads api.pluginConfig and registers the compaction provider', async () => {
+  let hook; const providers = [];
+  ocPlugin.register({
+    config: { triage: true },
+    pluginConfig: { triage: false },
+    on: (name, fn) => { if (name === 'before_model_resolve') hook = fn; },
+    registerCompactionProvider: (p) => providers.push(p),
+  });
+  assert.equal(providers.length, 1);
+  assert.equal(providers[0].id, PROVIDER_ID);
+  assert.equal(hook, undefined, 'triage:false must not register a hook that needs conversation access');
+  ocPlugin.register({ pluginConfig: {}, on: (name, fn) => { if (name === 'before_model_resolve') hook = fn; }, registerCompactionProvider: () => {} });
+  assert.equal(typeof hook, 'function');
+  assert.deepEqual(pluginConfigOf({ config: { triage: true }, pluginConfig: { triage: false } }), { triage: false });
+  assert.deepEqual(pluginConfigOf({ config: { cheapModel: 'x' } }), {}, 'the whole openclaw config is not plugin config');
+});
+
+/** One openclaw (pi-ai) span: a big dead tool pair, then the user's real ask. */
+function ocSpan(resultChars) {
+  return [
+    { role: 'user', content: [{ type: 'text', text: 'list the repo, then fix the flaky test' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'Listing.' }, { type: 'toolCall', id: 'c1', name: 'exec', arguments: { command: 'ls -R' } }] },
+    { role: 'toolResult', toolCallId: 'c1', toolName: 'exec', content: [{ type: 'text', text: 'f'.repeat(resultChars) }], isError: false },
+    { role: 'assistant', content: [{ type: 'text', text: 'The flaky test is test_sync_lock.' }] },
+  ];
+}
+
+test('openclaw compaction: pi-ai toolCall/toolResult pair up for the judge', () => {
+  const m = toCompactShape(ocSpan(10));
+  assert.equal(m[1].tool_calls[0].id, 'c1');
+  assert.equal(m[2].role, 'tool');
+  assert.equal(m[2].tool_call_id, 'c1');
+  assert.equal(m[0].content, 'list the repo, then fix the flaky test');
+});
+
+test('openclaw compaction: a dropped pair is elided, user/assistant text stays verbatim', async () => {
+  const lines = [];
+  const p = makeProvider({}, { key: 'k', judge: async () => 'drop', log: async (l) => lines.push(l) });
+  const out = await p.summarize({ messages: ocSpan(20000) });
+  assert.ok(out.length < 2000, `summary kept the dead payload (${out.length} chars)`);
+  assert.match(out, /list the repo, then fix the flaky test/);
+  assert.match(out, /The flaky test is test_sync_lock./);
+  assert.match(lines[0], /tool sites elided/);
+});
+
+// openclaw falls back to its built-in summarizer only on a throw / empty result,
+// so every "cannot vouch for it" path must throw rather than return the span.
+test('openclaw compaction: keep, no key, or too little relief all hand back to built-in', async () => {
+  const log = async () => {};
+  await assert.rejects(makeProvider({}, { key: 'k', judge: async () => 'keep', log }).summarize({ messages: ocSpan(20000) }));
+  await assert.rejects(makeProvider({}, { key: null, log }).summarize({ messages: ocSpan(20000) }));
+  await assert.rejects(makeProvider({}, { key: 'k', judge: async () => { throw new Error('down'); }, log }).summarize({ messages: ocSpan(20000) }));
+  await assert.rejects(makeProvider({ maxKeepRatio: 0.0001 }, { key: 'k', judge: async () => 'drop', log }).summarize({ messages: ocSpan(20000) }));
 });
 
 /** A transport that answers whatever tier the test wants, in Jev's answer shape. */

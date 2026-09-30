@@ -2153,3 +2153,11 @@ hybrid（local 先答、cloud 當 fallback 兼 teacher、每筆落 `routing-samp
 - 上線後 live 攔的 2 次 `idcheck_block`（`9d1a190`、`519fad2`＋`31e1fbc`）全是誤報：hash 都在 transcript 的 tool_result 裡（push 輸出、`fixindex fi` 輸出），但 `readEvidence` 從尾部往前 walk 並 `unshift`，join 後是時間正序，`.slice(0, maxChars)` 把**最新的輪次**截掉——正是 claim 引用的證據；收集量一超過 400000，被截掉的就是最新一輪的 tool 輸出。
 - 修法：窗口溢出改從舊的一端砍（保留 tail），`plugin/lib/transcript.js` 一行；回歸測試 `tests/gate-idcheck.test.mjs` 用重現根因的最小 transcript 證明誠實引用不再被攔，端到端（真實 400000 窗口）也過。
 - 新增 `idcheckShadow` 設定（預設 `true`）：idcheck 只記 `idcheck_observe` 不 block，待累積誤報率量測後再決定是否重新啟用 block；`cfg.shadow` 行為不變。
+
+## 31. openclaw compaction provider 從 wip 收回主線（2026-09-30）
+
+PR #14（`wip/openclaw-jev-compact`）的 1–6 已換 hash 進 main，只剩 `bdfa45c` 獨有，改成 cherry-pick 到 main，不 rebase 整條分支。
+
+- 原本「openclaw 不能做快速壓縮」的前提被 2026.9 推翻：`registerCompactionProvider()` 讓 plugin 回傳要落盤的摘要字串。已對本機 openclaw 2026.9.6 的 `.d.ts` 核對 `summarize({ messages, previousSummary, … }): Promise<string>`，manifest 不需宣告 contract。
+- `pluginConfigOf(api)`：以前讀 `ctx.config`／`api.config`，那是整份 openclaw 設定，`cheapProvider` 等 plugin 設定全數無效。本機沒設 plugin config，所以修正後行為不變。
+- provider 預設不啟用：只有在 `agents.defaults.compaction.provider` 指名 `jev-compact` 時才會跑。本機 Bess 還沒切換，因為那是正式環境的系統設定，要等使用者決定。
