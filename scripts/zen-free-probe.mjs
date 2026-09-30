@@ -1,0 +1,67 @@
+#!/usr/bin/env node
+// Zero-token health probe for the free Jev tier. Deliberately does not use the
+// gateway: it must answer "is the free tier still free and alive?" on its own,
+// including when the gateway is the thing that is broken.
+//
+//   node scripts/zen-free-probe.mjs          # print verdict, exit 0 ok / 1 abort
+//   node scripts/zen-free-probe.mjs --quiet  # exit code only (for launchd/cron)
+//
+// Exit 1 is the alarm a scheduler watches. It never notifies on its own — the
+// caller decides how loud to be, so this stays a mechanical check and no token
+// is spent deciding whether the free tier is gone.
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { makeZenAdapter } from '../gateway/src/adapters.js';
+import { readZenStatus } from '../gateway/src/zen-status.js';
+
+const quiet = process.argv.includes('--quiet');
+const MODEL = process.env.JEV_MODEL ?? 'jev-1.13-free';
+const KEY_FILE = process.env.JEV_API_KEY_FILE
+  ?? join(homedir(), '.creds', 'kv', 'OPENCODE_ZEN_API_KEY.txt');
+
+const say = (line) => { if (!quiet) process.stdout.write(line + '\n'); };
+
+const QUESTIONS = {
+  liveness: {
+    type: 'choice',
+    instructions: 'Probe question. Pick the best fit.',
+    criteria: { ok: 'the probe reached the provider', fail: 'the probe did not' },
+  },
+};
+
+async function main() {
+  let key;
+  try {
+    key = readFileSync(KEY_FILE, 'utf8').trim();
+  } catch {
+    return abort(`credential file unreadable: ${KEY_FILE}`);
+  }
+  if (!key) return abort(`credential file empty: ${KEY_FILE}`);
+
+  const call = makeZenAdapter({ apiKey: key, model: MODEL });
+  const started = Date.now();
+  try {
+    // A one-candidate question: the answer is irrelevant, the round trip is
+    // the signal. `a` vs `b` so a provider that always picks the first
+    // candidate still returns a well-typed answer.
+    const r = await call('health probe', QUESTIONS);
+    const ms = Date.now() - started;
+    if (!r?.answers?.liveness) return abort('provider returned no answer');
+    say(`OK  jev free tier alive  model=${r.model}  latency=${ms}ms`);
+    return 0;
+  } catch (e) {
+    return abort(`free tier unreachable: ${e?.message ?? e}`);
+  }
+}
+
+function abort(reason) {
+  const status = readZenStatus();
+  say(`ABORT  ${reason}`);
+  say(`  judged_by=nothing (fail-closed; no paid provider is configured)`);
+  if (status && !status.ok && status.error) say(`  last_error=${status.error}`);
+  say(`  remediation=${status?.remediation ?? 'restore the free tier, or point JEV_PROVIDER / JEV_FALLBACK_PROVIDER elsewhere, then restart the session'}`);
+  return 1;
+}
+
+process.exitCode = await main();

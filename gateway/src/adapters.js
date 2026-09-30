@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { JevDecisionModel } from 'jevwire';
 import { ERR, LIMITS } from './core.js';
+import { recordZenStatus } from './zen-status.js';
 
 // --- Shared helper: normalize a jevwire answer or annotate a typed error ---
 
@@ -85,6 +86,44 @@ export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai
   // JevDecisionModel appends `/v1/systemone`; the base must stop at `/api`.
   const m = new JevDecisionModel({ apiKey, baseUrl, model, timeoutMs, maxRetries: LIMITS.maxRetries, fetch: fetchImpl, sleep });
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: opts.model });
+}
+
+// --- Zen: OpenCode Zen's hosted System One endpoint, free tier ---
+// Third System One host, same `/v1/systemone` contract as OpenRouter and the
+// same account key as the rest of OpenCode — only the base and the pinned
+// model id differ, so the shape is the OpenRouter adapter's verbatim. `baseUrl`
+// must stop before `/v1`: the client appends `/v1/systemone` itself.
+//
+// The free tier is the whole point and also the whole risk: it is the only
+// configured credential, so there is deliberately no paid sibling to fail over
+// to. Every outcome therefore lands in the status file — a dead free tier must
+// read as "judging stopped", never as a quiet downgrade.
+export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', model = 'jev-1.13-free', timeoutMs = LIMITS.deadlineMs, onStatus = recordZenStatus }) {
+  // Fail loud on a pasted OpenRouter/TypeSafe id (`typesafe/jev-1.13`,
+  // `openrouter/…`): Zen's catalog is bare ids, and a silent 400 from the
+  // provider would read as "the free model is broken" instead of "wrong id".
+  if (String(model ?? '').includes('/')) {
+    throw new Error(`zen model id must be a bare Zen catalog id (e.g. jev-1.13-free), got ${model}`);
+  }
+  // Every policy pins its own provider's id (`typesafe/jev-1.13-20260917`) and
+  // `applyPolicy` forwards it verbatim — Zen 422s on a foreign id, which reads
+  // as an outage. Translate HERE at the adapter boundary, exactly as
+  // makeTypesafeAdapter does in the other direction, so one policy set serves
+  // every provider. The substituted model rides back as `resolved_model`, the
+  // one audit record left after the substitution.
+  const call = makeOpenrouterAdapter({ apiKey, baseUrl, model, timeoutMs });
+  return async (state, questions, opts = {}) => {
+    try {
+      const result = await call(state, questions, { ...opts, model });
+      onStatus(true, { model: result.model ?? model });
+      return result;
+    } catch (e) {
+      onStatus(false, { model, error: e?.message ?? String(e), error_class: e?.name ?? null });
+      // Abort, do not degrade: rethrown unchanged so the gateway fails closed
+      // and the caller sees a provider error instead of an unsourced answer.
+      throw e;
+    }
+  };
 }
 
 // --- Laya: local open-weights Jev (quantized int8 checkpoint, local model dir) ---

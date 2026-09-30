@@ -5,17 +5,25 @@ import os from 'node:os';
 import path from 'node:path';
 import { killSwitchGlobal, killSwitchPolicy } from './core.js';
 import { loadRegistry } from './registry.js';
-import { makeFakeAdapter, FakeMode, makeLayaAdapter, makeOpenrouterAdapter, makeTypesafeAdapter } from './adapters.js';
+import { makeFakeAdapter, FakeMode, makeLayaAdapter, makeOpenrouterAdapter, makeTypesafeAdapter, makeZenAdapter } from './adapters.js';
 import { JevGateway } from './gateway.js';
 import { makeBreaker } from './breaker.js';
 import { makeTelemetry } from './telemetry.js';
 import { makeMetrics } from './metrics.js';
 import { makeLayaRouter } from './laya-routing.js';
+import { withTeacherCorpus } from './teacher-corpus.js';
 
 export const DEFAULTS = Object.freeze({
   provider: process.env.JEV_PROVIDER ?? 'openrouter',
   model: process.env.JEV_MODEL ?? 'typesafe/jev-1.13',
   apiKeyFile: process.env.JEV_API_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENROUTER_API_KEY.txt'),
+  // Which cloud provider backs the laya router's fallback / the policy
+  // adapter. `null` keeps the legacy behaviour: infer from the key file's
+  // basename (TYPESAFE_ -> native TypeSafe, anything else -> OpenRouter).
+  // Set it explicitly (e.g. `zen`) when that inference cannot express the
+  // provider you actually want, so a Zen key is never built against
+  // OpenRouter's host.
+  fallbackProvider: process.env.JEV_FALLBACK_PROVIDER ?? null,
   fakeMode: process.env.JEV_FAKE_MODE ?? FakeMode.SUCCESS,
   killSwitch: (process.env.JEV_KILL_SWITCH ?? '') === '1',
   registryDir: process.env.JEV_POLICY_DIR ?? null,
@@ -63,19 +71,29 @@ export function buildGateway(cfg = {}) {
     // Injection is internal JS wiring for offline tests, never MCP arguments.
     const layaAdapter = cfg.layaAdapter ?? makeLayaAdapter();
     const key = readKey(cfg.apiKeyFile);
-    // Pick the fallback adapter by the key's type (inferred from the file
-    // basename, never the value): a typesafe key hitting the OpenRouter
+    // Pick the fallback adapter by the key's type. Inferred from the file
+    // basename, never the value: a typesafe key hitting the OpenRouter
     // endpoint 401s (fix 9708 class), so a TYPESAFE_ key uses the native
-    // TypeSafe adapter and everything else the OpenRouter adapter.
-    const keyType = path.basename(cfg.apiKeyFile).toUpperCase().includes('TYPESAFE') ? 'typesafe' : 'openrouter';
+    // TypeSafe adapter and everything else the OpenRouter adapter. An explicit
+    // JEV_FALLBACK_PROVIDER overrides the inference — the basename heuristic
+    // has no way to say "zen", whose key is an OpenCode key served from a
+    // third System One host.
+    const keyType = cfg.fallbackProvider
+      ?? (path.basename(cfg.apiKeyFile).toUpperCase().includes('TYPESAFE') ? 'typesafe' : 'openrouter');
     policyProvider = keyType;
     const fallback = cfg.jevAdapter ?? (key
       ? (keyType === 'typesafe'
         ? makeTypesafeAdapter({ apiKey: key, model: cfg.model })
-        : makeOpenrouterAdapter({ apiKey: key, model: cfg.model }))
+        : keyType === 'zen'
+          ? makeZenAdapter({ apiKey: key, model: cfg.model })
+          : makeOpenrouterAdapter({ apiKey: key, model: cfg.model }))
       : null);
     policyAdapter = fallback ?? (async () => { throw new Error('Jev policy provider has no configured credential'); });
-    rawAdapter = makeLayaRouter({ local: layaAdapter, cloud: fallback,
+    // Whatever the router decides, the provider's answer is the teacher the
+    // local weights get distilled against later — so it is recorded whether or
+    // not the local weights end up answering.
+    const teacher = cfg.teacherCorpus === false ? fallback : withTeacherCorpus(fallback, cfg.recordTeacherSample);
+    rawAdapter = makeLayaRouter({ local: layaAdapter, cloud: teacher,
       record: cfg.recordRoutingSample,
       onRoute: ({ local, cloud, fallback: count }) => telemetry?.record({
         event: count ? 'laya_fallback' : 'provider_route',
@@ -84,11 +102,19 @@ export function buildGateway(cfg = {}) {
     });
   } else {
     const key = readKey(cfg.apiKeyFile);
+    let adapter = null;
     if (cfg.provider === 'typesafe') {
-      rawAdapter = key ? makeTypesafeAdapter({ apiKey: key, model: cfg.model }) : null;
+      adapter = key ? makeTypesafeAdapter({ apiKey: key, model: cfg.model }) : null;
+    } else if (cfg.provider === 'zen') {
+      adapter = key ? makeZenAdapter({ apiKey: key, model: cfg.model }) : null;
     } else {
-      rawAdapter = key ? makeOpenrouterAdapter({ apiKey: key, model: cfg.model }) : null;
+      adapter = key ? makeOpenrouterAdapter({ apiKey: key, model: cfg.model }) : null;
     }
+    // The provider is the only decider here, which makes it the only teacher.
+    // policyAdapter stays unset: the single breaker below already covers it.
+    rawAdapter = adapter && cfg.teacherCorpus === false
+      ? adapter
+      : (adapter ? withTeacherCorpus(adapter, cfg.recordTeacherSample) : null);
   }
   if (!rawAdapter) {
     // Fail closed, not silent: a gateway without a provider cannot promise a
