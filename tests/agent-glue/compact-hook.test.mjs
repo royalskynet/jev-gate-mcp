@@ -60,7 +60,7 @@ test('compact-hook: a non-2xx or a bad body answers keep (fail-open toward verba
 test('compact-hook: a drop answer is passed through as drop', async () => {
   const host = fakeHost({ choice: 'drop' });
   assert.equal(await judgePair(host, 'k', 'why is the build slow', { calls: [{ name: 'Bash' }], results: [] }), 'drop');
-  assert.equal(host.written.lastBody.model, CONFIG.model || 'typesafe/jev-1.13');
+  assert.equal(host.written.lastBody.model, CONFIG.model || 'jev-1.13-free');
   assert.equal(host.written.lastBody.state.user_request, 'why is the build slow');
 });
 

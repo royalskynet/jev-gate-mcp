@@ -128,8 +128,8 @@ The server name must come **before** the `-e` flags. `--env` is variadic, so a
 name placed after them is swallowed as one more `KEY=value` token and the CLI
 fails with `Invalid environment variable format`.
 
-No key path is passed: `src/config.js` defaults `apiKeyFile` to
-`~/.creds/kv/OPENROUTER_API_KEY.txt`. Policies resolve through `import.meta.url`
+No key path is passed: `src/config.js` defaults to provider `zen`
+(`jev-1.13-free`) with `apiKeyFile` `~/.creds/kv/OPENCODE_ZEN_API_KEY.txt`. Policies resolve through `import.meta.url`
 rather than `process.cwd()`, so the host may spawn the server from any
 directory.
 

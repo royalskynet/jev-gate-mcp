@@ -45,6 +45,12 @@ const fetchHost = {
       return { ok: r.ok, text: await r.text() };
     },
   },
+  // judgeChunks meters its deadline on `$.clock` (d835990); without it the CLI
+  // path threw before the fetch and every Hermes prune kept everything.
+  clock: {
+    now: async () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms).unref()),
+  },
 };
 
 /**

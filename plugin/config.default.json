@@ -1,7 +1,7 @@
 {
-  "baseUrl": "https://openrouter.ai/api",
-  "model": "typesafe/jev-1.13",
-  "apiKeyFile": "${HOME}/.creds/kv/OPENROUTER_API_KEY.txt",
+  "baseUrl": "https://opencode.ai/zen",
+  "model": "jev-1.13-free",
+  "apiKeyFile": "${HOME}/.creds/kv/OPENCODE_ZEN_API_KEY.txt",
   "timeoutMs": 2000,
   "maxRetries": 0,
   "maxConcurrency": 2,

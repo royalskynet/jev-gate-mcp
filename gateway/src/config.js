@@ -14,9 +14,9 @@ import { makeLayaRouter } from './laya-routing.js';
 import { withTeacherCorpus } from './teacher-corpus.js';
 
 export const DEFAULTS = Object.freeze({
-  provider: process.env.JEV_PROVIDER ?? 'openrouter',
-  model: process.env.JEV_MODEL ?? 'typesafe/jev-1.13',
-  apiKeyFile: process.env.JEV_API_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENROUTER_API_KEY.txt'),
+  provider: process.env.JEV_PROVIDER ?? 'zen',
+  model: process.env.JEV_MODEL ?? 'jev-1.13-free',
+  apiKeyFile: process.env.JEV_API_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENCODE_ZEN_API_KEY.txt'),
   // Which cloud provider backs the laya router's fallback / the policy
   // adapter. `null` keeps the legacy behaviour: infer from the key file's
   // basename (TYPESAFE_ -> native TypeSafe, anything else -> OpenRouter).

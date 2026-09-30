@@ -363,9 +363,9 @@ export let LEDGER = '';
  * that names it `jev-latest`, and fail-open would hide that as a silent keep.
  */
 export function refreshConfig() {
-  CONFIG.endpoint = ENV.JEV_ENDPOINT || 'https://openrouter.ai/api/v1/systemone';
-  CONFIG.model = ENV.JEV_MODEL || 'typesafe/jev-1.13';
-  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENROUTER_API_KEY.txt`;
+  CONFIG.endpoint = ENV.JEV_ENDPOINT || 'https://opencode.ai/zen/v1/systemone';
+  CONFIG.model = ENV.JEV_MODEL || 'jev-1.13-free';
+  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENCODE_ZEN_API_KEY.txt`;
   CONFIG.timeoutMs = Number(ENV.JEV_TIMEOUT_MS) > 0 ? Number(ENV.JEV_TIMEOUT_MS) : 2000;
   LEDGER = ENV.JEV_LEDGER || `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-prune.log`;
 }

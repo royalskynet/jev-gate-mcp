@@ -36,3 +36,20 @@ test('cli prune without any key still writes a non-empty CLI ledger', async () =
   assert.ok(content.length > 0, 'CLI ledger must not be empty');
   assert.match(content, /jev-cli\(/, `line must be tagged jev-cli(...), got ${content.replace(/\n/g, ' | ')}`);
 });
+
+test('cli prune reaches the judge through its default host (clock included)', async (t) => {
+  // d835990 made judgeChunks meter its deadline on `$.clock`; the CLI's host
+  // had no clock, so every Hermes prune threw before the fetch and kept all.
+  const { pruneCommand } = await import('../../agent-glue/src/prune.js');
+  const ledger = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jev-cli-ledger-')), 'l.log');
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (_url, opts) => {
+    calls += 1;
+    const answers = Object.fromEntries(Object.keys(JSON.parse(opts.body).questions).map((k) => [k, { choice: 'drop' }]));
+    return new Response(JSON.stringify({ answers }));
+  });
+  const text = Array.from({ length: 3000 }, (_, i) => `noise line ${i}`).join('\n');
+  const r = await pruneCommand({ tool: 'terminal', request: 'fix the readme', text }, { key: 'k', ledger });
+  assert.ok(calls > 0, 'the judge must actually be called');
+  assert.ok(r.dropped_lines > 0, `expected drops, got ${JSON.stringify({ ...r, text: undefined })}`);
+});

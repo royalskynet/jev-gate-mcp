@@ -335,9 +335,10 @@ Then register it as a local marketplace in `~/.claude/settings.json`:
 Or load it for one session: `claude --plugin-dir /path/to/jev-gate-mcp`.
 
 Provider settings live at the top of `hooks/jev.js`: endpoint
-`https://openrouter.ai/api/v1/systemone` (canonical
-`POST /api/alpha/decisions`), model `typesafe/jev-1.13`, key read from
-`~/.creds/kv/OPENROUTER_API_KEY.txt`.
+`https://opencode.ai/zen/v1/systemone` (OpenCode Zen free tier), model
+`jev-1.13-free`, key read from `~/.creds/kv/OPENCODE_ZEN_API_KEY.txt`. For OpenRouter set
+`JEV_ENDPOINT=https://openrouter.ai/api/v1/systemone`, `JEV_MODEL=typesafe/jev-1.13`
+and `JEV_API_KEY_FILE`.
 
 ## Agent glue: five Jev uses, two hosts
 

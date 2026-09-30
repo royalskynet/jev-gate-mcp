@@ -280,8 +280,10 @@ node --test              # 'live' 測試需要 ~/.creds/kv/OPENROUTER_API_KEY.tx
 或單一 session 載入：`claude --plugin-dir /path/to/jev-gate-mcp`。
 
 Provider 設定在 `hooks/jev.js` 最上面：endpoint
-`https://openrouter.ai/api/v1/systemone`（正式路徑 `POST /api/alpha/decisions`）、
-model `typesafe/jev-1.13`、key 讀 `~/.creds/kv/OPENROUTER_API_KEY.txt`。
+`https://opencode.ai/zen/v1/systemone`（OpenCode Zen 免費層）、
+model `jev-1.13-free`、key 讀 `~/.creds/kv/OPENCODE_ZEN_API_KEY.txt`。改走 OpenRouter 就設
+`JEV_ENDPOINT=https://openrouter.ai/api/v1/systemone`、`JEV_MODEL=typesafe/jev-1.13`
+與 `JEV_API_KEY_FILE`。
 
 ## Agent glue：五種 Jev 用法、兩個 host
 

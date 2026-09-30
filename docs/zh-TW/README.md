@@ -16,8 +16,8 @@ deterministic code 負責 schema、授權、門檻、組合、執行與 fail-clo
 
 ## 5 分鐘本機啟動
 
-需求：Node 22/24；OpenRouter token 放在檔案，預設路徑：
-`~/.creds/kv/OPENROUTER_API_KEY.txt`。
+需求：Node 22/24；OpenCode Zen key 放在檔案，預設路徑：
+`~/.creds/kv/OPENCODE_ZEN_API_KEY.txt`（免費 `jev-1.13-free`；走 OpenRouter 設 `JEV_PROVIDER=openrouter`）。
 
 ```sh
 npm ci
@@ -43,7 +43,7 @@ server 名稱**必須排在 `-e` 之前**。`--env` 是 variadic，名稱放在�
 `KEY=value` 吃掉，CLI 回 `Invalid environment variable format`。
 
 不必傳 key 路徑：`src/config.js` 的 `apiKeyFile` 預設就是
-`~/.creds/kv/OPENROUTER_API_KEY.txt`。policies 以 `import.meta.url` 解析而非
+`~/.creds/kv/OPENCODE_ZEN_API_KEY.txt`。policies 以 `import.meta.url` 解析而非
 `process.cwd()`，所以 host 從任何目錄啟動都找得到。
 
 驗證：`claude mcp list` 要看到 `jev_gate` ✓ connected；session 內 `/mcp` 看得到兩個工具。

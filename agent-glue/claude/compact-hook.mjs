@@ -61,7 +61,7 @@ export let ENABLED = true;
 export function refreshConfig() {
   LEDGER = `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-compact.log`;
   // Same override as hooks/jev.js, so one JEV_API_KEY_FILE points both at a Jev-only key.
-  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENROUTER_API_KEY.txt`;
+  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENCODE_ZEN_API_KEY.txt`;
   // Same endpoint/model pair as hooks/jev.js. Left unread, a typesafe key file
   // was sent to OpenRouter's URL, every judge 401'd, and every compaction fell
   // back to the slow built-in summary. Unset, each backend keeps its default.
@@ -172,7 +172,7 @@ export function pairState(pair) {
 export async function judgePair($, key, userRequest, pair) {
   let res;
   try {
-    res = await $.http.fetch(CONFIG.endpoint || 'https://openrouter.ai/api/v1/systemone', {
+    res = await $.http.fetch(CONFIG.endpoint || 'https://opencode.ai/zen/v1/systemone', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${key}`,
@@ -180,7 +180,7 @@ export async function judgePair($, key, userRequest, pair) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: CONFIG.model || 'typesafe/jev-1.13',
+        model: CONFIG.model || 'jev-1.13-free',
         state: { user_request: userRequest, pair: pairState(pair) },
         questions: { q: { type: 'choice', instructions: INSTRUCTIONS, criteria: CRITERIA } },
       }),
