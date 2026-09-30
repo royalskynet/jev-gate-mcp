@@ -10,7 +10,7 @@
  * The module runs with no Node: everything outside it comes through `$`.
  */
 
-import { ENV, fillEnv } from '../agent-glue/claude/env.mjs';
+import { ENV, fillEnv, ZEN_BACKUP, zenCooling, followsZen } from '../agent-glue/claude/env.mjs';
 
 export const CONFIG = {
   // The three env-backed fields are filled by `refreshConfig`, below: under
@@ -306,8 +306,18 @@ export async function pruneText(text, judge, maxJudged = CONFIG.maxJudgedChunks)
   return { kept: parts.join('\n'), droppedLines, unsure };
 }
 
+/** Per call: OpenRouter answers while Zen free is in its quota cooldown. */
+export async function followZenCooldown($) {
+  if (!followsZen()) return;
+  const text = await $.fs.read(`${ENV.HOME || ENV.USERPROFILE}/.jevgate/zen-free-status.json`).catch(() => '');
+  refreshConfig(zenCooling(text, await $.clock.now().catch(() => NaN)));
+}
+
 let keyPromise;
+let keyFileOf;
 function apiKey($) {
+  if (keyFileOf !== CONFIG.apiKeyFile) keyPromise = undefined; // host swapped
+  keyFileOf = CONFIG.apiKeyFile;
   keyPromise ??= Promise.resolve()
     .then(() => $.fs.read(CONFIG.apiKeyFile))
     .then((t) => String(t).trim() || null)
@@ -362,10 +372,11 @@ export let LEDGER = '';
  * so overriding the endpoint alone would send `typesafe/jev-1.13` to an API
  * that names it `jev-latest`, and fail-open would hide that as a silent keep.
  */
-export function refreshConfig() {
-  CONFIG.endpoint = ENV.JEV_ENDPOINT || 'https://opencode.ai/zen/v1/systemone';
-  CONFIG.model = ENV.JEV_MODEL || 'jev-1.13-free';
-  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENCODE_ZEN_API_KEY.txt`;
+export function refreshConfig(backup = false) {
+  const home = ENV.HOME || ENV.USERPROFILE;
+  CONFIG.endpoint = ENV.JEV_ENDPOINT || (backup ? ZEN_BACKUP.endpoint : 'https://opencode.ai/zen/v1/systemone');
+  CONFIG.model = ENV.JEV_MODEL || (backup ? ZEN_BACKUP.model : 'jev-1.13-free');
+  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${home}/.creds/kv/${backup ? ZEN_BACKUP.keyName : 'OPENCODE_ZEN_API_KEY.txt'}`;
   CONFIG.timeoutMs = Number(ENV.JEV_TIMEOUT_MS) > 0 ? Number(ENV.JEV_TIMEOUT_MS) : 2000;
   LEDGER = ENV.JEV_LEDGER || `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-prune.log`;
 }
@@ -454,6 +465,7 @@ async function prune(tool, $, e, next) {
   const { text: out, persisted } = await resolvePersisted($, target.get(r?.result));
   if (typeof out !== 'string' || out.length < target.thresholdChars) return r;
 
+  await followZenCooldown($);
   const key = await apiKey($);
   if (!key) {
     // The same lesson as the ledger comment below, one gate earlier: this

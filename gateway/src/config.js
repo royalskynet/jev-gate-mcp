@@ -24,6 +24,9 @@ export const DEFAULTS = Object.freeze({
   // provider you actually want, so a Zen key is never built against
   // OpenRouter's host.
   fallbackProvider: process.env.JEV_FALLBACK_PROVIDER ?? null,
+  // OpenRouter key that backs Zen during its free-quota cooldown. A missing
+  // file just means no backup (Zen failures then fail closed as before).
+  zenBackupKeyFile: process.env.JEV_ZEN_BACKUP_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENROUTER_API_KEY.txt'),
   fakeMode: process.env.JEV_FAKE_MODE ?? FakeMode.SUCCESS,
   killSwitch: (process.env.JEV_KILL_SWITCH ?? '') === '1',
   registryDir: process.env.JEV_POLICY_DIR ?? null,
@@ -38,6 +41,11 @@ export const DEFAULTS = Object.freeze({
     resetTimeout: Number(process.env.JEV_BREAKER_RESET_MS ?? 30_000),
   }),
 });
+
+function makeZen(cfg, key) {
+  const backupKey = readKey(cfg.zenBackupKeyFile);
+  return makeZenAdapter({ apiKey: key, model: cfg.model, backup: backupKey ? makeOpenrouterAdapter({ apiKey: backupKey }) : null });
+}
 
 function readKey(file) {
   try {
@@ -78,14 +86,15 @@ export function buildGateway(cfg = {}) {
     // JEV_FALLBACK_PROVIDER overrides the inference — the basename heuristic
     // has no way to say "zen", whose key is an OpenCode key served from a
     // third System One host.
+    const base = path.basename(cfg.apiKeyFile).toUpperCase();
     const keyType = cfg.fallbackProvider
-      ?? (path.basename(cfg.apiKeyFile).toUpperCase().includes('TYPESAFE') ? 'typesafe' : 'openrouter');
+      ?? (base.includes('TYPESAFE') ? 'typesafe' : base.includes('OPENCODE') ? 'zen' : 'openrouter');
     policyProvider = keyType;
     const fallback = cfg.jevAdapter ?? (key
       ? (keyType === 'typesafe'
         ? makeTypesafeAdapter({ apiKey: key, model: cfg.model })
         : keyType === 'zen'
-          ? makeZenAdapter({ apiKey: key, model: cfg.model })
+          ? makeZen(cfg, key)
           : makeOpenrouterAdapter({ apiKey: key, model: cfg.model }))
       : null);
     policyAdapter = fallback ?? (async () => { throw new Error('Jev policy provider has no configured credential'); });
@@ -106,7 +115,7 @@ export function buildGateway(cfg = {}) {
     if (cfg.provider === 'typesafe') {
       adapter = key ? makeTypesafeAdapter({ apiKey: key, model: cfg.model }) : null;
     } else if (cfg.provider === 'zen') {
-      adapter = key ? makeZenAdapter({ apiKey: key, model: cfg.model }) : null;
+      adapter = key ? makeZen(cfg, key) : null;
     } else {
       adapter = key ? makeOpenrouterAdapter({ apiKey: key, model: cfg.model }) : null;
     }

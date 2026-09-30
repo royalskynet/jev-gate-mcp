@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { JevDecisionModel } from 'jevwire';
 import { ERR, LIMITS } from './core.js';
-import { recordZenStatus } from './zen-status.js';
+import { recordZenStatus, zenCoolingDown } from './zen-status.js';
 
 // --- Shared helper: normalize a jevwire answer or annotate a typed error ---
 
@@ -82,9 +82,9 @@ export function makeTypesafeAdapter({ apiKey, baseUrl = 'https://api.typesafe.ai
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: toTypeSafeId(opts.model) });
 }
 
-export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai/api', model = 'typesafe/jev-1.13', timeoutMs = LIMITS.deadlineMs, fetch: fetchImpl, sleep }) {
+export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai/api', model = 'typesafe/jev-1.13', timeoutMs = LIMITS.deadlineMs, maxRetries = LIMITS.maxRetries, fetch: fetchImpl, sleep }) {
   // JevDecisionModel appends `/v1/systemone`; the base must stop at `/api`.
-  const m = new JevDecisionModel({ apiKey, baseUrl, model, timeoutMs, maxRetries: LIMITS.maxRetries, fetch: fetchImpl, sleep });
+  const m = new JevDecisionModel({ apiKey, baseUrl, model, timeoutMs, maxRetries, fetch: fetchImpl, sleep });
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: opts.model });
 }
 
@@ -94,34 +94,52 @@ export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai
 // model id differ, so the shape is the OpenRouter adapter's verbatim. `baseUrl`
 // must stop before `/v1`: the client appends `/v1/systemone` itself.
 //
-// The free tier is the whole point and also the whole risk: it is the only
-// configured credential, so there is deliberately no paid sibling to fail over
-// to. Every outcome therefore lands in the status file — a dead free tier must
-// read as "judging stopped", never as a quiet downgrade.
-export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', model = 'jev-1.13-free', timeoutMs = LIMITS.deadlineMs, onStatus = recordZenStatus }) {
+// The free tier has a quota (a 429 FreeUsageLimitError whose retry-after ran
+// ~15h on 2026-09-30), so `backup` — the OpenRouter adapter — answers while Zen
+// cools down, and Zen takes over again once the cooldown lapses. The cooldown
+// lives in the status file, so every process (gateway, probe, hooks) sees one
+// primary/backup state. Without a backup a Zen failure still fails closed.
+const ZEN_RETRY_COOLDOWN_MS = 5 * 60_000; // non-429 failures: stop paying the timeout on every call
+const ZEN_QUOTA_DEFAULT_MS = 60 * 60_000; // 429 without a usable retry-after
+
+export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', model = 'jev-1.13-free', timeoutMs = LIMITS.deadlineMs, onStatus = recordZenStatus, backup = null, coolingDown = zenCoolingDown, fetch: fetchImpl = globalThis.fetch, now = Date.now }) {
   // Fail loud on a pasted OpenRouter/TypeSafe id (`typesafe/jev-1.13`,
   // `openrouter/…`): Zen's catalog is bare ids, and a silent 400 from the
   // provider would read as "the free model is broken" instead of "wrong id".
   if (String(model ?? '').includes('/')) {
     throw new Error(`zen model id must be a bare Zen catalog id (e.g. jev-1.13-free), got ${model}`);
   }
+  // jevwire honours retry-after by sleeping until its deadline and then throws
+  // a JevTimeoutError — a quota 429 used to read as a timeout. So Zen gets no
+  // retries, and this fetch keeps the header jevwire drops.
+  let retryAfterS = null;
+  const peek = async (url, init) => {
+    const res = await fetchImpl(url, init);
+    retryAfterS = res.status === 429 ? Number(res.headers.get('retry-after')) : null;
+    return res;
+  };
   // Every policy pins its own provider's id (`typesafe/jev-1.13-20260917`) and
   // `applyPolicy` forwards it verbatim — Zen 422s on a foreign id, which reads
   // as an outage. Translate HERE at the adapter boundary, exactly as
   // makeTypesafeAdapter does in the other direction, so one policy set serves
   // every provider. The substituted model rides back as `resolved_model`, the
   // one audit record left after the substitution.
-  const call = makeOpenrouterAdapter({ apiKey, baseUrl, model, timeoutMs });
+  const call = makeOpenrouterAdapter({ apiKey, baseUrl, model, timeoutMs, maxRetries: 0, fetch: peek });
   return async (state, questions, opts = {}) => {
+    // The backup keeps the caller's model id: OpenRouter wants `typesafe/…`.
+    if (backup && coolingDown(now())) return backup(state, questions, opts);
     try {
       const result = await call(state, questions, { ...opts, model });
       onStatus(true, { model: result.model ?? model });
       return result;
     } catch (e) {
-      onStatus(false, { model, error: e?.message ?? String(e), error_class: e?.name ?? null });
-      // Abort, do not degrade: rethrown unchanged so the gateway fails closed
-      // and the caller sees a provider error instead of an unsourced answer.
-      throw e;
+      const quota = e?.status === 429 || e?.cause?.status === 429;
+      // Recorded even without a backup: the probe reports when Zen comes back.
+      const cooldown_until = now() + (quota ? (retryAfterS > 0 ? retryAfterS * 1000 : ZEN_QUOTA_DEFAULT_MS) : ZEN_RETRY_COOLDOWN_MS);
+      onStatus(false, { model, error: e?.message ?? String(e), error_class: e?.name ?? null, cooldown_until });
+      // No backup: abort, do not degrade — the gateway fails closed.
+      if (!backup) throw e;
+      return backup(state, questions, opts);
     }
   };
 }

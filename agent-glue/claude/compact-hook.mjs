@@ -30,7 +30,7 @@
  */
 import { compactMessages } from '../src/compact.js';
 import { askerFor, backendFor, compactAnthropic } from './compact-anthropic.mjs';
-import { ENV, fillEnv } from './env.mjs';
+import { ENV, fillEnv, ZEN_BACKUP, zenCooling, followsZen } from './env.mjs';
 
 let LEDGER = '';
 
@@ -58,15 +58,15 @@ export let ENABLED = true;
  *
  * ponytail: the defaults live here alone, so the two callers cannot drift.
  */
-export function refreshConfig() {
+export function refreshConfig(backup = false) {
   LEDGER = `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-compact.log`;
   // Same override as hooks/jev.js, so one JEV_API_KEY_FILE points both at a Jev-only key.
-  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/OPENCODE_ZEN_API_KEY.txt`;
+  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/${backup ? ZEN_BACKUP.keyName : 'OPENCODE_ZEN_API_KEY.txt'}`;
   // Same endpoint/model pair as hooks/jev.js. Left unread, a typesafe key file
   // was sent to OpenRouter's URL, every judge 401'd, and every compaction fell
   // back to the slow built-in summary. Unset, each backend keeps its default.
-  CONFIG.endpoint = ENV.JEV_ENDPOINT || '';
-  CONFIG.model = ENV.JEV_MODEL || '';
+  CONFIG.endpoint = ENV.JEV_ENDPOINT || (backup ? ZEN_BACKUP.endpoint : '');
+  CONFIG.model = ENV.JEV_MODEL || (backup ? ZEN_BACKUP.model : '');
   // Compact when the session passes this much of its context window. This is
   // the "fast" in fast compaction: acting at 60% costs one cheap pass, acting
   // at 100% costs a summary of everything.
@@ -282,6 +282,11 @@ export const register = (on, options = {}) => {
       return next(e);
     }
     const messages = e?.messages ?? [];
+    // Zen free in its quota cooldown: OpenRouter answers until it lapses.
+    if (followsZen()) {
+      const status = await $.fs.read(`${ENV.HOME || ENV.USERPROFILE}/.jevgate/zen-free-status.json`).catch(() => '');
+      refreshConfig(zenCooling(status, await $.clock.now().catch(() => NaN)));
+    }
     const key = await apiKey($, options);
     if (!key) {
       await appendLedger($, 'jev-compact: no provider key, built-in compaction runs');

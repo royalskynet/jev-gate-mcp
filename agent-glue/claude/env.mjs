@@ -42,3 +42,30 @@ export function fillEnv(values) {
     if (value !== undefined) ENV[name] = value;
   }
 }
+
+/**
+ * Zen free has a quota; while the gateway/probe have it in cooldown
+ * (`cooldown_until` in ~/.jevgate/zen-free-status.json) the hooks ask
+ * OpenRouter instead, and go back to Zen once it lapses. Pure: each hook reads
+ * the file through its own `$.fs` (see the ponytail note above).
+ */
+export const ZEN_BACKUP = Object.freeze({
+  endpoint: 'https://openrouter.ai/api/v1/systemone',
+  model: 'typesafe/jev-1.13',
+  keyName: 'OPENROUTER_API_KEY.txt',
+});
+
+/** True when the status text's cooldown is still ahead of `now` (ms). */
+export function zenCooling(statusText, now) {
+  try {
+    const until = JSON.parse(statusText).cooldown_until;
+    return Number.isFinite(until) && Number.isFinite(now) && until > now;
+  } catch {
+    return false;
+  }
+}
+
+/** Only the default Zen host fails over; an explicitly configured one is left alone. */
+export function followsZen() {
+  return !ENV.JEV_ENDPOINT && !ENV.JEV_MODEL && !ENV.JEV_API_KEY_FILE;
+}

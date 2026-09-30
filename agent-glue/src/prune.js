@@ -7,8 +7,8 @@
  * the CLI (`cli.mjs prune`) is their seam onto the SAME judge rather than a
  * second implementation of it.
  */
-import { pruneText, judgeChunks, TARGETS, CONFIG } from '../../hooks/jev.js';
-import { appendFileSync } from 'node:fs';
+import { pruneText, judgeChunks, followZenCooldown, TARGETS, CONFIG } from '../../hooks/jev.js';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 /**
@@ -51,6 +51,8 @@ const fetchHost = {
     now: async () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms).unref()),
   },
+  // Read by followZenCooldown: the Zen free status file picks Zen or OpenRouter.
+  fs: { read: async (p) => readFileSync(p, 'utf8') },
 };
 
 /**
@@ -108,6 +110,7 @@ export async function pruneCommand(payload = {}, deps = {}) {
   // "mechanical bulk" criteria dropped every log and JSON dump, needle included.
   // Refusing costs the savings; guessing costs the answer.
   if (!String(payload.request ?? '').trim()) return out('no-request');
+  if (!deps.key) await followZenCooldown(deps.host ?? fetchHost);
   const key = deps.key ?? (await pruneKey());
   if (!key) return out('no-key');
   const judge = deps.judge

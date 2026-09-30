@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { CONFIG, LEDGER, TARGETS, TARGET_NAMES, appendLedger, judgeChunk, pruneText, register, userRequestOf } from '../hooks/jev.js';
+import { CONFIG, LEDGER, TARGETS, TARGET_NAMES, appendLedger, followZenCooldown, judgeChunk, pruneText, register, userRequestOf } from '../hooks/jev.js';
 
 // The hook module carries its own wire code (it runs with no Node, so it cannot
 // share plugin/lib/judge.js). That duplicate is exactly where a wrong model id
@@ -52,6 +52,8 @@ test('every target tool gets its own tool.call hook', () => {
 
 test('live: hook wire actually judges — a noise chunk comes back "drop"', { skip: !hasKey && 'no api key' }, async () => {
   const $ = makeHost();
+  // Same host choice as the hook: OpenRouter while Zen free is cooling down.
+  await followZenCooldown($);
   const key = readFileSync(CONFIG.apiKeyFile, 'utf8').trim();
   const noise = Array.from({ length: 200 }, (_, i) => `debug heartbeat tick ${i} ok ok ok`).join('\n');
   // ponytail: live judge is nondeterministic — a transient keep (or a >2s host

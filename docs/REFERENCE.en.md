@@ -340,6 +340,16 @@ Provider settings live at the top of `hooks/jev.js`: endpoint
 `JEV_ENDPOINT=https://openrouter.ai/api/v1/systemone`, `JEV_MODEL=typesafe/jev-1.13`
 and `JEV_API_KEY_FILE`.
 
+Zen's free tier has a quota (measured 2026-09-30: 429 `FreeUsageLimitError`,
+retry-after ~15h). Any Zen failure writes `cooldown_until` to
+`~/.jevgate/zen-free-status.json` (retry-after for a 429, 5 minutes otherwise);
+until it lapses the gateway, Stop gate, prune and compact ask OpenRouter
+(`~/.creds/kv/OPENROUTER_API_KEY.txt`; the gateway honours
+`JEV_ZEN_BACKUP_KEY_FILE`), then return to Zen. No OpenRouter key keeps the old
+fail-closed behaviour. A hook with an explicit `JEV_ENDPOINT` / `JEV_MODEL` /
+`JEV_API_KEY_FILE` does not follow the swap. `scripts/zen-free-probe.mjs` exits
+0 = Zen primary, 2 = cooling with the backup answering, 1 = down with no backup.
+
 ## Agent glue: five Jev uses, two hosts
 
 `agent-glue/src/` holds one testable core, shared verbatim by both hosts:

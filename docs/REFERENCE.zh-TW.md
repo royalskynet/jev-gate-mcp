@@ -285,6 +285,14 @@ model `jev-1.13-free`、key 讀 `~/.creds/kv/OPENCODE_ZEN_API_KEY.txt`。改走 
 `JEV_ENDPOINT=https://openrouter.ai/api/v1/systemone`、`JEV_MODEL=typesafe/jev-1.13`
 與 `JEV_API_KEY_FILE`。
 
+Zen 免費層有額度（2026-09-30 實測：429 `FreeUsageLimitError`，retry-after 約 15 小時）。
+Zen 一失敗就把 `cooldown_until` 寫進 `~/.jevgate/zen-free-status.json`（429 取
+retry-after，其他錯誤 5 分鐘）；冷卻期間 gateway、Stop gate、prune、compact 都改問
+OpenRouter（`~/.creds/kv/OPENROUTER_API_KEY.txt`，gateway 可用
+`JEV_ZEN_BACKUP_KEY_FILE` 改），到期自動回 Zen。沒有 OpenRouter key 就維持 fail closed。
+顯式設了 `JEV_ENDPOINT`／`JEV_MODEL`／`JEV_API_KEY_FILE` 的 hook 不跟隨切換。
+`scripts/zen-free-probe.mjs` 回 0＝Zen 主用、2＝冷卻中由備援頂、1＝失效且無備援。
+
 ## Agent glue：五種 Jev 用法、兩個 host
 
 `agent-glue/src/` 放一個可測的核心，兩個 host 逐字共用：

@@ -1,7 +1,7 @@
-// Risk control for the free Jev tier: the gateway is configured with one
-// credential and no paid fallback, so when the free tier stops the only correct
-// behaviour is to stop judging. This file is the durable, zero-token record of
-// whether that tier is answering, so a background probe (not a model) can warn.
+// Risk control for the free Jev tier. This file is the durable, zero-token
+// record of whether that tier is answering and, after a failure, until when it
+// is cooling down — every consumer with an OpenRouter key reads that to pick
+// primary (Zen) or backup (OpenRouter); a background probe (not a model) warns.
 //
 // It records a *flip*, not every call: an OK-on-OK rewrite would turn each
 // judgement into a disk write for no new information.
@@ -25,22 +25,32 @@ export function readZenStatus(file = ZEN_STATUS_FILE) {
 /**
  * Record the free tier's health. Returns true when the file was written.
  * @param {boolean} ok
- * @param {object} [detail] { model, error, error_class, remediation }
+ * @param {object} [detail] { model, error, error_class, retry_after_s, reset_at, remediation }
  */
 export function recordZenStatus(ok, detail = {}, file = ZEN_STATUS_FILE) {
   if (last === null) last = readZenStatus(file);
   const error = ok ? null : String(detail.error ?? 'unknown');
-  if (last && last.ok === ok && (last.error ?? null) === error) return false;
+  const cooldownUntil = ok ? null : (detail.cooldown_until ?? null);
+  if (last && last.ok === ok && (last.error ?? null) === error
+    && (last.cooldown_until ?? null) === cooldownUntil) return false;
   const next = {
     ok,
     at: new Date().toISOString(),
+    // Epoch ms before which every consumer skips Zen and asks the backup
+    // (OpenRouter). Set from the 429's retry-after; null = Zen is primary.
+    cooldown_until: cooldownUntil,
     model: detail.model ?? last?.model ?? null,
     error,
     error_class: ok ? null : (detail.error_class ?? null),
     // Spelled out here because the consumer of this file is a script, not a
     // reader with the context in front of them.
+    // 429 only: seconds the provider asked us to wait, and the wall-clock it implies.
+    retry_after_s: ok ? null : (detail.retry_after_s ?? null),
+    reset_at: ok ? null : (detail.reset_at ?? null),
     remediation: ok ? null : (detail.remediation
-      ?? 'Jev 免費層失效：gateway 已中止裁決（不換付費供應商）。恢復免費層或改 JEV_PROVIDER/JEV_FALLBACK_PROVIDER 後重啟 session。'),
+      ?? (cooldownUntil
+        ? `Zen 免費層冷卻至 ${new Date(cooldownUntil).toISOString()}：有 OpenRouter key 的消費端改走備援，沒有的中止裁決；到期自動回 Zen。`
+        : 'Jev 免費層失效且無備援：裁決中止。設 OpenRouter key 或改 JEV_PROVIDER 後重啟 session。')),
   };
   try {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -55,6 +65,12 @@ export function recordZenStatus(ok, detail = {}, file = ZEN_STATUS_FILE) {
   } catch {
     return false;
   }
+}
+
+/** True while Zen is in its quota cooldown and the backup should answer. */
+export function zenCoolingDown(now = Date.now(), file = ZEN_STATUS_FILE) {
+  const until = readZenStatus(file)?.cooldown_until;
+  return Number.isFinite(until) && until > now;
 }
 
 /** Test seam: forget the cached last state so the next record always writes. */

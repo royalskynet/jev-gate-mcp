@@ -3,13 +3,13 @@
 // gateway: it must answer "is the free tier still free and alive?" on its own,
 // including when the gateway is the thing that is broken.
 //
-//   node scripts/zen-free-probe.mjs          # print verdict, exit 0 ok / 1 abort
+//   node scripts/zen-free-probe.mjs          # print verdict, exit 0 ok / 1 abort / 2 cooling, OpenRouter backs it
 //   node scripts/zen-free-probe.mjs --quiet  # exit code only (for launchd/cron)
 //
 // Exit 1 is the alarm a scheduler watches. It never notifies on its own — the
 // caller decides how loud to be, so this stays a mechanical check and no token
 // is spent deciding whether the free tier is gone.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { makeZenAdapter } from '../gateway/src/adapters.js';
@@ -20,6 +20,8 @@ const MODEL = process.env.JEV_MODEL ?? 'jev-1.13-free';
 const KEY_FILE = process.env.JEV_API_KEY_FILE
   ?? join(homedir(), '.creds', 'kv', 'OPENCODE_ZEN_API_KEY.txt');
 
+const BACKUP_KEY_FILE = process.env.JEV_ZEN_BACKUP_KEY_FILE
+  ?? join(homedir(), '.creds', 'kv', 'OPENROUTER_API_KEY.txt');
 const say = (line) => { if (!quiet) process.stdout.write(line + '\n'); };
 
 const QUESTIONS = {
@@ -57,11 +59,15 @@ async function main() {
 
 function abort(reason) {
   const status = readZenStatus();
-  say(`ABORT  ${reason}`);
-  say(`  judged_by=nothing (fail-closed; no paid provider is configured)`);
+  const until = status?.cooldown_until;
+  // A quota cooldown with an OpenRouter key is a planned swap, not an outage.
+  const backed = Number.isFinite(until) && until > Date.now() && existsSync(BACKUP_KEY_FILE);
+  say(`${backed ? 'COOLING' : 'ABORT'}  ${reason}`);
+  if (Number.isFinite(until)) say(`  cooldown_until=${new Date(until).toISOString()}  (${((until - Date.now()) / 3.6e6).toFixed(1)}h)`);
+  say(`  judged_by=${backed ? 'openrouter (backup until the cooldown lapses)' : 'nothing (fail-closed; no backup key)'}`);
   if (status && !status.ok && status.error) say(`  last_error=${status.error}`);
   say(`  remediation=${status?.remediation ?? 'restore the free tier, or point JEV_PROVIDER / JEV_FALLBACK_PROVIDER elsewhere, then restart the session'}`);
-  return 1;
+  return backed ? 2 : 1;
 }
 
 process.exitCode = await main();

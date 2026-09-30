@@ -17,15 +17,28 @@ export function loadKey(file, cfgKey = 'apiKeyFile') {
   }
 }
 
+/** Zen free is in its quota cooldown (the gateway/probe write `cooldown_until`). */
+export function zenCooling(file = DEFAULT_CONFIG.zenStatusFile, now = Date.now()) {
+  try {
+    const until = JSON.parse(readFileSync(file, 'utf8')).cooldown_until;
+    return Number.isFinite(until) && until > now;
+  } catch {
+    return false;
+  }
+}
+
 let modelCache = null;
 export function getModel(cfg = DEFAULT_CONFIG) {
   if (modelCache) return modelCache;
-  const apiKey = loadKey(cfg);
+  // ponytail: chosen once per process — hooks are short-lived. This side only
+  // reads the cooldown; a Zen 429 here fails open and the gateway/probe set it.
+  const backupKey = zenCooling(cfg.zenStatusFile) ? loadKey(cfg, 'backupKeyFile') : null;
+  const apiKey = backupKey ?? loadKey(cfg);
   if (!apiKey) return null;
   modelCache = new JevDecisionModel({
     apiKey,
-    baseUrl: cfg.baseUrl,
-    model: cfg.model,
+    baseUrl: backupKey ? cfg.backupBaseUrl : cfg.baseUrl,
+    model: backupKey ? cfg.backupModel : cfg.model,
     timeoutMs: cfg.timeoutMs,
     maxRetries: cfg.maxRetries,
   });
