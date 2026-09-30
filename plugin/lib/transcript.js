@@ -65,5 +65,11 @@ export function readEvidence(transcriptPath, maxChars = 8000, { allRounds = fals
       total += text.length;
     }
   }
-  return parts.join('\n---\n').slice(0, maxChars);
+  // parts are unshifted while walking backwards, so the join is chronological
+  // and the overflow must come off the HEAD. slice(0, maxChars) kept the oldest
+  // rounds and cut the newest — the output a claim quotes from: both live
+  // idcheck false positives were a hash quoted from the newest tool result and
+  // truncated off the tail the moment the window overflowed.
+  const joined = parts.join('\n---\n');
+  return joined.length > maxChars ? joined.slice(joined.length - maxChars) : joined;
 }

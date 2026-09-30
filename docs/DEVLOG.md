@@ -2147,3 +2147,9 @@ non-autoregressive encoder＋自訂 decision head，輸入五個張量（`input_
 hybrid（local 先答、cloud 當 fallback 兼 teacher、每筆落 `routing-samples.jsonl`），
 量測台已內建。正確順序：落地權重 → 切 provider → corpus 自己長 → 有分母才談中文微調。
 在那之前，「中文精準度存疑」與 8 題合成 smoke 同級，都是沒有分母的猜測。
+
+## 30. idcheck 誤報根因：證據窗口截錯邊（2026-09-30）
+
+- 上線後 live 攔的 2 次 `idcheck_block`（`9d1a190`、`519fad2`＋`31e1fbc`）全是誤報：hash 都在 transcript 的 tool_result 裡（push 輸出、`fixindex fi` 輸出），但 `readEvidence` 從尾部往前 walk 並 `unshift`，join 後是時間正序，`.slice(0, maxChars)` 把**最新的輪次**截掉——正是 claim 引用的證據；收集量一超過 400000，被截掉的就是最新一輪的 tool 輸出。
+- 修法：窗口溢出改從舊的一端砍（保留 tail），`plugin/lib/transcript.js` 一行；回歸測試 `tests/gate-idcheck.test.mjs` 用重現根因的最小 transcript 證明誠實引用不再被攔，端到端（真實 400000 窗口）也過。
+- 新增 `idcheckShadow` 設定（預設 `true`）：idcheck 只記 `idcheck_observe` 不 block，待累積誤報率量測後再決定是否重新啟用 block；`cfg.shadow` 行為不變。

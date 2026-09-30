@@ -33,12 +33,15 @@ export async function handleStop(payload) {
       // checking the moment the rollout ends; a permanent ledger is what makes
       // the false-positive rate knowable next month instead of during a window.
       // The denominator is already there: the judge below logs every Stop.
+      // idcheckShadow (issue #12: 2/2 live hits were false positives) keeps the
+      // identifier check observe-only until the accumulated rate justifies
+      // re-enabling the block; cfg.shadow still gates the Jev judge alone.
       await logAsync(cfg, {
-        event: cfg.shadow ? 'idcheck_observe' : 'idcheck_block',
+        event: cfg.shadow || cfg.idcheckShadow ? 'idcheck_observe' : 'idcheck_block',
         gate: 'stop',
         ids,
       });
-      if (!cfg.shadow) return idBlock(ids);
+      if (!cfg.shadow && !cfg.idcheckShadow) return idBlock(ids);
     }
   } catch {
     // Fail open, like every other guard in this hook.

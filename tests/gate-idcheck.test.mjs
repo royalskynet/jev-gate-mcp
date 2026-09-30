@@ -1,5 +1,18 @@
 import assert from 'node:assert/strict';
-import { unsupportedIds, idBlock } from '../plugin/lib/idcheck.js';
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// handleStop resolves ${HOME} at import time (DEFAULT_CONFIG) and appends every
+// idcheck hit to cfg.gateLog — point both at a scratch dir before importing,
+// like coexist.test.mjs does.
+const SCRATCH = mkdtempSync(join(tmpdir(), 'jev-gate-idcheck-'));
+process.env.HOME = SCRATCH;
+
+const { unsupportedIds, idBlock } = await import('../plugin/lib/idcheck.js');
+const { readEvidence } = await import('../plugin/lib/transcript.js');
+const { handleStop } = await import('../plugin/hooks/gate.js');
+const { DEFAULT_CONFIG } = await import('../plugin/lib/judge.js');
 
 // The case that motivated this: an issue URL reported as created, with no
 // `gh issue create` anywhere in the round. The judge calls that `not_addressed`
@@ -62,5 +75,68 @@ assert.deepEqual(unsupportedIds('e.g. https://github.com/org/repo/issues/1234', 
 assert.deepEqual(unsupportedIds('https://github.com/a/b/issues/1', ''), []);
 assert.deepEqual(unsupportedIds('', 'anything'), []);
 assert.equal(idBlock([]), undefined);
+
+// Issue #12 regression: the two live false positives. readEvidence walks the
+// transcript backwards and unshifts each tool result, so the join is
+// chronological — and slice(0, maxChars) then cut the NEWEST rounds, the ones
+// a claim quotes from. Both blocked hashes (a push output, two `fixindex fi`
+// commit outputs) were the newest tool results at block time and got truncated
+// off the tail the moment the collected text exceeded the window. The window
+// must overflow off the oldest end.
+const prompt = (text) => JSON.stringify({ type: 'user', message: { content: text } });
+const round = (text) => JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: text }] } });
+const mkTranscript = (name, lines) => {
+  const p = join(SCRATCH, name);
+  writeFileSync(p, lines.join('\n') + '\n');
+  return p;
+};
+
+// The mechanism, minimal: an old round fills a small window, the newest tool
+// result carries the hash being quoted.
+const tpSmall = mkTranscript('fp-small.jsonl', [
+  prompt('do the work'),
+  round('x'.repeat(400)),
+  round('ce215ca..9d1a190  main -> main'),
+]);
+const evSmall = readEvidence(tpSmall, 300, { allRounds: true });
+assert.match(evSmall, /9d1a190/, 'the newest tool result stays inside the window');
+assert.deepEqual(
+  unsupportedIds('落地完成，`9d1a190` 已推。', evSmall),
+  [],
+  'a hash quoted from the newest tool result is not a fabrication',
+);
+
+// End-to-end at the real 400000-char window: old rounds hold more tool output
+// than the window can keep, and the commit hash appears only in the newest
+// result. With idcheckShadow off, the pre-fix slice blocked this honest quote.
+const tpLive = mkTranscript('fp-live.jsonl', [
+  prompt('earlier work'),
+  round('q'.repeat(410000)),
+  prompt('push it'),
+  round('To https://github.com/royalskynet/oc-agent.git\n   ce215ca..9d1a190  main -> main'),
+]);
+const savedShadow = DEFAULT_CONFIG.shadow;
+const savedIdcheckShadow = DEFAULT_CONFIG.idcheckShadow;
+DEFAULT_CONFIG.shadow = false;
+DEFAULT_CONFIG.idcheckShadow = false;
+try {
+  const honest = await handleStop({
+    hook_event_name: 'Stop',
+    last_assistant_message: '落地完成，`9d1a190` 已推。',
+    transcript_path: tpLive,
+  });
+  assert.equal(honest, undefined, 'an honestly quoted hash must not block');
+
+  // The control: a hash that appears in no tool output still blocks.
+  const invented = await handleStop({
+    hook_event_name: 'Stop',
+    last_assistant_message: '落地完成，`deadbee` 已推。',
+    transcript_path: tpLive,
+  });
+  assert.equal(invented?.decision, 'block', 'a hash absent from every tool output is still an invented result');
+} finally {
+  DEFAULT_CONFIG.shadow = savedShadow;
+  DEFAULT_CONFIG.idcheckShadow = savedIdcheckShadow;
+}
 
 console.log('ok: invented ids block, quoted ids pass, measured false-positive classes stay silent');
