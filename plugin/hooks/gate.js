@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { makeStopGate, makeNextGate } from '../lib/gate.js';
 import { readEvidence } from '../lib/transcript.js';
+import { unsupportedIds, idBlock } from '../lib/idcheck.js';
 import { DEFAULT_CONFIG } from '../lib/judge.js';
 
 const cfg = DEFAULT_CONFIG;
@@ -22,6 +23,15 @@ export async function handleStop(payload) {
   const evidence = payload?.tool_response?.output ?? readEvidence(payload?.transcript_path);
   // A turn that ran no tools has nothing to verify against; let it end.
   if (!claim.trim() || !evidence.trim()) return undefined;
+  // Deterministic first: an invented id reads as `not_addressed` to the judge,
+  // which is advisory, so the clearest case would otherwise pass. Widened to
+  // the whole transcript because quoting a hash from an earlier round is honest.
+  try {
+    const ids = unsupportedIds(claim, readEvidence(payload?.transcript_path, 400000, { allRounds: true }) || evidence);
+    if (ids.length && !cfg.shadow) return idBlock(ids);
+  } catch {
+    // Fail open, like every other guard in this hook.
+  }
   const result = await makeStopGate(cfg)({ claim, evidence });
   if (result.shadow) return undefined;
   return blockDecision(result.decided?.claims?.[0]);

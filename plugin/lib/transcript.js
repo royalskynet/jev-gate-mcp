@@ -13,8 +13,13 @@ import { readFileSync } from 'node:fs';
  * Walks the JSONL backwards, collecting `tool_result` text, and stops at the
  * user turn that started this round. Returns '' on any problem — the caller
  * treats no evidence as "nothing to judge" and lets the turn end.
+ *
+ * `allRounds` keeps walking past the prompt boundary and also keeps the user's
+ * own words. The identifier check needs that wider window: a claim may quote a
+ * commit hash from three turns ago, and judging it against this round alone
+ * would call an honest quote a fabrication.
  */
-export function readEvidence(transcriptPath, maxChars = 8000) {
+export function readEvidence(transcriptPath, maxChars = 8000, { allRounds = false } = {}) {
   if (!transcriptPath) return '';
   let lines;
   try {
@@ -36,10 +41,19 @@ export function readEvidence(transcriptPath, maxChars = 8000) {
     if (rec.type !== 'user') continue;
     const content = rec.message?.content;
     // A plain-string user message is the prompt that opened this round.
-    if (typeof content === 'string') break;
+    if (typeof content === 'string') {
+      if (!allRounds) break;
+      parts.unshift(content);
+      total += content.length;
+      continue;
+    }
     if (!Array.isArray(content)) continue;
     const results = content.filter((p) => p?.type === 'tool_result');
-    if (results.length === 0) break; // a structured user turn with no tool results is also a prompt
+    // a structured user turn with no tool results is also a prompt
+    if (results.length === 0) {
+      if (!allRounds) break;
+      continue;
+    }
     for (const r of results) {
       const text = typeof r.content === 'string'
         ? r.content
