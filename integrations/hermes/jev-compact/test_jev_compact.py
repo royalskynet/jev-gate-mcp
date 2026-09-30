@@ -163,6 +163,18 @@ def main() -> None:
         "bypass_cooldown": True,
     }, calls[0]["kwargs"]
 
+    # 2b. A failed judge below the built-in threshold (the Jev gate sits far under it, and
+    #     the free quota runs out daily) must not become an early lossy summary: the
+    #     transcript comes back unchanged. The host's own token count, when over the
+    #     threshold, still wins over the chars/4 estimate.
+    with _spy_super() as calls:
+        out = engine(lambda _p: _Proc("", 1)).compress(before)
+    assert out is before, "below the built-in threshold a failed judge is a no-op"
+    assert calls == [], "the built-in summary must not run early"
+    with _spy_super() as calls:
+        out = engine(lambda _p: _Proc("", 1)).compress(before, current_tokens=1_000_000)
+    assert out == "SUPER" and len(calls) == 1, "the host count says over: the built-in runs"
+
     # 3. Compacted, but not small enough: the built-in is handed Jev's result, not the
     #    original — the judgment is worth keeping even when it is not worth finishing.
     huge = [{"role": "user", "content": "z" * 20_000}]
@@ -253,7 +265,7 @@ def main() -> None:
         raw = "\n".join(lines)
         entries = [json.loads(line) for line in lines]
 
-        assert [e["path"] for e in entries] == ["jev", "jev+super", "super"], entries
+        assert [e["path"] for e in entries] == ["jev", "jev+super", "skip"], entries
         assert entries[0]["before_chars"] == before_chars, entries[0]
         assert entries[0]["after_chars"] == plugin._payload_chars(small), entries[0]
         assert entries[0]["dropped"] == before_chars - plugin._payload_chars(small), entries[0]

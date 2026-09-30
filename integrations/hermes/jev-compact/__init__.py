@@ -284,6 +284,13 @@ class JevCompactCompressor(ContextCompressor):
         before = _payload_chars(messages)
         compacted, reason = self._jev_pass(messages)
         if compacted is None:
+            # The Jev gate fires far below the built-in threshold (50k vs 50% of the window).
+            # A failed Jev pass there (the free quota runs out daily) must not turn into an
+            # early lossy summary: hand the transcript back unchanged. The host reads that as
+            # "no progress" (no session rotation) and arms its short structural backoff.
+            if not force and self._under_threshold(before) and not self._over_by_tokens(current_tokens):
+                self._record(before, before, "skip", reason)
+                return messages
             self._record(before, before, "super", reason)
             return super().compress(
                 messages, current_tokens=current_tokens, focus_topic=focus_topic, force=force,
@@ -312,6 +319,14 @@ class JevCompactCompressor(ContextCompressor):
             return (chars / _CHARS_PER_TOKEN) < int(self.threshold_tokens)
         except Exception:
             return False
+
+    def _over_by_tokens(self, current_tokens: Optional[int]) -> bool:
+        """The host's own count, when it passed one, beats the chars/4 estimate: it sees the
+        system prompt and tool schemas the message payload does not."""
+        try:
+            return current_tokens is not None and int(current_tokens) >= int(self.threshold_tokens)
+        except Exception:
+            return True
 
     def _jev_pass(self, messages: List[Dict[str, Any]]) -> "tuple[Optional[List[Dict[str, Any]]], str]":
         """``(compacted, reason)``; ``(None, reason)`` whenever the answer is unusable.
