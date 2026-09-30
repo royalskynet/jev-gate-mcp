@@ -341,7 +341,12 @@ Provider settings live at the top of `hooks/jev.js`: endpoint
 and `JEV_API_KEY_FILE`.
 
 Zen's free tier has a quota (measured 2026-09-30: 429 `FreeUsageLimitError`,
-retry-after ~15h). Any Zen failure writes `cooldown_until` to
+retry-after counting down to 00:00 UTC). The docs state no limit; a maintainer
+says free usage shifts with capacity (anomalyco/opencode#28055), and community
+reports put the limiter per IP, with non-official clients getting a small
+fallback allowance (#33318, earendil-works/pi#2824). By those reports (not measured here) a new Zen key or paid Zen
+balance does not lift it, and OpenCode Go does not include Jev
+(`/zen/go/v1/models` lists none). Do not forge official client headers. Any Zen failure writes `cooldown_until` to
 `~/.jevgate/zen-free-status.json` (retry-after for a 429, 5 minutes otherwise);
 until it lapses the gateway, Stop gate, prune and compact ask OpenRouter
 (`~/.creds/kv/OPENROUTER_API_KEY.txt`; the gateway honours

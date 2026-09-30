@@ -285,7 +285,11 @@ model `jev-1.13-free`、key 讀 `~/.creds/kv/OPENCODE_ZEN_API_KEY.txt`。改走 
 `JEV_ENDPOINT=https://openrouter.ai/api/v1/systemone`、`JEV_MODEL=typesafe/jev-1.13`
 與 `JEV_API_KEY_FILE`。
 
-Zen 免費層有額度（2026-09-30 實測：429 `FreeUsageLimitError`，retry-after 約 15 小時）。
+Zen 免費層有額度（2026-09-30 實測：429 `FreeUsageLimitError`，retry-after 倒數到 UTC 00:00）。
+官方文件沒寫上限；維護者說免費量隨容量動態調整（anomalyco/opencode#28055），
+社群回報限流器以 IP 計、非官方 client 只拿到很小的保底量（#33318、earendil-works/pi#2824）。
+據此換 Zen key 或加值 Zen 餘額都不解除（未實測）；OpenCode Go 訂閱不含 Jev（`/zen/go/v1/models` 無 jev）。
+不要偽造官方 client header 繞過。
 Zen 一失敗就把 `cooldown_until` 寫進 `~/.jevgate/zen-free-status.json`（429 取
 retry-after，其他錯誤 5 分鐘）；冷卻期間 gateway、Stop gate、prune、compact 都改問
 OpenRouter（`~/.creds/kv/OPENROUTER_API_KEY.txt`，gateway 可用
