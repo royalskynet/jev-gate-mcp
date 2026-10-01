@@ -42,10 +42,11 @@ second routing lane keyed on the *question type* rather than the exact schema:
 3. The conservative state filter still applies to this lane, and anything under
    the threshold, invalid, or `no_match` falls back to the cloud in the same
    request as the rest of the batch.
-4. The older profile lane is **not** put behind the threshold. Its questions are
-   `choice`, whose confidence clears 0.70 on only 4.4% of corpus units, so gating
-   it would move most of that pilot's traffic back to the paid provider — the
-   opposite of the intent.
+4. The older profile lane is **not** put behind the threshold. `choice` is the
+   worst type overall, but that average is carried by questions the state filter
+   already rejects: of the `choice` units that reach the local lane, 28 of 28
+   agree with the teacher out of fold. Gating them would forfeit 11.7 points of
+   request-level saving and buy no accuracy.
 5. Promotion and ONNX export are one step in `scripts/laya-nightly.sh`. Weights
    that the consumer cannot read are not a promotion.
 
@@ -54,20 +55,40 @@ second routing lane keyed on the *question type* rather than the exact schema:
 521–533 question units from the teacher corpus, out-of-fold throughout;
 Clopper–Pearson intervals for accuracy, bootstrap for the paired gain.
 
+545 units over 197 records, five grouped folds:
+
 | | accuracy |
 | --- | --- |
-| int8 bundle | 36.9% |
+| int8 bundle | 35.7% |
 | trained head, 0.79M params | 40.9%, paired +2.9pp, CI [-1.7, +7.6] — rejected |
-| trained head, 14.97M params | 68.9%, paired +33.2pp, CI [+26.7, +36.7] |
+| trained head, 14.97M params | 69.0%, CI [65.1, 72.7], paired +32.6pp, CI [+27.1, +37.8] |
+
+Capacity, not corpus size, was the limit: freezing the 14.2M decision head on
+the assumption that 500-odd units could not train it produced the rejected row.
 
 Per type, against the majority-class baseline: `score` 50.0% → 98.6%, `noul`
-20.7% → 86.0%, `choice` 35.6% → 55.9%. Fine-tuning therefore refutes the "`noul`
-is useless" objection and confirms the "confidently wrong" one: at the operating
-point `choice` admits 4.4% of its units with an interval of [73.5, 100], so it
-stays out of the lane.
+20.7% → 80.2%, `choice` 35.6% → 52.9%. Fine-tuning therefore refutes the "`noul`
+is useless" objection and confirms the "confidently wrong" one, so `choice` is
+kept out of the question-type lane and left to its exact-schema lane.
 
-At `score,noul` / 0.70 / state filter: **24.2% of all question units answered
-locally, 129 of 129 agreeing with the teacher, CI [97.2, 100]**.
+At `score,noul` / 0.70 / state filter: **137 question units answered locally,
+137 of 137 agreeing with the teacher, CI [97.3, 100]**.
+
+Question units are not the billing unit: the gateway sends every fallen-back
+question of a request in one cloud call, so a request is only free when all of
+its questions stay local. Per request, out of fold, with zero disagreements in
+all three configurations:
+
+| local lanes | requests fully local |
+| --- | --- |
+| `score,noul` gated, `choice` to the cloud | 20.8% |
+| `score,noul` gated + profile lane ungated (chosen) | **32.5%** |
+| every lane gated | 28.9% |
+
+Neither lane has ever served traffic: `JEV_PROVIDER` was `zen`, so
+`makeLayaRouter` was never constructed. Switching the provider is the go-live
+step for both lanes at once, which is why the profile lane's accuracy was
+measured here rather than assumed from its earlier review.
 
 Selective quantisation matters for this lane. Quantising the whole graph moves
 logits by up to 2.82 and breaks the fitted temperatures, costing 60% of coverage
@@ -77,8 +98,10 @@ the published int8 bundle.
 
 ## Consequences
 
-- Roughly a quarter of `jev_evaluate` units stop reaching the paid provider, with
-  a measured lower bound of 97.2% teacher agreement on what stays local.
+- About a third of `jev_evaluate` requests stop reaching the paid provider, with
+  a measured lower bound of 97.3% teacher agreement on what stays local.
+- `choice` rests on 28 out-of-fold units, lower bound 87.7%. It is the thinnest
+  evidence here; a later corpus should re-measure it before the lane is widened.
 - The lane's defaults are claims about a specific corpus. Only
   `scripts/laya-train.py` output may move them, per AGENTS.md
   "不把 confidence 當正確率；所有自動化門檻必須經目標資料校準". In-sample accuracy
