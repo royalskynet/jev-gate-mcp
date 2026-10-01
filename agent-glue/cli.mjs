@@ -11,6 +11,7 @@
  * judge, not through this CLI.
  *
  *   echo '<json>' | node agent-glue/cli.mjs compact
+ *   echo '<json>' | node agent-glue/cli.mjs compact-live
  *   echo '<json>' | node agent-glue/cli.mjs verify
  *   echo '<json>' | node agent-glue/cli.mjs review
  *   echo '<json>' | node agent-glue/cli.mjs route
@@ -20,9 +21,32 @@
  * over `globalThis.fetch`, because it exists for hosts that cannot run this
  * repo's in-process hooks (Hermes' Python `tool_execution` middleware). One
  * judge, two runtimes — the alternative was a second judge in Python.
+ *
+ * `compact-live` is the second exception: it wires the same Jev judge over a
+ * Node `$` host, for callers that want live compaction from a bare CLI run.
+ * Privacy is pinned here, not defaulted — `judgeHeadChars` is fixed at 0 and
+ * the user request at '', so only tool names and char counts cross the wire.
  */
+import { readFile } from 'node:fs/promises';
+
 import { compactMessages, verifyCompletion, reviewDiff, route, describeCandidates } from './src/index.js';
 import { pruneCommand } from './src/prune.js';
+import { apiKey, judgePair } from './claude/compact-hook.mjs';
+
+/**
+ * Node-side `$` for the shared judge, written the same way as
+ * `integrations/openclaw/compact-provider.mjs`: `fetch` there returns a
+ * Response (`.text()` is a method), the hook contract wants `{ ok, text }`.
+ */
+const node$ = {
+  fs: { read: (p) => readFile(p, 'utf8') },
+  http: {
+    fetch: async (url, init) => {
+      const res = await fetch(url, init);
+      return { ok: res.ok, status: res.status, text: await res.text() };
+    },
+  },
+};
 
 const sub = process.argv[2];
 
@@ -74,8 +98,45 @@ switch (sub) {
     respond(await pruneCommand(payload));
     break;
   }
+  case 'compact-live': {
+    // Live judge over the real Jev endpoint, unlike `compact`'s stub. Privacy
+    // is a hard rule, not a default: `judgeHeadChars` is pinned to 0 and the
+    // user request to '', so only tool names and char counts cross the wire —
+    // no payload, no user message, whatever the caller asked for.
+    const { messages = [], pinFirst, pinLast, minReductionChars } = payload;
+    const key = await apiKey(node$, {});
+    if (!key) {
+      respond({ messages, compacted: false, reason: 'no key', reducedBy: 0 });
+      break;
+    }
+    // judgePair maps a failed call (429 quota, 401, 5xx) to 'keep', so a dead
+    // judge would still be called once per pair. Abort the pass on the first
+    // failed response instead: compactMessages turns the throw into
+    // `judge-failed` and the host falls back without N wasted round trips.
+    let failed = null;
+    const watched = { ...node$, http: { fetch: async (url, init) => {
+      let res;
+      try { res = await node$.http.fetch(url, init); } catch (e) { failed = 'network'; throw e; }
+      if (!res.ok) failed = res.status;
+      return res;
+    } } };
+    const result = await compactMessages({
+      messages,
+      pinFirst,
+      pinLast,
+      minReductionChars,
+      judgeHeadChars: 0,
+      judge: async (pair) => {
+        const choice = await judgePair(watched, key, '', pair);
+        if (failed !== null) throw new Error(`judge HTTP ${failed}`);
+        return choice;
+      },
+    });
+    respond(failed !== null ? { ...result, reason: `judge-http-${failed}` } : result);
+    break;
+  }
   default: {
-    process.stderr.write('agent-glue: unknown subcommand (compact|verify|review|route|prune)\n');
+    process.stderr.write('agent-glue: unknown subcommand (compact|compact-live|verify|review|route|prune)\n');
     process.exit(2);
   }
 }
