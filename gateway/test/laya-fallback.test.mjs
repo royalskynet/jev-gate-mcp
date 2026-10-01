@@ -56,3 +56,20 @@ test('laya fallback with a non-TYPESAFE key routes to OpenRouter', async () => {
     delete process.env.JEV_LAYA_MODEL_DIR;
   }
 });
+
+// No key: the router's own `!cloud` credential error must surface. Wrapping a
+// null fallback in the teacher corpus used to turn it into a TypeError
+// ("adapter is not a function") that callers could not tell from a bug.
+test('laya without a key fails with the credential error, not a TypeError', async () => {
+  process.env.JEV_LAYA_MODEL_DIR = path.join(os.tmpdir(), 'jev-laya-does-not-exist-nokey');
+  try {
+    const { gateway } = buildGateway({ provider: 'laya', model: 'jev-latest', apiKeyFile: '/nonexistent/no-key.txt' });
+    const err = await gateway.evaluate({ state: 'x', questions: { q: { type: 'noul', instructions: 'ok?', criteria: { true: 'yes', false: 'no' } } } })
+      .then((r) => r, (e) => e);
+    const text = JSON.stringify(err, Object.getOwnPropertyNames(err ?? {}));
+    assert.ok(!/is not a function/.test(text), `credential error was masked: ${text}`);
+    assert.match(text, /credential|auth/i);
+  } finally {
+    delete process.env.JEV_LAYA_MODEL_DIR;
+  }
+});

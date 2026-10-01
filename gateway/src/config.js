@@ -101,7 +101,10 @@ export function buildGateway(cfg = {}) {
     // Whatever the router decides, the provider's answer is the teacher the
     // local weights get distilled against later — so it is recorded whether or
     // not the local weights end up answering.
-    const teacher = cfg.teacherCorpus === false ? fallback : withTeacherCorpus(fallback, cfg.recordTeacherSample);
+    // No credential -> keep it null: wrapping null yields a function that only
+    // fails at call time ("adapter is not a function") and hides the router's
+    // own `!cloud` credential error.
+    const teacher = !fallback || cfg.teacherCorpus === false ? fallback : withTeacherCorpus(fallback, cfg.recordTeacherSample);
     rawAdapter = makeLayaRouter({ local: layaAdapter, cloud: teacher,
       record: cfg.recordRoutingSample,
       onRoute: ({ local, cloud, fallback: count }) => telemetry?.record({
