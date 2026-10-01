@@ -31,6 +31,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -118,6 +119,27 @@ def teacher_hard(question, answer):
         p = answer.get("noul")
         return None if p is None else float(p)
     return None
+
+
+# gateway/src/laya-routing.js 的 shortStandaloneState 鏡像。正本在那邊，這裡只為
+# 離線模擬線上覆蓋率；兩邊漂移會讓模擬數字說謊，改那邊時這裡要跟著改。
+_BAD_STATE = re.compile(
+    r"[\r\n]|不要|別|别|不是|並且|并且|然後|然后|先.*再|剛才|刚才|上述|前面|照.*說|照.*说"
+    r"|刪除|删除|部署|付款|密碼|密码"
+    r"|\b(not|don't|never|then|previous|delete|deploy|password|payment)\b", re.I)
+
+
+def short_standalone_state(state):
+    text = state
+    if isinstance(state, dict):
+        if any(k not in ("user_request", "char_bucket") for k in state):
+            return False
+        if state.get("char_bucket") not in (None, "s"):
+            return False
+        text = state.get("user_request")
+    if not isinstance(text, str) or not text.strip() or len(text) > 320:
+        return False
+    return not _BAD_STATE.search(text)
 
 
 def pred_matches(qtype, pred_idx, probs, truth):
@@ -306,6 +328,25 @@ def selftest():
     assert cur[0]["coverage"] == 1.0 and cur[0]["accuracy"] == 0.5
     hi = [c for c in cur if c["threshold"] == 0.8][0]
     assert hi["n"] == 1 and hi["accuracy"] == 1.0, hi
+    # short_standalone_state：鏡像 laya-routing.js，行為與漂移都要驗
+    assert short_standalone_state("幫我跑一下測試") is True
+    assert short_standalone_state("要不要先跑測試") is False     # 含「不要」，正本會擋
+    assert short_standalone_state({"user_request": "跑測試", "char_bucket": "s"}) is True
+    assert short_standalone_state({"user_request": "跑測試", "char_bucket": "l"}) is False
+    assert short_standalone_state({"user_request": "x", "phase": "plan"}) is False
+    assert short_standalone_state("不要刪除那個檔") is False      # 否定詞
+    assert short_standalone_state("deploy it now") is False       # 英文高風險詞
+    assert short_standalone_state("a" * 321) is False             # 超長
+    assert short_standalone_state("") is False
+    assert short_standalone_state(None) is False
+    # 漂移守衛：JS 正本的 regex 若改了而這裡沒跟上，模擬數字就會說謊。
+    js = Path(__file__).resolve().parent.parent / "gateway" / "src" / "laya-routing.js"
+    if js.exists():
+        m = re.search(r"return !/(.+?)/i\.test\(text\);", js.read_text())
+        assert m, "laya-routing.js 的 shortStandaloneState regex 找不到，鏡像無法比對"
+        assert m.group(1) == _BAD_STATE.pattern.replace("\\b(", "\\b("), \
+            f"regex 漂移：\nJS={m.group(1)}\nPY={_BAD_STATE.pattern}"
+
     print("selftest PASS")
 
 
@@ -561,6 +602,9 @@ def main():
     # ---- 評估：OOF vs int8 基線，同一批 units、同一判準
     conf, correct, probs, targets, per_type = [], [], [], [], {}
     paired_new, paired_old = [], []
+    # 路由決策只能看 OOF。把逐題結果落盤，否則只能拿「模型跑自己訓練資料」
+    # 的 in-sample 數字去定閾值，那會高估（本次實測 in-sample 72.4% vs OOF 67.4%）。
+    oof_rows = []
     for u in units:
         if u["_i"] not in oof:
             continue
@@ -581,6 +625,10 @@ def main():
         if b is not None:
             paired_new.append(1.0 if ok else 0.0)
             paired_old.append(1.0 if b else 0.0)
+        # rec 是必要的：雲端計費按「請求」而非按題，所以只有整筆 record 的題
+        # 全留本機才真的省一次呼叫。少了它只能算出偏樂觀的逐題覆蓋率。
+        oof_rows.append({"rec": u["rec"], "qtype": u["qtype"], "conf": max(p),
+                         "correct": bool(ok), "state_ok": short_standalone_state(u["state"])})
 
     oof_acc = sum(correct) / len(correct) if correct else None
     curve = coverage_curve(conf, correct)
@@ -606,6 +654,7 @@ def main():
         "ece": ece(conf, correct),
         "brier": brier(probs, targets),
         "coverage_curve": curve,
+        "oof_rows": oof_rows,
     }
     Path(args.report).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     os.chmod(args.report, 0o600)

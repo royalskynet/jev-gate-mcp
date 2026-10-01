@@ -42,6 +42,10 @@ def main():
     ap.add_argument("--corpus", default=os.environ.get(
         "JEV_TEACHER_CORPUS", str(HOME / ".jevgate" / "teacher-corpus.jsonl")))
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 題（0=全部）")
+    ap.add_argument("--route-sim", metavar="QTYPES",
+                    help="模擬線上路由：只路由這些題型（逗號分隔），"
+                         "並套用 laya-routing.js 的 shortStandaloneState state 過濾")
+    ap.add_argument("--threshold", type=float, default=0.70, help="--route-sim 的信心閾值")
     args = ap.parse_args()
 
     bundle = Path(args.bundle)
@@ -73,6 +77,7 @@ def main():
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     conf, correct, pairs = [], [], []
     per_type = {}
+    gate_rows = []  # (qtype, conf, correct, state_ok) — 工作點上的分題型表現
     for u in units:
         q = u["question"]
         qq = {"t": q["type"], "ins": q["instructions"], "crit": q.get("criteria")}
@@ -102,6 +107,7 @@ def main():
         d = per_type.setdefault(u["qtype"], [0, 0])
         d[0] += bool(ok)
         d[1] += 1
+        gate_rows.append((u["qtype"], max(p), bool(ok), T.short_standalone_state(u["state"])))
         b = T.baseline_correct(u)
         if b is not None:
             pairs.append(bool(ok) - bool(b))
@@ -118,6 +124,47 @@ def main():
         print(f"vs int8 基線（配對，n={len(pairs)}）: "
               f"{sum(pairs) / len(pairs) * 100:+.1f}pp, 95% CI [{lo * 100:+.1f}, {hi * 100:+.1f}]pp")
     print(f"ECE {T.ece(conf, correct):.3f}")
+
+    # 分題型的信心閘表現。整體覆蓋率漂亮可能靠某個題型撐著，而另一個題型
+    # 在同一個閾值上「有信心地答錯」（fix 9544）——那種題型必須排除在路由外。
+    for thr in (0.70, 0.80):
+        print(f"\n--- 閾值 {thr:.2f} 分題型")
+        for qt in sorted(per_type):
+            sel = [(c, o) for (t, c, o, _s) in gate_rows if t == qt and c >= thr]
+            tot_qt = sum(1 for (t, _c, _o, _s) in gate_rows if t == qt)
+            if not sel:
+                print(f"  {qt:6s} 覆蓋 0/{tot_qt}")
+                continue
+            a = sum(o for _, o in sel) / len(sel)
+            lo, hi = T.boot_ci([float(o) for _, o in sel])
+            print(f"  {qt:6s} 覆蓋 {len(sel):>3}/{tot_qt:<3} ({len(sel) / tot_qt * 100:>5.1f}%) "
+                  f"準確 {a * 100:>5.1f}%  CI [{lo * 100:+.1f}, {hi * 100:+.1f}]")
+
+    if args.route_sim:
+        allow = {s.strip() for s in args.route_sim.split(",") if s.strip()}
+        thr = args.threshold
+        routed = [o for (t, c, o, s) in gate_rows if t in allow and s and c >= thr]
+        n_all = len(gate_rows)
+        print(f"\n=== 線上路由模擬  題型={sorted(allow)}  閾值={thr:.2f}  "
+              f"＋shortStandaloneState")
+        if not routed:
+            print("  路由 0 題")
+        else:
+            a = sum(routed) / len(routed)
+            lo, hi = T.boot_ci([float(o) for o in routed])
+            wrong = len(routed) - sum(routed)
+            print(f"  本機接手 {len(routed)}/{n_all} = {len(routed) / n_all * 100:.1f}% 的判斷")
+            print(f"  準確 {a * 100:.1f}%  ({wrong} 錯)  bootstrap CI [{lo * 100:+.1f}, {hi * 100:+.1f}]")
+            # 全對時 bootstrap 下界會退化成 100%，改報 Clopper-Pearson 下界才誠實。
+            if wrong == 0:
+                try:
+                    from scipy.stats import beta
+                    cp = beta.ppf(0.025, len(routed), 1)
+                    print(f"  全對 → bootstrap CI 退化；Clopper-Pearson 95% 下界 {cp * 100:.1f}%")
+                except ImportError:
+                    print(f"  全對 → bootstrap CI 退化，真實下界遠低於 100%（n={len(routed)}）")
+            print(f"  雲端仍需處理 {n_all - len(routed)}/{n_all} = "
+                  f"{(n_all - len(routed)) / n_all * 100:.1f}%")
     for row in T.coverage_curve(conf, correct):
         if row["accuracy"] is None:
             print(f"T={row['threshold']:.2f}  coverage=  0.0%  n=   0  accuracy=   n/a")
