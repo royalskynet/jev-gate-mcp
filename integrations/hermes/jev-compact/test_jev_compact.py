@@ -119,6 +119,7 @@ def main() -> None:
     def engine(run, threshold: int = 1_000_000):
         """An engine with a pinned budget: no model probe, no lazy threshold resolution."""
         e = engine_cls(model="test-model", quiet_mode=True, run=run)
+        e.context_length = 10_000_000  # window share never binds unless a case sets it
         e.threshold_tokens = threshold
         return e
 
@@ -210,13 +211,13 @@ def main() -> None:
     #     own answer still applying underneath it.
     with _env(JEV_COMPACT_AT_TOKENS=None):
         e = engine(lambda _p: _Proc(_verdict(small)), threshold=1_000_000)
-        assert e.should_compress(49_999) is False, "under the Jev gate, and the built-in says no"
-        assert e.should_compress(50_000) is True, "the gate is inclusive at 50000"
-        assert e.should_compress(55_000) is False, "cooldown: only +5000 tokens since the attempt"
-        assert e.should_compress(59_999) is False, "cooldown: still under 10000"
-        assert e.should_compress(60_000) is True, "cooldown elapsed at exactly +10000"
-        assert e.should_compress(60_500) is False, "the attempt at 60000 re-arms the cooldown"
-        assert e.should_compress(70_000) is True
+        assert e.should_compress(199_999) is False, "under the Jev gate, and the built-in says no"
+        assert e.should_compress(200_000) is True, "the gate is inclusive at 200000"
+        assert e.should_compress(205_000) is False, "cooldown: only +5000 tokens since the attempt"
+        assert e.should_compress(209_999) is False, "cooldown: still under 10000"
+        assert e.should_compress(210_000) is True, "cooldown elapsed at exactly +10000"
+        assert e.should_compress(210_500) is False, "the attempt at 60000 re-arms the cooldown"
+        assert e.should_compress(220_000) is True
 
     # 4b. A prompt below the gate must not spend the Jev budget, and the built-in's
     #     trigger still fires on its own.
@@ -224,7 +225,7 @@ def main() -> None:
         e = engine(lambda _p: _Proc(_verdict(small)), threshold=1000)
         assert e.should_compress(2000) is True, "over the built-in threshold, under the Jev gate"
         assert e.should_compress(400) is False, "under the built-in threshold"
-        assert e.should_compress(50_000) is True, "the unused Jev budget is still there"
+        assert e.should_compress(200_000) is True, "the unused Jev budget is still there"
 
     # 4c. The gate is configurable, and a junk value falls back to the default instead of
     #     taking compression down with it.
@@ -232,23 +233,30 @@ def main() -> None:
         assert engine(lambda _p: _Proc(_verdict(small)), threshold=1_000_000).should_compress(200) is True
     with _env(JEV_COMPACT_AT_TOKENS="not-a-number"):
         e = engine(lambda _p: _Proc(_verdict(small)), threshold=1_000_000)
-        assert e.should_compress(50_000) is True
-        assert e.should_compress(49_999) is False
+        assert e.should_compress(200_000) is True
+        assert e.should_compress(199_999) is False
 
     # 4d. /reset clears the cooldown: a new session's first over-threshold turn is a real
     #     first attempt, not one hidden behind the previous session's anchor.
     with _env(JEV_COMPACT_AT_TOKENS=None):
         e = engine(lambda _p: _Proc(_verdict(small)), threshold=1_000_000)
-        assert e.should_compress(50_000) is True
-        assert e.should_compress(55_000) is False
+        assert e.should_compress(200_000) is True
+        assert e.should_compress(205_000) is False
         e.on_session_reset()
-        assert e.should_compress(55_000) is True
+        assert e.should_compress(205_000) is True
 
     # 4e. No usable prompt_tokens never raises and never forks a judge.
     with _env(JEV_COMPACT_AT_TOKENS=None):
         e = engine(lambda _p: (_ for _ in ()).throw(AssertionError("must not judge")), threshold=1_000_000)
         assert e.should_compress() is False
         assert e.should_compress(None) is False
+
+    # 4f. A smaller window lowers the gate to 60% of it: 100k window -> 60k gate.
+    with _env(JEV_COMPACT_AT_TOKENS=None):
+        e = engine(lambda _p: _Proc(_verdict(small)))
+        e.context_length = 100_000
+        assert e.should_compress(59_999) is False, "under 60% of a 100k window"
+        assert e.should_compress(60_000) is True, "60% of the window fires before 200k"
 
     # 5. The ledger: one line per decision, under $HERMES_HOME/logs, counts and reasons
     #    only. Both decisions land in the same file — an engine that fires and always
@@ -310,17 +318,17 @@ def main() -> None:
     #    The threshold stays above the tokens used below, so the cooldown — not the
     #    built-in's own trigger — is what answers.
     with _env(JEV_COMPACT_AT_TOKENS=None):
-        source = engine(lambda _p: _Proc(_verdict(small)), threshold=100_000)
-        assert source.should_compress(50_000) is True
+        source = engine(lambda _p: _Proc(_verdict(small)), threshold=300_000)
+        assert source.should_compress(200_000) is True
         clone = source.clone_for_agent()
         assert isinstance(clone, engine_cls) and clone.name == "jev-compact"
-        assert clone.threshold_tokens == 100_000, clone.threshold_tokens
+        assert clone.threshold_tokens == 300_000, clone.threshold_tokens
         assert clone is not source and clone._lock is not source._lock
         # The clone starts with a clean budget: it is a different agent, not a snapshot.
-        assert clone.should_compress(50_000) is True
-        assert clone.should_compress(55_000) is False
+        assert clone.should_compress(200_000) is True
+        assert clone.should_compress(205_000) is False
         # ...and the source's own anchor is untouched by the clone's claim.
-        assert source.should_compress(50_000) is False
+        assert source.should_compress(200_000) is False
 
     print("JEV_COMPACT_TESTS_OK")
 

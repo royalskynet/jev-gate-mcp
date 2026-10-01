@@ -51,7 +51,11 @@ _CLI = _REPO / "agent-glue" / "cli.mjs"
 # Prompt size above which a Jev pass is worth a fork of the judge. Below it, tool
 # payloads are not what is crowding the window, and the built-in summary is the better
 # instrument anyway.
-_AT_TOKENS_DEFAULT = 50000
+_AT_TOKENS_DEFAULT = 200000
+
+# ...or this share of the context window, whichever comes first, so a smaller-window
+# fallback model still gets its Jev pass before the built-in summary.
+_AT_WINDOW_SHARE = 0.6
 
 # The host consults should_compress() twice per turn, so without a cooldown every turn
 # would fork a judge against a transcript that has barely grown.
@@ -244,7 +248,7 @@ class JevCompactCompressor(ContextCompressor):
         try:
             tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
             tokens = int(tokens or 0)
-            if tokens >= _at_tokens() and self._claim_jev_attempt(tokens):
+            if tokens >= self._jev_gate() and self._claim_jev_attempt(tokens):
                 return True
         except Exception as exc:
             logger.debug("jev-compact: Jev gate skipped (%s)", exc)
@@ -253,6 +257,15 @@ class JevCompactCompressor(ContextCompressor):
         except Exception as exc:  # pragma: no cover - the guard of last resort
             logger.debug("jev-compact: built-in gate raised (%s)", exc)
             return False
+
+    def _jev_gate(self) -> int:
+        """``JEV_COMPACT_AT_TOKENS`` or 60% of the window, whichever is lower."""
+        at = _at_tokens()
+        try:
+            window = int(getattr(self, "context_length", 0) or 0)
+        except (TypeError, ValueError):
+            window = 0
+        return min(at, int(window * _AT_WINDOW_SHARE)) if window > 0 else at
 
     def _claim_jev_attempt(self, tokens: int) -> bool:
         """Authorize one Jev attempt at *tokens*; False while the cooldown is still warm.
@@ -284,7 +297,7 @@ class JevCompactCompressor(ContextCompressor):
         before = _payload_chars(messages)
         compacted, reason = self._jev_pass(messages)
         if compacted is None:
-            # The Jev gate fires far below the built-in threshold (50k vs 50% of the window).
+            # The Jev gate fires far below the built-in threshold (200k / 60% vs the built-in 50% of the window).
             # A failed Jev pass there (the free quota runs out daily) must not turn into an
             # early lossy summary: hand the transcript back unchanged. The host reads that as
             # "no progress" (no session rotation) and arms its short structural backoff.
