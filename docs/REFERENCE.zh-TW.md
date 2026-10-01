@@ -413,7 +413,11 @@ transport 任何失敗都保持現狀，絕不往上或往下猜。
 | 給 judge 看的 payload 開頭 | `JEV_COMPACT_ASK_CHARS` | 1,200 |
 | 關閉 | `JEV_COMPACT_ENABLED=0` | 預設開 |
 | 後端 | `JEV_COMPACT_BACKEND` | `auto`；可固定 `anthropic`／`openai` |
-| judge 端點／模型 | `JEV_ENDPOINT`／`JEV_MODEL`（與 prune 共用） | Anthropic 後端預設 OpenRouter decisions／`~typesafe/jev-latest`；非 OpenRouter 端點移除 `provider` 欄位 |
+| 保留機率門檻 | `JEV_COMPACT_KEEP_THRESHOLD` | 0.5（低於此機率的 call／result 刪掉） |
+| state token 上限 | `JEV_COMPACT_MAX_STATE_TOKENS` | 25,000 |
+| 單次請求 token 上限 | `JEV_COMPACT_MAX_REQUEST_TOKENS` | 30,000（state＋questions） |
+| 被刪 result 保留的開頭 | `JEV_COMPACT_TRUNCATE_HEAD` | 300 字元（0＝只留註記） |
+| judge 端點／模型 | `JEV_ENDPOINT`／`JEV_MODEL`（與 prune 共用） | 與 `hooks/jev.js` 同一組：`https://opencode.ai/zen/v1/systemone`／`jev-1.13-free`；非 OpenRouter 端點移除 `provider` 欄位 |
 | 工作階段顯示結果訊息 | `JEV_UI_LOG=1` | 預設關閉；持久紀錄見 `~/.openclaw/state/jev-*.log` |
 
 契約在 `agent-glue/src/compact.js`，是契約不是調參：user/assistant 文字

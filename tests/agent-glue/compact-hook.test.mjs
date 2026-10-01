@@ -4,6 +4,7 @@ import {
   pairState, userRequestOf, judgePair, rivalCompactor, apiKey, CONFIG, shouldCompact, register,
   refreshConfig,
 } from '../../agent-glue/claude/compact-hook.mjs';
+import { ENV } from '../../agent-glue/claude/env.mjs';
 import { compactMessages } from '../../agent-glue/src/compact.js';
 
 function fakeHost({ status = 200, choice = 'drop', files = {} } = {}) {
@@ -177,4 +178,39 @@ test('the primary endpoint/model defaults name the same host as the primary key 
   assert.match(CONFIG.endpoint, /^https:\/\/openrouter\.ai\//);
   assert.match(CONFIG.apiKeyFile, /OPENROUTER_API_KEY\.txt$/);
   refreshConfig();
+});
+
+// Why: the retired fast-jev-compaction plugin exposed these four as userConfig;
+// this module only inherited them as core defaults, so a machine that wanted a
+// stricter keep threshold or a smaller state budget had no way to say so.
+// Unset must stay `undefined`, not 0 — `Number('')` is 0, and a 0 threshold
+// keeps everything while a 0 state budget sends nothing.
+test('the four core knobs read their env names and stay undefined when unset', () => {
+  refreshConfig();
+  for (const k of ['keepThreshold', 'maxStateTokens', 'maxRequestTokens', 'truncateHeadChars']) {
+    assert.equal(CONFIG[k], undefined, `${k} must defer to the core default`);
+  }
+  const saved = { ...ENV };
+  try {
+    Object.assign(ENV, {
+      JEV_COMPACT_KEEP_THRESHOLD: '0.8',
+      JEV_COMPACT_MAX_STATE_TOKENS: '12000',
+      JEV_COMPACT_MAX_REQUEST_TOKENS: '15000',
+      JEV_COMPACT_TRUNCATE_HEAD: '0',
+    });
+    refreshConfig();
+    assert.equal(CONFIG.keepThreshold, 0.8);
+    assert.equal(CONFIG.maxStateTokens, 12000);
+    assert.equal(CONFIG.maxRequestTokens, 15000);
+    // 0 is a real setting here: keep only the note, no head.
+    assert.equal(CONFIG.truncateHeadChars, 0);
+    // Garbage is not 0 and not NaN — it falls back to the core default.
+    ENV.JEV_COMPACT_KEEP_THRESHOLD = 'high';
+    refreshConfig();
+    assert.equal(CONFIG.keepThreshold, undefined);
+  } finally {
+    for (const k of Object.keys(ENV)) delete ENV[k];
+    Object.assign(ENV, saved);
+    refreshConfig();
+  }
 });

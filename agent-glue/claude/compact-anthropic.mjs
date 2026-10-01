@@ -75,7 +75,12 @@ export async function compactAnthropic({ messages, config, asker }) {
       // No `goal`: the core derives it from the last user prompts, which reads
       // `text` — the field this shape actually has.
       preserveRecentMessages: config.pinLast,
-      truncateHeadChars: config.truncateHeadChars ?? 300,
+      // Each one `undefined` unless its env name is set; the core resolves an
+      // undefined option to its own default, so this does not pin a copy of it.
+      keepThreshold: config.keepThreshold,
+      maxStateTokens: config.maxStateTokens,
+      maxRequestTokens: config.maxRequestTokens,
+      truncateHeadChars: config.truncateHeadChars,
     });
   } catch (error) {
     return { messages, compacted: false, reducedBy: 0, reason: `judge-failed: ${error?.message ?? error}` };

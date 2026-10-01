@@ -46,7 +46,23 @@ export const CONFIG = {
   minReductionChars: 4000,
   askChars: 1200,
   backend: 'auto',
+  // Undefined on purpose: the vendored core owns these defaults (0.5, 25000,
+  // 30000, 300). See `refreshConfig`.
+  keepThreshold: undefined,
+  maxStateTokens: undefined,
+  maxRequestTokens: undefined,
+  truncateHeadChars: undefined,
 };
+
+/**
+ * A number from the environment, or `undefined` when unset or unparseable —
+ * `Number('')` is 0, which would silently mean "keep nothing" for a threshold.
+ */
+function numOrUndef(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
 
 /** Whether the module answers `session.compact` at all; `JEV_COMPACT_ENABLED=0` turns it off. */
 export let ENABLED = true;
@@ -86,6 +102,14 @@ export function refreshConfig(backup = false) {
   // How much of one call/result pair the judge is shown. The judgment is
   // "is this still needed", which the head of a payload answers.
   CONFIG.askChars = Number(ENV.JEV_COMPACT_ASK_CHARS ?? 1200);
+  // The four knobs the retired fast-jev-compaction plugin exposed as userConfig
+  // and this one only inherited as core defaults. Same values, now overridable;
+  // `undefined` means "let the core decide", so an unset name stays the core's
+  // own default rather than this module's copy of it drifting away from it.
+  CONFIG.keepThreshold = numOrUndef(ENV.JEV_COMPACT_KEEP_THRESHOLD);
+  CONFIG.maxStateTokens = numOrUndef(ENV.JEV_COMPACT_MAX_STATE_TOKENS);
+  CONFIG.maxRequestTokens = numOrUndef(ENV.JEV_COMPACT_MAX_REQUEST_TOKENS);
+  CONFIG.truncateHeadChars = numOrUndef(ENV.JEV_COMPACT_TRUNCATE_HEAD);
   // 'auto' detects the shape per transcript; 'anthropic'/'openai' pin a backend.
   CONFIG.backend = ENV.JEV_COMPACT_BACKEND ?? 'auto';
   ENABLED = ENV.JEV_COMPACT_ENABLED !== '0';
@@ -117,6 +141,10 @@ function hydrate($) {
         JEV_COMPACT_PIN_LAST: await $.env.get('JEV_COMPACT_PIN_LAST'),
         JEV_COMPACT_ASK_CHARS: await $.env.get('JEV_COMPACT_ASK_CHARS'),
         JEV_COMPACT_BACKEND: await $.env.get('JEV_COMPACT_BACKEND'),
+        JEV_COMPACT_KEEP_THRESHOLD: await $.env.get('JEV_COMPACT_KEEP_THRESHOLD'),
+        JEV_COMPACT_MAX_STATE_TOKENS: await $.env.get('JEV_COMPACT_MAX_STATE_TOKENS'),
+        JEV_COMPACT_MAX_REQUEST_TOKENS: await $.env.get('JEV_COMPACT_MAX_REQUEST_TOKENS'),
+        JEV_COMPACT_TRUNCATE_HEAD: await $.env.get('JEV_COMPACT_TRUNCATE_HEAD'),
       });
     } catch {
       /* no `$.env` (Node): ENV already came from process.env */
