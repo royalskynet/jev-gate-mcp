@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -48,6 +49,11 @@ _TEXT_KEYS = ("output", "stdout", "content", "text", "result")
 _PRE_GATE_CHARS = 16000
 
 _TIMEOUT_S = float(os.environ.get("JEV_PRUNE_TIMEOUT_S", "20"))
+
+# Local LiteLLM+Presidio gateway (~/dev/litellm-presidio-poc scrub_api.py). The judge is
+# an external API and the request/output are user data, so PII is replaced with
+# placeholders here first; the mapping never leaves this process.
+_SCRUB_URL = os.environ.get("JEV_PRUNE_SCRUB_URL", "http://127.0.0.1:4102/scrub")
 
 
 def _ledger_path() -> Optional[Path]:
@@ -113,6 +119,23 @@ def prune_text(tool: str, request: str, text: str, run=None) -> Dict[str, Any]:
     return json.loads(proc.stdout)
 
 
+def _scrub_http(texts: list) -> tuple:
+    """``(scrubbed_texts, mapping)``. Raises when the gateway is down or refuses — the
+    caller then skips the judge; raw text is never the fallback."""
+    req = urllib.request.Request(
+        _SCRUB_URL, data=json.dumps({"texts": texts}).encode(), headers={"content-type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:  # noqa: S310 - fixed local URL
+        body = json.load(resp)
+    return body["texts"], body.get("mapping") or {}
+
+
+def _restore(text: str, mapping: Dict[str, str]) -> str:
+    for placeholder, original in mapping.items():
+        text = text.replace(placeholder, original)
+    return text
+
+
 def _request_of(kwargs: Dict[str, Any]) -> str:
     """The user's request, or "" — and "" means the judge declines, not that it guesses.
 
@@ -130,7 +153,7 @@ def _request_of(kwargs: Dict[str, Any]) -> str:
     return value.strip()[:2000] if isinstance(value, str) and value.strip() else ""
 
 
-def _prune_result(tool_name: str, ctx: Dict[str, Any], result: Any, run=None) -> Any:
+def _prune_result(tool_name: str, ctx: Dict[str, Any], result: Any, run=None, scrub=None) -> Any:
     criteria_tool = _TARGETS.get(tool_name)
     if criteria_tool is None:
         return result
@@ -156,6 +179,18 @@ def _prune_result(tool_name: str, ctx: Dict[str, Any], result: Any, run=None) ->
         )
         return result
     started = time.monotonic()
+    try:
+        (request, text), mapping = (scrub or _scrub_http)([request, text])
+    except Exception as exc:
+        _log(
+            {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "tool": tool_name,
+                "reason": "scrub-unavailable",
+                "error": str(exc)[:200],
+            }
+        )
+        return result
     try:
         out = prune_text(criteria_tool, request, text, run=run)
     except Exception as exc:
@@ -185,6 +220,7 @@ def _prune_result(tool_name: str, ctx: Dict[str, Any], result: Any, run=None) ->
     kept = out.get("text")
     if not isinstance(kept, str):
         return result
+    kept = _restore(kept, mapping)
     if key is None:
         return kept
     return {**result, key: kept}
@@ -205,6 +241,8 @@ def register(ctx) -> None:
 
 def _selfcheck() -> None:
     """Smallest thing that fails if the prune wiring breaks. No network, no Hermes."""
+    global _scrub_http
+    real_scrub, _scrub_http = _scrub_http, lambda texts: (texts, {})  # offline default
 
     class _Proc:
         def __init__(self, out: str, rc: int = 0) -> None:
@@ -235,6 +273,18 @@ def _selfcheck() -> None:
     # nothing dropped -> the original object, not a rebuilt copy
     kept = json.dumps({"text": big, "dropped_lines": 0, "judged": True, "reason": "judged"})
     assert _prune_result("terminal", {"user_request": "r"}, big, run=lambda _p: _Proc(kept)) is big
+    # PII gate: the judge only ever sees the scrubbed text, the caller gets the real
+    # values back; a gateway that is down means no judge call at all, not raw egress
+    pii = "ethan@example.com " + "y" * _PRE_GATE_CHARS + "\nnoise"
+    fake_scrub = lambda texts: ([t.replace("ethan@example.com", "<EMAIL_1>") for t in texts], {"<EMAIL_1>": "ethan@example.com"})
+    sent = []
+    judged = lambda p: sent.append(p) or _Proc(json.dumps(
+        {"text": json.loads(p)["text"].split("\n")[0], "dropped_lines": 1, "judged": True, "reason": "judged"}))
+    out = _prune_result("terminal", {"user_request": "mail ethan@example.com"}, pii, run=judged, scrub=fake_scrub)
+    assert sent and "ethan@example.com" not in sent[0], "raw PII reached the judge"
+    assert out.startswith("ethan@example.com "), "placeholders must be restored for the model"
+    down = lambda _t: (_ for _ in ()).throw(OSError("gateway down"))
+    assert _prune_result("terminal", {"user_request": "r"}, big, run=lambda _p: (_ for _ in ()).throw(AssertionError()), scrub=down) is big
     # the request comes from the middleware context, never from the tool arguments
     assert _request_of({"user_request": "why is the worker slow?"}) == "why is the worker slow?"
     assert _request_of({"args": {"command": "ls -la"}}) == ""
@@ -271,6 +321,7 @@ def _selfcheck() -> None:
         assert entries, "a judged call must leave a ledger line"
         for e in entries:
             assert "request" not in e and "result" not in e and "key" not in e, e
+    _scrub_http = real_scrub
     print("jev-prune selfcheck OK")
 
 
