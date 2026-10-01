@@ -17,7 +17,11 @@ REPORT="${JEV_LAYA_TRAIN_REPORT:-$HOME/.jevgate/laya-train-report.json}"
 PY="${JEV_LAYA_PYTHON:-$HOME/.jevgate/train-venv/bin/python}"
 echo "$(date -u +%FT%TZ) start"
 
-node "$DIR/scripts/laya-label-corpus.mjs"
+# 基線必須釘在原始 int8 bundle，不能跟著 JEV_LAYA_MODEL_DIR 漂。
+# 一旦標註用的是訓練後權重，local_answer 就變成模型自己的答案，
+# 下一輪的「vs int8 基線」會變成自我比較，增益看起來會憑空消失。
+JEV_LAYA_MODEL_DIR="${JEV_LAYA_BASELINE_DIR:-$HOME/.jevgate/laya-multilingual-int8}" \
+  node "$DIR/scripts/laya-label-corpus.mjs"
 RC=$?
 if [ "$RC" != 0 ]; then
   hpush "⚠️ Laya 夜間標註失敗 rc=${RC}，看 ~/.jevgate/laya-nightly.log"
@@ -34,6 +38,14 @@ RC=$?
 if [ "$RC" != 0 ]; then
   hpush "⚠️ Laya 夜間訓練失敗 rc=${RC}，看 ~/.jevgate/laya-nightly.log"
   exit "$RC"
+fi
+
+# 換了權重就立刻導出 ONNX。訓練產物是 safetensors，推論端只讀 ONNX bundle，
+# 不導出就等於沒生效——這兩步綁死在一起，不留「訓好了但沒人讀」的縫。
+if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
+  "$PY" "$DIR/scripts/laya-export-onnx.py"
+  ERC=$?
+  [ "$ERC" != 0 ] && hpush "⚠️ Laya 導出 ONNX 失敗 rc=${ERC}（權重已換但 bundle 還是舊的）"
 fi
 
 # 推播一行摘要：增益、是否換權重、以及 97% 準確率下能接走多少比例。
