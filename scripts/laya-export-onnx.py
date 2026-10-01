@@ -70,9 +70,14 @@ def main():
     # 對部分算子會退回 CPU，混著跑只會讓 parity 數字難解釋。
     print(f"loaded {in_dir}  trained_units={cfg.get('trained_units')}")
 
-    out.mkdir(parents=True, exist_ok=True)
-    onnx_path = out / "laya.onnx"
-    tmp_path = out / "laya.fp32.onnx"
+    # 導出一律建在 staging，最後才換進 out。out 是 gateway 上線讀的目錄，
+    # 原地覆蓋的話中途被砍（SIGTERM 發生過一次）會留下半截 laya.onnx，
+    # 或是 tokenizer/ 已刪未補的 bundle，直接讓 gateway 載不起來。
+    staging = out.with_name(out.name + ".new")
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    onnx_path = staging / "laya.onnx"
+    tmp_path = staging / "laya.fp32.onnx"
 
     # 樣本輸入的形狀只決定 tracing，實際長度由 dynamic_axes 放開。
     B, L, K = 1, 32, 4
@@ -129,22 +134,33 @@ def main():
     if not tok_src.is_dir():
         print(f"缺 tokenizer 來源 {tok_src}", file=sys.stderr)
         return 1
-    shutil.rmtree(out / "tokenizer", ignore_errors=True)
-    shutil.copytree(tok_src, out / "tokenizer")
+    shutil.copytree(tok_src, staging / "tokenizer")
 
     # temperature 的順序必須對上 QTYPES 的索引，不是字典序。
     temps = cfg.get("temperature") or [1.0, 1.0, 1.0]
-    (out / "laya_config.json").write_text(json.dumps({
+    (staging / "laya_config.json").write_text(json.dumps({
         "max_len": cfg["max_len"],
         "head_max_len": cfg["head_max_len"],
         "temperature": temps,
         "temperature_by_options": cfg.get("temperature_by_options", {}),
     }, indent=1) + "\n")
-    print(f"bundle → {out}")
+
+    def commit():
+        """把 staging 換進 out。只在 parity 通過後呼叫——換上線前先證明它等價。"""
+        # ponytail: 兩次 rename 之間有個微秒級的窗口，out 會短暫不存在。
+        # 真正要消掉的是「導出跑十分鐘、全程原地覆蓋」那個窗口，這樣已經夠；
+        # 要完全無窗口就得改成 symlink 指向帶版本號的目錄，再改 gateway 的讀法。
+        prev = out.with_name(out.name + ".prev")
+        shutil.rmtree(prev, ignore_errors=True)
+        if out.exists():
+            out.rename(prev)
+        staging.rename(out)
+        print(f"bundle → {out}（上一版留在 {prev.name}）")
 
     # ---- parity：torch vs ONNX，拿真實 corpus 題目
     if args.parity_n <= 0 or not CORPUS.exists():
         print("跳過 parity（--parity-n 0 或無 corpus）")
+        commit()
         return 0
     import onnxruntime as ort
 
@@ -208,6 +224,7 @@ def main():
               file=sys.stderr)
         return 1
     print("parity OK")
+    commit()
     print(f"\n要切過去：export JEV_LAYA_MODEL_DIR={out}")
     return 0
 

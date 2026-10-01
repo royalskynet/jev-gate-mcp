@@ -42,10 +42,21 @@ fi
 
 # 換了權重就立刻導出 ONNX。訓練產物是 safetensors，推論端只讀 ONNX bundle，
 # 不導出就等於沒生效——這兩步綁死在一起，不留「訓好了但沒人讀」的縫。
+#
+# 升級閘看的是整體配對增益，但線上那條 lane 吃的是 T=CONF_MIN 這個點的校準。
+# 模型可以整體更準卻在該點更糟，所以導出前再擋一次地板（ADR-0002）。
+CONF_MIN="${JEV_LAYA_CONF_MIN:-0.70}"
+FLOOR="${JEV_LAYA_ACC_FLOOR:-0.95}"
 if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
-  "$PY" "$DIR/scripts/laya-export-onnx.py"
-  ERC=$?
-  [ "$ERC" != 0 ] && hpush "⚠️ Laya 導出 ONNX 失敗 rc=${ERC}（權重已換但 bundle 還是舊的）"
+  GATE_ACC=$(jq -r --argjson t "$CONF_MIN" \
+    '[.coverage_curve[] | select(.threshold == $t) | .accuracy // 0] | first // 0' "$REPORT" 2>/dev/null)
+  if [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson f "$FLOOR" '$a >= $f')" = true ]; then
+    "$PY" "$DIR/scripts/laya-export-onnx.py"
+    ERC=$?
+    [ "$ERC" != 0 ] && hpush "⚠️ Laya 導出 ONNX 失敗 rc=${ERC}（權重已換但 bundle 還是舊的）"
+  else
+    hpush "⚠️ Laya 權重已換但不導出：T=${CONF_MIN} 準確率 ${GATE_ACC} < 地板 ${FLOOR}，線上 bundle 維持舊版"
+  fi
 fi
 
 # 推播一行摘要：增益、是否換權重、以及 97% 準確率下能接走多少比例。

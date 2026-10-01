@@ -82,6 +82,19 @@ test('an unpromoted night neither exports nor claims a gain it did not get', () 
   assert.match(summary, /未達標/);
 });
 
+test('a better model that lost its calibration at the gate is not served', () => {
+  const { at, run, pushes } = sandbox();
+  // Overall gain clears the upgrade gate, but the online lane reads the model
+  // at JEV_LAYA_CONF_MIN, and there it is worse than the floor.
+  fs.writeFileSync(at('next-report.json'), JSON.stringify({
+    units: 600, oof_accuracy: 0.71, paired_delta: 0.35, promoted: true,
+    coverage_curve: [{ threshold: 0.7, coverage: 0.4, accuracy: 0.88 }],
+  }));
+  run();
+  assert.equal(fs.existsSync(at('exported.txt')), false, 'served a bundle that failed the gate floor');
+  assert.match(pushes().join('\n'), /不導出：T=0\.70 準確率 0\.88 < 地板 0\.95/);
+});
+
 test('a missing train venv is reported, not silently skipped', () => {
   const { run, pushes } = sandbox();
   run({ JEV_LAYA_PYTHON: '/nonexistent/python' });
