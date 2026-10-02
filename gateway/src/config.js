@@ -98,9 +98,10 @@ export function buildGateway(cfg = {}) {
           : makeOpenrouterAdapter({ apiKey: key, model: cfg.model }))
       : null);
     policyAdapter = fallback ?? (async () => { throw new Error('Jev policy provider has no configured credential'); });
-    // Whatever the router decides, the provider's answer is the teacher the
-    // local weights get distilled against later — so it is recorded whether or
-    // not the local weights end up answering.
+    // Any answer this provider gives is the teacher the local weights get
+    // distilled against later, so every cloud answer is recorded. A request
+    // the router keeps entirely local never reaches here and so contributes
+    // no teacher row — that is also what makes it free.
     // No credential -> keep it null: wrapping null yields a function that only
     // fails at call time ("adapter is not a function") and hides the router's
     // own `!cloud` credential error.
