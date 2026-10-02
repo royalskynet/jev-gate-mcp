@@ -228,6 +228,62 @@ export async function judgePair($, key, userRequest, pair) {
   }
 }
 
+/**
+ * `judgePair` over many pairs: the same bounded `pairState` per pair, but up to
+ * `per` pairs share one request and the requests run in parallel. One call per
+ * pair made a 300-pair Hermes pass 300 sequential round trips — past its 20 s
+ * subprocess deadline, and through Zen free's daily quota in a few passes.
+ * Resolves to `{ choices, failed }`: `failed` is the first non-ok HTTP status
+ * (or 'network'); every pair a failed request covered answers 'keep'.
+ */
+export async function judgePairs($, key, userRequest, pairs, per = 40) {
+  const choices = pairs.map(() => 'keep');
+  let failed = null;
+  const starts = [];
+  for (let i = 0; i < pairs.length; i += per) starts.push(i);
+  await Promise.all(starts.map(async (start) => {
+    const ids = pairs.slice(start, start + per).map((_, j) => `p${start + j}`);
+    const state = { user_request: userRequest, pairs: {} };
+    const questions = {};
+    ids.forEach((id, j) => {
+      state.pairs[id] = pairState(pairs[start + j]);
+      questions[id] = {
+        type: 'choice',
+        instructions: `state.pairs.${id} is a tool call and its result from earlier in a coding session. Decide whether the model still needs its full payload to continue the current task.`,
+        criteria: CRITERIA,
+      };
+    });
+    let res;
+    try {
+      res = await $.http.fetch(CONFIG.endpoint || 'https://opencode.ai/zen/v1/systemone', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model: CONFIG.model || 'jev-1.13-free', state, questions }),
+      });
+    } catch {
+      failed ??= 'network';
+      return;
+    }
+    if (!res || !res.ok) {
+      failed ??= res?.status ?? 'network';
+      return;
+    }
+    try {
+      const answers = JSON.parse(res.text)?.answers ?? {};
+      ids.forEach((id, j) => {
+        if (answers[id]?.choice === 'drop') choices[start + j] = 'drop';
+      });
+    } catch {
+      /* unreadable answer: those pairs stay 'keep' */
+    }
+  }));
+  return { choices, failed };
+}
+
 /** The newest real user turn, which is what "still needed" is judged against. */
 export function userRequestOf(messages = []) {
   for (let i = messages.length - 1; i >= 0; i--) {
