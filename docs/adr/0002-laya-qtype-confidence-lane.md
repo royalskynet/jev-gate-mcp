@@ -81,8 +81,12 @@ Lowering `score` to 0.65 is free rather than a trade: coverage goes from 74.7%
 to 97.5% with no new disagreement, and the Clopper-Pearson lower bound rises
 (95.2 against 93.9) because the sample is larger.
 
-At `score=0.65,noul=0.70` plus the state filter: **188 question units answered
-locally, 187 agreeing with the teacher, CI [97.1, 100]**.
+At `score=0.65,noul=0.70` plus the state filter: **186 question units answered
+locally, all 186 agreeing with the teacher**. (An earlier count of 188 with one
+disagreement came from a Python mirror that exempted pilot types from the state
+filter. The router applies `shortStandaloneState` to every question before the
+type check, so those two `ask_first` units go to the cloud in production; the
+mirror was corrected and a selftest row pins it.)
 
 The corpus is entirely live traffic — 242 records over three days, every one
 carrying a timestamp and a teacher model, nothing synthetic — but it holds only
@@ -114,10 +118,19 @@ clean bimodal 0.0/0.8. Since `noul` confidence is a monotone function of
 |p − 0.5|, low confidence here measures label ambiguity rather than model
 uncertainty, and no threshold can separate the two. Its 70.7% accuracy is the
 `|pred − truth| < 0.2` tolerance band rewarding a 0.5 hedge: where the teacher
-lands in 0.1–0.3 instead, accuracy is 15.4%. Two of its units clear the 0.70
-floor and one of those is wrong — the only disagreement in the entire local
-lane. Making the question answerable means splitting the conjunction into
-single-condition questions, which is a change to `jev-route`, not to the model.
+lands in 0.1–0.3 instead, accuracy is 15.4%.
+
+Replaying 40 real `jev-route` states against the teacher showed it was
+answering only the first conjunct: `ask_first` tracked a standalone
+"is this ambiguous" question almost exactly (0.78/0.78, 0.71/0.76), while a
+standalone "would a wrong reading be irreversible or force a redo" question was
+crisp (13% of answers in 0.3–0.7, median 0.20) and low on both units that
+cleared 0.70. Since 2026-10-02 `jev-route` asks `ambiguous` and
+`wrong_reading_costly` and ANDs them in code; the files condition became an
+instruction to the agent ("check the files first"), because the agent can do
+that itself and the teacher answered it no more crisply (57% in 0.3–0.7).
+None of this reaches the local lane: `jev-route` states carry `phase` and
+`dirty_paths`, so the state filter sends the whole request to the cloud.
 
 Question units are not the billing unit: the gateway sends every fallen-back
 question of a request in one cloud call, so a request is only free when all of

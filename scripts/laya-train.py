@@ -290,8 +290,12 @@ def live_gated(rows, pilot=QTYPE_PILOT, conf_min_spec=CONF_MIN_SPEC):
     從未量測過的題目無聲進入本機 lane。名單外顯，nightly 才攔得到（見 ADR 0002）。
     """
     floor = parse_conf_min(conf_min_spec)
+    # 鏡像 laya-routing.js：`eligible = shortStandaloneState(state)` 先套在每一題上，pilot 題型
+    # 再加信心閘。state 閘不過的題整批送雲端，信心再高也不會本機答。
+    # ponytail: 非 pilot 題一律當 profile 題（不吃信心閘）；JS 只放行 TASK_KIND/MESSAGE_TOPIC，
+    # 目前 state 過得了的非 pilot 題只有 kind。新增非 profile 的 choice caller 時要補 profile 欄位。
     live = [r for r in rows
-            if (r["conf"] >= floor(r["qtype"]) if r["qtype"] in pilot else bool(r.get("state_ok")))]
+            if r.get("state_ok") and (r["qtype"] not in pilot or r["conf"] >= floor(r["qtype"]))]
     meta = {"conf_min": conf_min_spec, "pilot": sorted(pilot),
             "qids": sorted({r["qid"] for r in live if r.get("qid")})}
     if not live:
@@ -407,11 +411,13 @@ def selftest():
     assert (_f("score"), _f("noul")) == (0.65, 0.70)
     assert _f("choice") == math.inf, "未列的題型不該有地板，否則會無聲放行"
 
-    # live_gated：pilot 題型吃信心閘，非 pilot 吃 state_ok，兩條規則不可互換
-    _r = [{"qtype": "score", "qid": "difficulty", "conf": 0.9, "correct": True, "state_ok": False},
+    # live_gated：state 閘套全部題型，pilot 題型再加信心閘
+    _r = [{"qtype": "score", "qid": "difficulty", "conf": 0.9, "correct": True, "state_ok": True},
           {"qtype": "score", "qid": "tier", "conf": 0.5, "correct": False, "state_ok": True},
           {"qtype": "choice", "qid": "kind", "conf": 0.1, "correct": True, "state_ok": True},
-          {"qtype": "choice", "qid": "route", "conf": 0.99, "correct": False, "state_ok": False}]
+          {"qtype": "choice", "qid": "route", "conf": 0.99, "correct": False, "state_ok": False},
+          # 2026-10-02 的鏡像錯誤：pilot 高信心但 state 不過，線上送雲端，不能算進本機
+          {"qtype": "noul", "qid": "ask_first", "conf": 0.9, "correct": False, "state_ok": False}]
     assert live_gated(_r)["n"] == 2, live_gated(_r)
     assert live_gated(_r)["accuracy"] == 1.0, live_gated(_r)
     assert live_gated([])["accuracy"] is None
@@ -420,7 +426,7 @@ def selftest():
     assert live_gated([])["qids"] == []
     # 分題型地板真的分開套：noul 的 0.68 過不了 0.70，score 的 0.66 過得了 0.65
     _r2 = [{"qtype": "noul", "conf": 0.68, "correct": False, "state_ok": True},
-           {"qtype": "score", "conf": 0.66, "correct": True, "state_ok": False}]
+           {"qtype": "score", "conf": 0.66, "correct": True, "state_ok": True}]
     assert live_gated(_r2, conf_min_spec="score=0.65,noul=0.70")["n"] == 1, "分題型地板沒分開套"
 
     print("selftest PASS")
