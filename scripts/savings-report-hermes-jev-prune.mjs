@@ -25,7 +25,7 @@ const HERMES_HOME = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes'
 const OPENCLAW_HOME = process.env.OPENCLAW_HOME || path.join(os.homedir(), '.openclaw');
 const PROFILES_DIR = path.join(HERMES_HOME, 'profiles');
 const OPENCLAW_LEDGER = path.join(OPENCLAW_HOME, 'logs', 'jev-gate.jsonl');
-const DEFAULT_PROFILES = ['koko', 'mannie', 'xuanjun'];
+const DEFAULT_PROFILES = ['coco', 'mannie', 'xuanjun'];
 
 const argv = process.argv.slice(2);
 const json = argv.includes('--json');

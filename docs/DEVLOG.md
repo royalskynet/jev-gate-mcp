@@ -1269,7 +1269,7 @@ runtime。
    middleware（`hermes_cli/middleware.py` 的 `VALID_MIDDLEWARE`）跟 hook
    （`hermes_cli/plugins.py` 的 `VALID_HOOKS`）是**兩個不同介面**，manifest 沒有
    middleware 宣告欄位，正解是不宣告。另外 plugin 要放在 **profile 的 home**
-   （`~/.hermes/profiles/koko/plugins/`），放 `~/.hermes/plugins/` 不會被掃到——
+   （`~/.hermes/profiles/coco/plugins/`），放 `~/.hermes/plugins/` 不會被掃到——
    `hermes plugins list --plain --no-bundled` 完全沒有那一筆，沒有任何報錯。
 
 ### 20.3 沙箱裡怎麼實證（兩條路都試過）
@@ -1282,7 +1282,7 @@ runtime。
   **改走 gateway**：`openclaw agent --agent main --session-id ... -m '<240 字的
   機械改名任務>'`。多 agent 設定下沒有 `--agent` 會被拒
   （"agent command session creation has no explicit owner"）。
-- Hermes 的一次性 turn（`hermes -p koko --yolo -z ...`）撞
+- Hermes 的一次性 turn（`hermes -p coco --yolo -z ...`）撞
   `HTTP 401: [openrouter] All 1 connection(s) authentication expired`——provider
   憑證問題，與 plugin 無關。**改用 `integrations/hermes/live-probe.py`**：真
   loader（`discover_plugins(force=True)`）＋真 middleware chain
