@@ -69,6 +69,7 @@ if (pending.length) {
       process.stdout.write(`  skip ${record.id}: ${e?.message ?? e}\n`);
     }
   }
+  await laya.release?.();
 }
 if (!dryRun && scored) {
   // ponytail: append-during-rename window is the few ms between this re-read and
@@ -91,6 +92,16 @@ if (!dryRun) {
   writeFileSync(REPORT, JSON.stringify({ ts: new Date().toISOString(), corpus: records.length, groups }, null, 2) + '\n', { mode: 0o600 });
 }
 process.stdout.write('label stays null — promotion to a training set is a human step.\n');
+
+const DONE = process.env.JEV_LAYA_LABEL_DONE ?? join(homedir(), '.jevgate', 'laya-label.done');
+writeFileSync(DONE, JSON.stringify({
+  ts: new Date().toISOString(),
+  epoch: Math.floor(Date.now() / 1000),
+  corpus: records.length,
+  scored,
+  failed,
+  pid: process.pid,
+}) + '\n', { mode: 0o600 });
 
 /** Cumulative agreement per `<digest12>/<question id>` over records that carry both answers. */
 function agreement(rows) {

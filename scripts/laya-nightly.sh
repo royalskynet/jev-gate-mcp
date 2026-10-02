@@ -16,16 +16,24 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPORT="${JEV_LAYA_TRAIN_REPORT:-$HOME/.jevgate/laya-train-report.json}"
 PY="${JEV_LAYA_PYTHON:-$HOME/.jevgate/train-venv/bin/python}"
 echo "$(date -u +%FT%TZ) start"
+echo "$(date -u +%FT%TZ) start" >&2  # launchd 的 err.log 是 append，沒這行分不出哪晚
+START_EPOCH=$(date +%s)
 
 # 基線必須釘在原始 int8 bundle，不能跟著 JEV_LAYA_MODEL_DIR 漂。
 # 一旦標註用的是訓練後權重，local_answer 就變成模型自己的答案，
 # 下一輪的「vs int8 基線」會變成自我比較，增益看起來會憑空消失。
 JEV_LAYA_MODEL_DIR="${JEV_LAYA_BASELINE_DIR:-$HOME/.jevgate/laya-multilingual-int8}" \
-  node "$DIR/scripts/laya-label-corpus.mjs"
+  node "${JEV_LAYA_LABEL_SCRIPT:-$DIR/scripts/laya-label-corpus.mjs}"
 RC=$?
 if [ "$RC" != 0 ]; then
-  hpush "⚠️ Laya 夜間標註失敗 rc=${RC}，看 ~/.jevgate/laya-nightly.log"
-  exit "$RC"
+  DONE="${JEV_LAYA_LABEL_DONE:-$HOME/.jevgate/laya-label.done}"
+  EP=$(jq -r '.epoch // 0' "$DONE" 2>/dev/null || echo 0)
+  if [ "$RC" = 134 ] && [ "${EP:-0}" -ge "$START_EPOCH" ]; then
+    hpush "⚠️ Laya 標註完成但退出碼 rc=134（ORT teardown 競態），繼續訓練"
+  else
+    hpush "⚠️ Laya 夜間標註失敗 rc=${RC}，看 ~/.jevgate/laya-nightly.log"
+    exit "$RC"
+  fi
 fi
 
 if [ ! -x "$PY" ]; then

@@ -183,7 +183,7 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
     idleTimer = setTimeout(() => { void unload(); }, idleMs);
     if (typeof idleTimer.unref === 'function') idleTimer.unref();
   };
-  return async function layaAdapter(state, questions, _opts) {
+  const layaAdapter = async function layaAdapter(state, questions, _opts) {
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
     if (!sessionPromise) {
       sessionPromise = (async () => {
@@ -231,6 +231,8 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
       armIdle();
     }
   };
+  layaAdapter.release = unload;
+  return layaAdapter;
 }
 
 function deadline(promise, ms, what) {
