@@ -111,3 +111,14 @@ the published int8 bundle.
   turn the next night's comparison into self-comparison.
 - `choice` keeps its narrow exact-schema lane and gains nothing here.
 - Policies remain cloud-only; nothing in this ADR touches `jev_apply_policy`.
+- The nightly's export gate reads `live_gated` from the train report: the
+  accuracy over exactly the rows the two live lanes would keep local (pilot
+  qtypes above `CONF_MIN`, everything else behind the state filter). The
+  all-qtype `coverage_curve` describes a configuration that is not deployed —
+  it folds in a confidence-gated `choice`, which drags the number down and
+  makes the floor measure a point no traffic sees.
+- Two comparisons guard the export, after `mlflow`'s `MetricThreshold`:
+  `JEV_LAYA_ACC_FLOOR` is an absolute floor, and `~/.jevgate/laya-champion.json`
+  holds the incumbent's `live_gated` accuracy so a challenger that beats the
+  frozen int8 baseline but regresses against what is already serving cannot
+  replace it. The champion file is written only after a successful swap.

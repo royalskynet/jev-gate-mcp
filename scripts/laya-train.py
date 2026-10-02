@@ -257,6 +257,25 @@ def boot_ci(values, reps=2000, alpha=0.05, rng=None):
     return [means[int(alpha / 2 * reps)], means[int((1 - alpha / 2) * reps)]]
 
 
+# laya-routing.js 的兩條 lane 的鏡像：pilot 題型吃信心閘，其餘題型吃 state 過濾。
+# coverage_curve 是「所有題型一起設閘」的假想情境，和線上配置對不上——拿它當
+# 升級地板會把不設閘的 choice 算進去，量到的不是線上那個點（ADR-0002）。
+QTYPE_PILOT = frozenset(
+    s.strip() for s in os.environ.get("JEV_LAYA_QTYPE_PILOT", "score,noul").split(",") if s.strip())
+CONF_MIN = float(os.environ.get("JEV_LAYA_CONF_MIN", "0.70"))
+
+
+def live_gated(rows, pilot=QTYPE_PILOT, conf_min=CONF_MIN):
+    """線上實際會留在本機的那些題的 n 與準確率。升級閘要看的就是這個數字。"""
+    live = [r for r in rows
+            if (r["conf"] >= conf_min if r["qtype"] in pilot else bool(r.get("state_ok")))]
+    if not live:
+        return {"n": 0, "accuracy": None, "conf_min": conf_min, "pilot": sorted(pilot)}
+    return {"n": len(live),
+            "accuracy": sum(1 for r in live if r["correct"]) / len(live),
+            "conf_min": conf_min, "pilot": sorted(pilot)}
+
+
 def coverage_curve(conf, correct, thresholds=None):
     """信心閾值 → 覆蓋率 / 準確率。這是整支腳本的產物。"""
     thresholds = thresholds or [0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95]
@@ -346,6 +365,22 @@ def selftest():
         assert m, "laya-routing.js 的 shortStandaloneState regex 找不到，鏡像無法比對"
         assert m.group(1) == _BAD_STATE.pattern.replace("\\b(", "\\b("), \
             f"regex 漂移：\nJS={m.group(1)}\nPY={_BAD_STATE.pattern}"
+        src = js.read_text()
+        jp = re.search(r"JEV_LAYA_QTYPE_PILOT \?\? '([^']*)'", src)
+        jc = re.search(r"JEV_LAYA_CONF_MIN \?\? '([^']*)'", src)
+        assert jp and jc, "laya-routing.js 的 QTYPE_PILOT／CONF_MIN 預設值找不到"
+        assert frozenset(s.strip() for s in jp.group(1).split(",")) == QTYPE_PILOT, \
+            f"pilot 題型漂移：JS={jp.group(1)} PY={sorted(QTYPE_PILOT)}"
+        assert float(jc.group(1)) == CONF_MIN, f"CONF_MIN 漂移：JS={jc.group(1)} PY={CONF_MIN}"
+
+    # live_gated：pilot 題型吃信心閘，非 pilot 吃 state_ok，兩條規則不可互換
+    _r = [{"qtype": "score", "conf": 0.9, "correct": True, "state_ok": False},   # 過閘
+          {"qtype": "score", "conf": 0.5, "correct": False, "state_ok": True},   # 信心不足，不算
+          {"qtype": "choice", "conf": 0.1, "correct": True, "state_ok": True},   # 不設閘，算
+          {"qtype": "choice", "conf": 0.99, "correct": False, "state_ok": False}]  # 過不了 state
+    assert live_gated(_r)["n"] == 2, live_gated(_r)
+    assert live_gated(_r)["accuracy"] == 1.0, live_gated(_r)
+    assert live_gated([])["accuracy"] is None
 
     print("selftest PASS")
 
@@ -654,6 +689,7 @@ def main():
         "ece": ece(conf, correct),
         "brier": brier(probs, targets),
         "coverage_curve": curve,
+        "live_gated": live_gated(oof_rows),
         "oof_rows": oof_rows,
     }
     Path(args.report).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")

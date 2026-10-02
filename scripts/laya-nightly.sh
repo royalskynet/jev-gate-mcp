@@ -43,19 +43,38 @@ fi
 # 換了權重就立刻導出 ONNX。訓練產物是 safetensors，推論端只讀 ONNX bundle，
 # 不導出就等於沒生效——這兩步綁死在一起，不留「訓好了但沒人讀」的縫。
 #
-# 升級閘看的是整體配對增益，但線上那條 lane 吃的是 T=CONF_MIN 這個點的校準。
-# 模型可以整體更準卻在該點更糟，所以導出前再擋一次地板（ADR-0002）。
+# 導出才是上線，所以閘掛在這裡，量 report.live_gated——線上兩條 lane 實際會留在
+# 本機那些題的準確率。先前用 coverage_curve 在 T=CONF_MIN 的值，那是「所有題型
+# 一起設閘」的假想情境，把不設閘的 choice 也算進去，量到的不是線上那個點。
+#
+# 兩道比較，語意照 mlflow MetricThreshold：
+#   FLOOR            絕對地板
+#   champion 檔      對現役模型的最小增益（容差 TOL）。訓練側的升級閘是對出廠 int8
+#                    比，比現役差但比出廠好的模型照樣會換權重，所以要在這裡攔。
 CONF_MIN="${JEV_LAYA_CONF_MIN:-0.70}"
 FLOOR="${JEV_LAYA_ACC_FLOOR:-0.95}"
+TOL="${JEV_LAYA_REGRESS_TOL:-0.01}"
+CHAMP="${JEV_LAYA_CHAMPION:-$HOME/.jevgate/laya-champion.json}"
 if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
-  GATE_ACC=$(jq -r --argjson t "$CONF_MIN" \
-    '[.coverage_curve[] | select(.threshold == $t) | .accuracy // 0] | first // 0' "$REPORT" 2>/dev/null)
-  if [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson f "$FLOOR" '$a >= $f')" = true ]; then
+  GATE_ACC=$(jq -r '.live_gated.accuracy // 0' "$REPORT" 2>/dev/null)
+  GATE_N=$(jq -r '.live_gated.n // 0' "$REPORT" 2>/dev/null)
+  CHAMP_ACC=$(jq -r '.accuracy // 0' "$CHAMP" 2>/dev/null || echo 0)
+  if [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson f "$FLOOR" '$a >= $f')" != true ]; then
+    hpush "⚠️ Laya 權重已換但不導出：線上 lane 準確率 ${GATE_ACC}（n=${GATE_N}）< 地板 ${FLOOR}，bundle 維持舊版"
+  elif [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson c "${CHAMP_ACC:-0}" --argjson t "$TOL" '$a >= $c - $t')" != true ]; then
+    hpush "⚠️ Laya 權重已換但不導出：線上 lane 準確率 ${GATE_ACC} 比現役 ${CHAMP_ACC} 退步超過 ${TOL}，bundle 維持舊版"
+  else
     "$PY" "$DIR/scripts/laya-export-onnx.py"
     ERC=$?
-    [ "$ERC" != 0 ] && hpush "⚠️ Laya 導出 ONNX 失敗 rc=${ERC}（權重已換但 bundle 還是舊的）"
-  else
-    hpush "⚠️ Laya 權重已換但不導出：T=${CONF_MIN} 準確率 ${GATE_ACC} < 地板 ${FLOOR}，線上 bundle 維持舊版"
+    if [ "$ERC" != 0 ]; then
+      hpush "⚠️ Laya 導出 ONNX 失敗 rc=${ERC}（權重已換但 bundle 還是舊的）"
+    else
+      # 只有真的換上線才更新現役紀錄，否則下次會拿沒上線的數字當對照。
+      jq -n --argjson a "$GATE_ACC" --argjson n "$GATE_N" \
+        --arg ts "$(date -u +%FT%TZ)" --argjson u "$(jq -r '.units // 0' "$REPORT")" \
+        '{accuracy:$a, n:$n, units:$u, promoted_at:$ts}' > "$CHAMP.tmp" &&
+        mv "$CHAMP.tmp" "$CHAMP" && chmod 600 "$CHAMP"
+    fi
   fi
 fi
 
@@ -65,8 +84,9 @@ jq -r '
   [ "units=\(.units)",
     "OOF=\(.oof_accuracy | pct)%",
     (if .paired_delta then "vs int8 \(.paired_delta * 1000 | round / 10)pp" else "vs int8 n/a" end),
-    (.coverage_curve | map(select(.accuracy != null and .accuracy >= 0.95))
-      | if length > 0 then "可接手 \(max_by(.coverage).coverage | pct)% @\(max_by(.coverage).threshold)" else "無可用閾值" end),
+    (if .live_gated.accuracy then
+       "線上 lane n=\(.live_gated.n) 準確 \(.live_gated.accuracy | pct)%"
+     else "線上 lane 無樣本" end),
     (if .promoted then "已換權重" else "未達標" end)
   ] | join("，")' "$REPORT" 2>/dev/null |
 while read -r line; do
