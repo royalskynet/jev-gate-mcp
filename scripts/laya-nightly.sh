@@ -53,6 +53,10 @@ fi
 #                    比，比現役差但比出廠好的模型照樣會換權重，所以要在這裡攔。
 #                    閾值一改，留在本機的那批題就換了，兩個數字不同源，所以只在
 #                    conf_min 相同時才比現役。
+#   人口閘（qids）   兩條 lane 都不看題目身分（信心閘看 qtype、state 閘看 state 的
+#                    key 形狀），所以 caller 改自己的 state 或新 caller 接進來，都會
+#                    讓從未量測過的題目無聲進入本機 lane。準確率是整批平均，新題只佔
+#                    少數時擋不住。名單裡出現現役沒有的題目就不導出。
 FLOOR="${JEV_LAYA_ACC_FLOOR:-0.95}"
 TOL="${JEV_LAYA_REGRESS_TOL:-0.01}"
 CHAMP="${JEV_LAYA_CHAMPION:-$HOME/.jevgate/laya-champion.json}"
@@ -65,8 +69,15 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
   else
     CHAMP_ACC=0  # 不同閾值＝不同母體，這一輪只靠地板擋
   fi
+  # 現役沒有 qids（舊檔）就無從比對，這一輪只靠地板擋，並說出來。
+  NEW_QIDS=$(jq -r --slurpfile c "$CHAMP" '
+    ($c[0].qids // null) as $k
+    | if $k == null then "" else [.live_gated.qids[] | select(. as $q | $k | index($q) | not)] | join(",") end
+  ' "$REPORT" 2>/dev/null)
   if [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson f "$FLOOR" '$a >= $f')" != true ]; then
     hpush "⚠️ Laya 權重已換但不導出：線上 lane 準確率 ${GATE_ACC}（n=${GATE_N}）< 地板 ${FLOOR}，bundle 維持舊版"
+  elif [ -n "$NEW_QIDS" ]; then
+    hpush "⚠️ Laya 權重已換但不導出：本機 lane 出現現役沒有的題目 ${NEW_QIDS}（從未量測就上線），bundle 維持舊版"
   elif [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson c "${CHAMP_ACC:-0}" --argjson t "$TOL" '$a >= $c - $t')" != true ]; then
     hpush "⚠️ Laya 權重已換但不導出：線上 lane 準確率 ${GATE_ACC} 比現役 ${CHAMP_ACC} 退步超過 ${TOL}，bundle 維持舊版"
   else
@@ -78,7 +89,8 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
       # 只有真的換上線才更新現役紀錄，否則下次會拿沒上線的數字當對照。
       jq -n --argjson a "$GATE_ACC" --argjson n "$GATE_N" --arg s "$SPEC" \
         --arg ts "$(date -u +%FT%TZ)" --argjson u "$(jq -r '.units // 0' "$REPORT")" \
-        '{accuracy:$a, n:$n, units:$u, conf_min:$s, promoted_at:$ts}' > "$CHAMP.tmp" &&
+        --argjson q "$(jq -c '.live_gated.qids // []' "$REPORT")" \
+        '{accuracy:$a, n:$n, units:$u, conf_min:$s, qids:$q, promoted_at:$ts}' > "$CHAMP.tmp" &&
         mv "$CHAMP.tmp" "$CHAMP" && chmod 600 "$CHAMP"
     fi
   fi

@@ -84,6 +84,41 @@ to 97.5% with no new disagreement, and the Clopper-Pearson lower bound rises
 At `score=0.65,noul=0.70` plus the state filter: **188 question units answered
 locally, 187 agreeing with the teacher, CI [97.1, 100]**.
 
+The corpus is entirely live traffic — 242 records over three days, every one
+carrying a timestamp and a teacher model, nothing synthetic — but it holds only
+seven distinct question digests, and they split into two populations the
+headline accuracy averages over:
+
+| question | type | units | accuracy | median conf | caller |
+| --- | --- | --- | --- | --- | --- |
+| `tier` | choice | 123 | 43.1% | 0.438 | `jev-route` |
+| `route` | choice | 123 | 51.2% | 0.438 | `jev-route` |
+| `ask_first` | noul | 123 | 70.7% | 0.538 | `jev-route` |
+| `difficulty` | score | 78 | 98.7% | 0.774 | other |
+| `costly_mistake` | noul | 78 | 100% | 0.841 | other |
+| `kind` | choice | 32 | 100% | 0.831 | other |
+
+`jev-route`'s question set is 66% of all units at 55.0% accuracy; everything
+else is 98.4%. The 69.8% out-of-fold figure is a mixture of the two and
+describes no population that exists. Both gates happen to cut along this seam —
+the state filter admits exactly `kind`, and the confidence floors admit exactly
+`difficulty` and `costly_mistake` — which is why tuning the thresholds reached
+its knee so quickly. There is nothing left to tune: the thresholds are already
+separating question sets, not confidence levels.
+
+`ask_first` is the one question where the ceiling is the label, not the model.
+Its instruction is a three-way conjunction (ambiguous, *and* irreversible if
+misread, *and* not answerable from the files), so the teacher itself never
+commits: its answers form a bell centred on 0.480, against `costly_mistake`'s
+clean bimodal 0.0/0.8. Since `noul` confidence is a monotone function of
+|p − 0.5|, low confidence here measures label ambiguity rather than model
+uncertainty, and no threshold can separate the two. Its 70.7% accuracy is the
+`|pred − truth| < 0.2` tolerance band rewarding a 0.5 hedge: where the teacher
+lands in 0.1–0.3 instead, accuracy is 15.4%. Two of its units clear the 0.70
+floor and one of those is wrong — the only disagreement in the entire local
+lane. Making the question answerable means splitting the conjunction into
+single-condition questions, which is a change to `jev-route`, not to the model.
+
 Question units are not the billing unit: the gateway sends every fallen-back
 question of a request in one cloud call, so a request is only free when all of
 its questions stay local. Per request, out of fold, with zero disagreements in
@@ -132,3 +167,16 @@ the published int8 bundle.
   holds the incumbent's `live_gated` accuracy so a challenger that beats the
   frozen int8 baseline but regresses against what is already serving cannot
   replace it. The champion file is written only after a successful swap.
+- A third comparison guards the population rather than the accuracy. Neither
+  lane gates on question identity — the confidence lane keys on qtype, the state
+  lane on the shape of the state's keys — so the state filter is a proxy for
+  "which caller is this", and a caller that drops a field from its state, or a
+  new caller altogether, puts questions nobody has measured onto local weights.
+  Averaged accuracy cannot catch that while the new question is a minority of
+  the batch, which is exactly when it arrives. `live_gated.qids` names the
+  questions that stayed local, the champion record keeps that list, and a list
+  that grows blocks the export. A list that shrinks does not: traffic ebbing is
+  not drift, and blocking on it would freeze the model whenever a caller idles.
+  Gating on question identity directly would be the honest design, but it would
+  also admit `kind` units the state filter currently rejects and that nobody has
+  scored, so the filter stays as the belt and the list is the alarm.

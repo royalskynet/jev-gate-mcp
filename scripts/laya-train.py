@@ -282,11 +282,18 @@ CONF_MIN_SPEC = os.environ.get("JEV_LAYA_CONF_MIN", "score=0.65,noul=0.70")
 
 
 def live_gated(rows, pilot=QTYPE_PILOT, conf_min_spec=CONF_MIN_SPEC):
-    """線上實際會留在本機的那些題的 n 與準確率。升級閘要看的就是這個數字。"""
+    """線上實際會留在本機的那些題的 n 與準確率。升級閘要看的就是這個數字。
+
+    `qids` 是這批題的題目名單。兩條 lane 的閘都不看題目身分——信心閘看 qtype，
+    state 閘看 state 的 key 形狀——而 key 形狀只是「這是哪個題組」的代理指標。
+    所以 caller 改了自己的 state（少帶一個欄位）或新 caller 接進來，都會讓一批
+    從未量測過的題目無聲進入本機 lane。名單外顯，nightly 才攔得到（見 ADR 0002）。
+    """
     floor = parse_conf_min(conf_min_spec)
     live = [r for r in rows
             if (r["conf"] >= floor(r["qtype"]) if r["qtype"] in pilot else bool(r.get("state_ok")))]
-    meta = {"conf_min": conf_min_spec, "pilot": sorted(pilot)}
+    meta = {"conf_min": conf_min_spec, "pilot": sorted(pilot),
+            "qids": sorted({r["qid"] for r in live if r.get("qid")})}
     if not live:
         return {"n": 0, "accuracy": None, **meta}
     return {"n": len(live),
@@ -401,13 +408,16 @@ def selftest():
     assert _f("choice") == math.inf, "未列的題型不該有地板，否則會無聲放行"
 
     # live_gated：pilot 題型吃信心閘，非 pilot 吃 state_ok，兩條規則不可互換
-    _r = [{"qtype": "score", "conf": 0.9, "correct": True, "state_ok": False},   # 過閘
-          {"qtype": "score", "conf": 0.5, "correct": False, "state_ok": True},   # 信心不足，不算
-          {"qtype": "choice", "conf": 0.1, "correct": True, "state_ok": True},   # 不設閘，算
-          {"qtype": "choice", "conf": 0.99, "correct": False, "state_ok": False}]  # 過不了 state
+    _r = [{"qtype": "score", "qid": "difficulty", "conf": 0.9, "correct": True, "state_ok": False},
+          {"qtype": "score", "qid": "tier", "conf": 0.5, "correct": False, "state_ok": True},
+          {"qtype": "choice", "qid": "kind", "conf": 0.1, "correct": True, "state_ok": True},
+          {"qtype": "choice", "qid": "route", "conf": 0.99, "correct": False, "state_ok": False}]
     assert live_gated(_r)["n"] == 2, live_gated(_r)
     assert live_gated(_r)["accuracy"] == 1.0, live_gated(_r)
     assert live_gated([])["accuracy"] is None
+    # qids 只收真的留在本機那些題；被閘掉的不能出現，否則 nightly 的人口閘會放行
+    assert live_gated(_r)["qids"] == ["difficulty", "kind"], live_gated(_r)["qids"]
+    assert live_gated([])["qids"] == []
     # 分題型地板真的分開套：noul 的 0.68 過不了 0.70，score 的 0.66 過得了 0.65
     _r2 = [{"qtype": "noul", "conf": 0.68, "correct": False, "state_ok": True},
            {"qtype": "score", "conf": 0.66, "correct": True, "state_ok": False}]
@@ -693,7 +703,7 @@ def main():
             paired_old.append(1.0 if b else 0.0)
         # rec 是必要的：雲端計費按「請求」而非按題，所以只有整筆 record 的題
         # 全留本機才真的省一次呼叫。少了它只能算出偏樂觀的逐題覆蓋率。
-        oof_rows.append({"rec": u["rec"], "qtype": u["qtype"], "conf": max(p),
+        oof_rows.append({"rec": u["rec"], "qid": u["qid"], "qtype": u["qtype"], "conf": max(p),
                          "correct": bool(ok), "state_ok": short_standalone_state(u["state"])})
 
     oof_acc = sum(correct) / len(correct) if correct else None

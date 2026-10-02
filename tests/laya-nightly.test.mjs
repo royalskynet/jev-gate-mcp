@@ -14,9 +14,11 @@ import { execFileSync } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 
+const QIDS = ['costly_mistake', 'difficulty', 'kind'];
+
 const REPORT = (promoted, live = { n: 170, accuracy: 0.994 }) => JSON.stringify({
   units: 533, oof_accuracy: 0.674, paired_delta: 0.317, promoted,
-  live_gated: { ...live, conf_min: 0.7, pilot: ['noul', 'score'] },
+  live_gated: { qids: QIDS, ...live, conf_min: 0.7, pilot: ['noul', 'score'] },
   coverage_curve: [{ threshold: 0.7, coverage: 0.278, accuracy: 0.952 }],
 });
 
@@ -70,6 +72,50 @@ test('a promoted night labels against int8, exports, and says what it gained', (
   const champ = JSON.parse(fs.readFileSync(at('.jevgate/laya-champion.json'), 'utf8'));
   assert.equal(champ.accuracy, 0.994);
   assert.equal(champ.units, 533);
+  // Without the question list on the record there is nothing for the next night
+  // to compare against, and the population gate silently stops gating.
+  assert.deepEqual(champ.qids, QIDS);
+});
+
+test('a question that was never measured locally cannot enter the local lane', () => {
+  const { at, run, pushes } = sandbox();
+  // Neither lane gates on question identity: the confidence lane keys on qtype,
+  // the state lane on the shape of the state keys. So a caller that drops a
+  // field from its state, or a new caller altogether, puts a question nobody
+  // measured on local weights. Averaged accuracy hides it while the new
+  // question is a minority of the batch, which is exactly when it lands.
+  fs.writeFileSync(at('.jevgate/laya-champion.json'),
+    JSON.stringify({ accuracy: 0.994, n: 170, conf_min: 0.7, qids: QIDS }));
+  fs.writeFileSync(at('next-report.json'),
+    REPORT(true, { n: 190, accuracy: 0.991, qids: [...QIDS, 'route'] }));
+  run();
+  assert.equal(fs.existsSync(at('exported.txt')), false, 'shipped an unmeasured question onto local weights');
+  assert.match(pushes().join('\n'), /出現現役沒有的題目 route/);
+});
+
+test('a question that stopped appearing does not block the night', () => {
+  const { at, run, pushes } = sandbox();
+  // Traffic ebbs. A shrinking question list is not drift — nothing new is being
+  // served — and blocking on it would freeze the model whenever a caller idles.
+  fs.writeFileSync(at('.jevgate/laya-champion.json'),
+    JSON.stringify({ accuracy: 0.994, n: 170, conf_min: 0.7, qids: QIDS }));
+  fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 120, accuracy: 0.99, qids: ['difficulty'] }));
+  run();
+  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran');
+  assert.doesNotMatch(pushes().join('\n'), /沒有的題目/);
+});
+
+test('a champion with no question list falls back to the floor instead of waving everything through', () => {
+  const { at, run, pushes } = sandbox();
+  // An old champion file predates the field. There is nothing to compare, so the
+  // night proceeds on the floor alone — but it must not read "no list" as "no new
+  // questions" for a champion that does have one.
+  fs.writeFileSync(at('.jevgate/laya-champion.json'),
+    JSON.stringify({ accuracy: 0.98, n: 170, conf_min: 0.7 }));
+  fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 190, accuracy: 0.991, qids: ['route'] }));
+  run();
+  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran');
+  assert.doesNotMatch(pushes().join('\n'), /沒有的題目/);
 });
 
 test('an unpromoted night neither exports nor claims a gain it did not get', () => {
