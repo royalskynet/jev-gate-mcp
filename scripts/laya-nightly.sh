@@ -51,14 +51,20 @@ fi
 #   FLOOR            絕對地板
 #   champion 檔      對現役模型的最小增益（容差 TOL）。訓練側的升級閘是對出廠 int8
 #                    比，比現役差但比出廠好的模型照樣會換權重，所以要在這裡攔。
-CONF_MIN="${JEV_LAYA_CONF_MIN:-0.70}"
+#                    閾值一改，留在本機的那批題就換了，兩個數字不同源，所以只在
+#                    conf_min 相同時才比現役。
 FLOOR="${JEV_LAYA_ACC_FLOOR:-0.95}"
 TOL="${JEV_LAYA_REGRESS_TOL:-0.01}"
 CHAMP="${JEV_LAYA_CHAMPION:-$HOME/.jevgate/laya-champion.json}"
 if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
   GATE_ACC=$(jq -r '.live_gated.accuracy // 0' "$REPORT" 2>/dev/null)
   GATE_N=$(jq -r '.live_gated.n // 0' "$REPORT" 2>/dev/null)
-  CHAMP_ACC=$(jq -r '.accuracy // 0' "$CHAMP" 2>/dev/null || echo 0)
+  SPEC=$(jq -r '.live_gated.conf_min // ""' "$REPORT" 2>/dev/null)
+  if [ "$(jq -r '.conf_min // ""' "$CHAMP" 2>/dev/null)" = "$SPEC" ]; then
+    CHAMP_ACC=$(jq -r '.accuracy // 0' "$CHAMP" 2>/dev/null || echo 0)
+  else
+    CHAMP_ACC=0  # 不同閾值＝不同母體，這一輪只靠地板擋
+  fi
   if [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson f "$FLOOR" '$a >= $f')" != true ]; then
     hpush "⚠️ Laya 權重已換但不導出：線上 lane 準確率 ${GATE_ACC}（n=${GATE_N}）< 地板 ${FLOOR}，bundle 維持舊版"
   elif [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson c "${CHAMP_ACC:-0}" --argjson t "$TOL" '$a >= $c - $t')" != true ]; then
@@ -70,9 +76,9 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
       hpush "⚠️ Laya 導出 ONNX 失敗 rc=${ERC}（權重已換但 bundle 還是舊的）"
     else
       # 只有真的換上線才更新現役紀錄，否則下次會拿沒上線的數字當對照。
-      jq -n --argjson a "$GATE_ACC" --argjson n "$GATE_N" \
+      jq -n --argjson a "$GATE_ACC" --argjson n "$GATE_N" --arg s "$SPEC" \
         --arg ts "$(date -u +%FT%TZ)" --argjson u "$(jq -r '.units // 0' "$REPORT")" \
-        '{accuracy:$a, n:$n, units:$u, promoted_at:$ts}' > "$CHAMP.tmp" &&
+        '{accuracy:$a, n:$n, units:$u, conf_min:$s, promoted_at:$ts}' > "$CHAMP.tmp" &&
         mv "$CHAMP.tmp" "$CHAMP" && chmod 600 "$CHAMP"
     fi
   fi

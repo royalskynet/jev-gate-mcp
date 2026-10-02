@@ -159,6 +159,27 @@ test('confident score and noul are answered locally; the state filter still appl
   assert.deepEqual(far.calls, [['jev', ['hard']]]);
 });
 
+test('each question type is held to its own calibrated floor', async () => {
+  // Same confidence, opposite outcomes: 0.66 clears score's 0.65 but not noul's
+  // 0.70. A single shared floor cannot produce this split, so it proves the
+  // per-type floors are applied and not collapsed to one number.
+  const { run, calls, samples } = setupTyped({
+    hard: { type: 'score', score: 2, probabilities: { 0: 0.17, 1: 0.17, 2: 0.66 } },
+    rev: { type: 'noul', noul: 0.66 },
+  });
+  await run({ user_request: '幫我改一行設定', char_bucket: 's' }, { hard: SCORE_Q, rev: NOUL_Q });
+  assert.deepEqual(calls, [['laya', ['hard', 'rev']], ['jev', ['rev']]]);
+  assert.deepEqual(samples.map(s => s.fallback_reason), [null, 'low-confidence']);
+});
+
+test('a question type with no calibrated floor is never served locally', async () => {
+  const { parseConfMin } = await import('../src/laya-routing.js');
+  const floor = parseConfMin('score=0.65');
+  assert.equal(floor('score'), 0.65);
+  assert.equal(floor('noul'), Infinity, 'an unlisted type must not inherit a floor');
+  assert.equal(parseConfMin('0.7')('anything'), 0.7, 'a bare number still applies to every type');
+});
+
 test('under-threshold confidence falls back to Jev and is recorded as such', async () => {
   const { run, calls, samples } = setupTyped({
     hard: { type: 'score', score: 0, probabilities: { 0: 0.34, 1: 0.33, 2: 0.33 } },

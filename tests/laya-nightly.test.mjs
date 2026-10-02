@@ -102,7 +102,7 @@ test('a model that beats stock int8 but regresses against the serving one is not
   // The trainer's upgrade gate compares against frozen int8, so this model got
   // its weights written. Against the model actually serving traffic it is worse.
   fs.writeFileSync(at('.jevgate/laya-champion.json'),
-    JSON.stringify({ accuracy: 0.994, n: 170, units: 533 }));
+    JSON.stringify({ accuracy: 0.994, n: 170, units: 533, conf_min: 0.7 }));
   fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 180, accuracy: 0.96 }));
   run();
   assert.equal(fs.existsSync(at('exported.txt')), false, 'replaced the champion with a worse model');
@@ -111,9 +111,23 @@ test('a model that beats stock int8 but regresses against the serving one is not
   assert.equal(JSON.parse(fs.readFileSync(at('.jevgate/laya-champion.json'), 'utf8')).accuracy, 0.994);
 });
 
+test('a champion measured at another threshold is not used as the comparison', () => {
+  const { at, run, pushes } = sandbox();
+  // Move the threshold and a different set of questions stays local, so the two
+  // accuracies are not the same measurement. Comparing them would block or wave
+  // through a model on arithmetic between unlike populations; the floor still applies.
+  fs.writeFileSync(at('.jevgate/laya-champion.json'),
+    JSON.stringify({ accuracy: 0.994, n: 170, conf_min: 'score=0.65,noul=0.70' }));
+  fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 180, accuracy: 0.96 }));
+  run();
+  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran');
+  assert.doesNotMatch(pushes().join('\n'), /退步/, 'compared accuracies from two different thresholds');
+});
+
 test('noise within tolerance still ships', () => {
   const { at, run } = sandbox();
-  fs.writeFileSync(at('.jevgate/laya-champion.json'), JSON.stringify({ accuracy: 0.994, n: 170 }));
+  fs.writeFileSync(at('.jevgate/laya-champion.json'),
+    JSON.stringify({ accuracy: 0.994, n: 170, conf_min: 0.7 }));
   fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 175, accuracy: 0.99 }));
   run();
   assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran',

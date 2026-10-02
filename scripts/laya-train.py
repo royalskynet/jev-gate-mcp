@@ -262,18 +262,35 @@ def boot_ci(values, reps=2000, alpha=0.05, rng=None):
 # 升級地板會把不設閘的 choice 算進去，量到的不是線上那個點（ADR-0002）。
 QTYPE_PILOT = frozenset(
     s.strip() for s in os.environ.get("JEV_LAYA_QTYPE_PILOT", "score,noul").split(",") if s.strip())
-CONF_MIN = float(os.environ.get("JEV_LAYA_CONF_MIN", "0.70"))
+def parse_conf_min(spec):
+    """單一數字＝所有題型共用；`score=0.65,noul=0.70`＝分題型。未列的題型無校準過的
+    地板，所以回 inf（過不了閘）。膝點因題型而異，見 ADR-0002。"""
+    try:
+        flat = float(spec)
+    except ValueError:
+        pass
+    else:
+        return lambda _qtype: flat
+    by_type = {}
+    for pair in filter(None, spec.split(",")):
+        qtype, floor = pair.split("=")
+        by_type[qtype.strip()] = float(floor)
+    return lambda qtype: by_type.get(qtype, math.inf)
 
 
-def live_gated(rows, pilot=QTYPE_PILOT, conf_min=CONF_MIN):
+CONF_MIN_SPEC = os.environ.get("JEV_LAYA_CONF_MIN", "score=0.65,noul=0.70")
+
+
+def live_gated(rows, pilot=QTYPE_PILOT, conf_min_spec=CONF_MIN_SPEC):
     """線上實際會留在本機的那些題的 n 與準確率。升級閘要看的就是這個數字。"""
+    floor = parse_conf_min(conf_min_spec)
     live = [r for r in rows
-            if (r["conf"] >= conf_min if r["qtype"] in pilot else bool(r.get("state_ok")))]
+            if (r["conf"] >= floor(r["qtype"]) if r["qtype"] in pilot else bool(r.get("state_ok")))]
+    meta = {"conf_min": conf_min_spec, "pilot": sorted(pilot)}
     if not live:
-        return {"n": 0, "accuracy": None, "conf_min": conf_min, "pilot": sorted(pilot)}
+        return {"n": 0, "accuracy": None, **meta}
     return {"n": len(live),
-            "accuracy": sum(1 for r in live if r["correct"]) / len(live),
-            "conf_min": conf_min, "pilot": sorted(pilot)}
+            "accuracy": sum(1 for r in live if r["correct"]) / len(live), **meta}
 
 
 def coverage_curve(conf, correct, thresholds=None):
@@ -371,7 +388,17 @@ def selftest():
         assert jp and jc, "laya-routing.js 的 QTYPE_PILOT／CONF_MIN 預設值找不到"
         assert frozenset(s.strip() for s in jp.group(1).split(",")) == QTYPE_PILOT, \
             f"pilot 題型漂移：JS={jp.group(1)} PY={sorted(QTYPE_PILOT)}"
-        assert float(jc.group(1)) == CONF_MIN, f"CONF_MIN 漂移：JS={jc.group(1)} PY={CONF_MIN}"
+        assert jc.group(1) == CONF_MIN_SPEC, f"CONF_MIN 漂移：JS={jc.group(1)} PY={CONF_MIN_SPEC}"
+        # 分題型地板逐一比，不只比字串：JS 與 PY 的 parser 必須對同一題型給同一個數字
+        js_floor, py_floor = parse_conf_min(jc.group(1)), parse_conf_min(CONF_MIN_SPEC)
+        for _q in sorted(QTYPE_PILOT):
+            assert js_floor(_q) == py_floor(_q), f"{_q} 地板漂移"
+
+    # parse_conf_min：單一數字共用，分題型各自吃自己的，未列的題型過不了閘
+    assert parse_conf_min("0.7")("anything") == 0.7
+    _f = parse_conf_min("score=0.65,noul=0.70")
+    assert (_f("score"), _f("noul")) == (0.65, 0.70)
+    assert _f("choice") == math.inf, "未列的題型不該有地板，否則會無聲放行"
 
     # live_gated：pilot 題型吃信心閘，非 pilot 吃 state_ok，兩條規則不可互換
     _r = [{"qtype": "score", "conf": 0.9, "correct": True, "state_ok": False},   # 過閘
@@ -381,6 +408,10 @@ def selftest():
     assert live_gated(_r)["n"] == 2, live_gated(_r)
     assert live_gated(_r)["accuracy"] == 1.0, live_gated(_r)
     assert live_gated([])["accuracy"] is None
+    # 分題型地板真的分開套：noul 的 0.68 過不了 0.70，score 的 0.66 過得了 0.65
+    _r2 = [{"qtype": "noul", "conf": 0.68, "correct": False, "state_ok": True},
+           {"qtype": "score", "conf": 0.66, "correct": True, "state_ok": False}]
+    assert live_gated(_r2, conf_min_spec="score=0.65,noul=0.70")["n"] == 1, "分題型地板沒分開套"
 
     print("selftest PASS")
 

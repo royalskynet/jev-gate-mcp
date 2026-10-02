@@ -27,7 +27,20 @@ function profile(q) {
 // see docs/adr/0002-laya-qtype-confidence-lane.md for the measurement that set them.
 const QTYPE_PILOT = new Set(
   (process.env.JEV_LAYA_QTYPE_PILOT ?? 'score,noul').split(',').map(s => s.trim()).filter(Boolean));
-const CONF_MIN = Number(process.env.JEV_LAYA_CONF_MIN ?? '0.70');
+// The knee is not in the same place for every type: score holds 100% OOF down
+// to 0.65 while noul breaks below 0.70, so one shared number has to give up
+// score coverage or let noul through unsupported.
+export function parseConfMin(spec) {
+  const flat = Number(spec);
+  if (Number.isFinite(flat)) return () => flat;
+  const byType = new Map(spec.split(',').filter(Boolean).map(pair => {
+    const [type, floor] = pair.split('=').map(s => s.trim());
+    return [type, Number(floor)];
+  }));
+  // An unlisted type has no calibrated floor, so nothing clears it.
+  return type => byType.get(type) ?? Infinity;
+}
+const confMin = parseConfMin(process.env.JEV_LAYA_CONF_MIN ?? 'score=0.65,noul=0.70');
 
 // Laya reports `probabilities` for choice/score but only `noul` (= P(true)) for
 // noul, which is binary, so its max-softmax is recoverable from that one number.
@@ -80,7 +93,7 @@ export function makeLayaRouter({ local, cloud, record = recordRoutingSample, onR
         // An unreadable confidence counts as too low — the lane may only keep
         // work local on positive evidence.
         const conf = maxSoftmax(a);
-        const lowConf = !profile(q) && !(invalid instanceof Error) && !noMatch && !(conf >= CONF_MIN);
+        const lowConf = !profile(q) && !(invalid instanceof Error) && !noMatch && !(conf >= confMin(q?.type));
         const fallback = invalid instanceof Error || noMatch || lowConf;
         if (fallback) cloudQs[id] = q;
         else answers[id] = a;

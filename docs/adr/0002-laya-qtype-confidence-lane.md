@@ -35,10 +35,16 @@ second routing lane keyed on the *question type* rather than the exact schema:
    out-of-fold logits, and promotes new weights only when the paired gain over
    the current bundle has a bootstrap confidence interval clear of zero.
 2. `JEV_LAYA_QTYPE_PILOT` (default `score,noul`) lists the admitted types, and
-   `JEV_LAYA_CONF_MIN` (default `0.70`) is the post-temperature max-softmax a
-   local answer must clear. Both are server-side; the caller can neither name a
-   type nor supply a confidence, which preserves ADR-0001's property that the
-   caller cannot talk its way onto the local path.
+   `JEV_LAYA_CONF_MIN` (default `score=0.65,noul=0.70`) is the post-temperature
+   max-softmax a local answer must clear. The floors differ per type because the
+   knees do: `score` holds 100% OOF accuracy down to 0.65 (n=77) while `noul`
+   falls to 90.7% at 0.60, so a single shared number has to either forfeit
+   `score` coverage or admit `noul` answers the data does not support. A bare
+   number is still accepted and applies to every type; a type absent from the
+   spec has no calibrated floor and is never served locally. Both are
+   server-side; the caller can neither name a type nor supply a confidence,
+   which preserves ADR-0001's property that the caller cannot talk its way onto
+   the local path.
 3. The conservative state filter still applies to this lane, and anything under
    the threshold, invalid, or `no_match` falls back to the cloud in the same
    request as the rest of the batch.
@@ -71,8 +77,12 @@ Per type, against the majority-class baseline: `score` 50.0% → 98.6%, `noul`
 is useless" objection and confirms the "confidently wrong" one, so `choice` is
 kept out of the question-type lane and left to its exact-schema lane.
 
-At `score,noul` / 0.70 / state filter: **137 question units answered locally,
-137 of 137 agreeing with the teacher, CI [97.3, 100]**.
+Lowering `score` to 0.65 is free rather than a trade: coverage goes from 74.7%
+to 97.5% with no new disagreement, and the Clopper-Pearson lower bound rises
+(95.2 against 93.9) because the sample is larger.
+
+At `score=0.65,noul=0.70` plus the state filter: **188 question units answered
+locally, 187 agreeing with the teacher, CI [97.1, 100]**.
 
 Question units are not the billing unit: the gateway sends every fallen-back
 question of a request in one cloud call, so a request is only free when all of
@@ -81,14 +91,14 @@ all three configurations:
 
 | local lanes | requests fully local |
 | --- | --- |
-| `score,noul` gated, `choice` to the cloud | 20.8% |
-| `score,noul` gated + profile lane ungated (chosen) | **32.5%** |
-| every lane gated | 28.9% |
+| `score,noul` gated, `choice` to the cloud | 22.3% |
+| `score,noul` gated + profile lane ungated (chosen) | **38.1%** |
+| every lane gated | 31.7% |
 
-Neither lane has ever served traffic: `JEV_PROVIDER` was `zen`, so
-`makeLayaRouter` was never constructed. Switching the provider is the go-live
-step for both lanes at once, which is why the profile lane's accuracy was
-measured here rather than assumed from its earlier review.
+Neither lane had served traffic when this was decided: `JEV_PROVIDER` was
+`zen`, so `makeLayaRouter` was never constructed. Switching the provider was
+the go-live step for both lanes at once, which is why the profile lane's
+accuracy was measured here rather than assumed from its earlier review.
 
 Selective quantisation matters for this lane. Quantising the whole graph moves
 logits by up to 2.82 and breaks the fitted temperatures, costing 60% of coverage
