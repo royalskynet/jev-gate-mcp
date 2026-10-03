@@ -35,15 +35,20 @@ const demark = (s) => String(s ?? '').replace(EMPH, '');
 // A hash has at least one a-f; 1234567 is a number that happens to be hex.
 const hexish = (t) => /[a-f]/.test(t);
 
+// Evidence side is matched without \b and without a length cap: sha256 is 64
+// hex and `token_8a9f4c27` has a word char in front, and both were quoted
+// verbatim in live false positives (issue #12, 4 of 5 observed hits).
+const HEX_RUN = /[0-9a-f]{7,}/g;
+
 /**
  * Does `evidence` contain a hash that is the same object as `claimed`?
- * A 7-char short hash quoted from a 40-char output is the same commit, so the
- * comparison is prefix-wise in both directions.
+ * A short hash quoted from a longer one in the output is the same object
+ * (substring); a longer claim can extend a short hash the output printed.
  */
 function hashSupported(claimed, evidence) {
-  for (const t of evidence.match(HASH) ?? []) {
-    if (!hexish(t)) continue;
-    if (t.startsWith(claimed) || claimed.startsWith(t)) return true;
+  if (evidence.includes(claimed)) return true;
+  for (const t of evidence.match(HEX_RUN) ?? []) {
+    if (hexish(t) && claimed.startsWith(t)) return true;
   }
   return false;
 }
