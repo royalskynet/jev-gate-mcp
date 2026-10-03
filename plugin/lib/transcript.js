@@ -38,6 +38,14 @@ export function readEvidence(transcriptPath, maxChars = 8000, { allRounds = fals
     } catch {
       continue;
     }
+    // Hook context (recent-sessions, latest-fixes) is something the model reads
+    // and may quote, e.g. a session id prefix — issue #12's 5th false positive.
+    if (allRounds && rec.type === 'attachment' && rec.attachment?.type === 'hook_additional_context') {
+      const c = rec.attachment.content;
+      const text = Array.isArray(c) ? c.join('\n') : String(c ?? '');
+      if (text) { parts.unshift(text); total += text.length; }
+      continue;
+    }
     if (rec.type !== 'user') continue;
     const content = rec.message?.content;
     // A plain-string user message is the prompt that opened this round.

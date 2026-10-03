@@ -139,4 +139,23 @@ try {
   DEFAULT_CONFIG.idcheckShadow = savedIdcheckShadow;
 }
 
+// Issue #12 shadow log, 2026-09-30..10-02: 5 hits, 4 false. Each shape below
+// was quoted verbatim from a tool output the old \b{7,40} scan could not see.
+const sha256 = '8432a99c0513c484554cbd2b2adb09d4c2a6f05fd70ecd982007cecb78ec0a11';
+assert.deepEqual(unsupportedIds('回 `match 8432a99c…`', `mismatch actual=${sha256}`), [], '64-hex sha256');
+assert.deepEqual(unsupportedIds('sha256 前 8 碼 `8a9f4c27`', '--- 前8碼 ---\ntoken_8a9f4c27'), [], 'word char before the hex');
+// ...and the one true hit (4fb3ac9: "已推" with no commit or push in the round) still flags.
+assert.deepEqual(unsupportedIds('已推（`4fb3ac9`）', `rc=0\nguard verdict: soft\n${sha256}`), ['4fb3ac9']);
+
+// A session id prefix the model read from SessionStart hook context is quoted.
+const tpHook = join(SCRATCH, 'hook-context.jsonl');
+writeFileSync(tpHook, [
+  { type: 'attachment', attachment: { type: 'hook_additional_context', content: ['recent-sessions:\n  2026-09-30 09:13:29  83ed4d3d  /Users/me'] } },
+  { type: 'user', message: { content: 'resume that session' } },
+  { type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } },
+].map((r) => JSON.stringify(r)).join('\n'));
+assert.deepEqual(unsupportedIds('session `83ed4d3d` 已接回', readEvidence(tpHook, 400000, { allRounds: true })), []);
+// Per-round evidence (the Jev judge) stays tool output only.
+assert.doesNotMatch(readEvidence(tpHook), /83ed4d3d/);
+
 console.log('ok: invented ids block, quoted ids pass, measured false-positive classes stay silent');

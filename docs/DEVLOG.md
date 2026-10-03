@@ -2240,3 +2240,19 @@ teacher 只答了第一個條件；`wrong_reading_costly` 落在 0.3–0.7 的�
 - 10-03 03:00 是第一輪帶人口閘＋100% champion 的 nightly；被擋時推播會寫明是哪道閘。
 - 要讓 jev-route 題組本機答，不是調閾值也不是改特徵，是讓題目本身有 margin（同 `ask_first` 的做法）。
 - `q1`（criteria=null）等零星雜訊約 2/559，低於量測噪音，未清。
+
+## 33. idcheck 恢復 block：證據端三類漏看（2026-10-04）
+（§32 編號留給 `feat/laya-real-training`，避免合併時撞號。）
+
+issue #12 的 shadow 期（09-30～10-02）共記 5 筆 `idcheck_observe`。逐筆回查 transcript：1 筆真捏造，4 筆誤報。
+
+- **真捏造**：`4fb3ac9`。compact 後宣稱「已推」，那一輪沒有任何 commit／push 呼叫，所有 repo 都查不到這個物件，檔案本身也被 gitignore。
+- **64 碼 sha256**（`8432a99c`、`acec7103`、`d1ffabaf`）：證據端 `\b[0-9a-f]{7,40}\b` 抓不到 64 碼。
+- **前面接 word char**（`token_8a9f4c27`）：`_` 讓 `\b` 不成立。
+- **hook context**（`83ed4d3d`）：session id 前綴只出現在 SessionStart hook 的 recent-sessions，不在 tool output。
+
+修法只動證據端：hash 改用子字串比對；`allRounds` 模式把 `hook_additional_context` 算進證據。claim 端的抽取規則不變。
+
+驗收：用 5 筆實際 Stop 重放，舊程式重現 5 筆命中，新程式只剩 `4fb3ac9`。近 5 天 48 個 session、666 次 Stop（278 次帶 id）全量重放，新程式只標出 1 筆，就是 `4fb3ac9`。所以 `idcheckShadow` 預設改成 `false`。要回到只記錄不擋，把它設成 `true`。
+
+未處理：persisted-output（`Full output saved to:`）只有 2KB 預覽進 transcript，id 若只出現在完整檔裡，仍會誤報。這次重放沒有遇到，所以先不做。
