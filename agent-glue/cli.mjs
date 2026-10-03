@@ -31,7 +31,8 @@ import { readFile } from 'node:fs/promises';
 
 import { compactMessages, verifyCompletion, reviewDiff, route, describeCandidates } from './src/index.js';
 import { pruneCommand } from './src/prune.js';
-import { apiKey, judgePair } from './claude/compact-hook.mjs';
+import { apiKey, judgePairs, refreshConfig } from './claude/compact-hook.mjs';
+import { followsZen, zenCooling } from './claude/env.mjs';
 
 /**
  * Node-side `$` for the shared judge, written the same way as
@@ -104,34 +105,27 @@ switch (sub) {
     // user request to '', so only tool names and char counts cross the wire —
     // no payload, no user message, whatever the caller asked for.
     const { messages = [], pinFirst, pinLast, minReductionChars } = payload;
+    // Zen free in its quota cooldown: ask OpenRouter until it lapses, as the
+    // Claude Code hook does. Without this Hermes got 429 for the whole cooldown.
+    if (followsZen()) {
+      const status = await readFile(`${process.env.HOME}/.jevgate/zen-free-status.json`, 'utf8').catch(() => '');
+      refreshConfig(zenCooling(status, Date.now()));
+    }
     const key = await apiKey(node$, {});
     if (!key) {
       respond({ messages, compacted: false, reason: 'no key', reducedBy: 0 });
       break;
     }
-    // judgePair maps a failed call (429 quota, 401, 5xx) to 'keep', so a dead
-    // judge would still be called once per pair. Abort the pass on the first
-    // failed response instead: compactMessages turns the throw into
-    // `judge-failed` and the host falls back without N wasted round trips.
-    let failed = null;
-    const watched = { ...node$, http: { fetch: async (url, init) => {
-      let res;
-      try { res = await node$.http.fetch(url, init); } catch (e) { failed = 'network'; throw e; }
-      if (!res.ok) failed = res.status;
-      return res;
-    } } };
-    const result = await compactMessages({
-      messages,
-      pinFirst,
-      pinLast,
-      minReductionChars,
-      judgeHeadChars: 0,
-      judge: async (pair) => {
-        const choice = await judgePair(watched, key, '', pair);
-        if (failed !== null) throw new Error(`judge HTTP ${failed}`);
-        return choice;
-      },
-    });
+    const opts = { messages, pinFirst, pinLast, minReductionChars, judgeHeadChars: 0 };
+    // Pass 1 only collects the pairs; they are judged in batched, parallel
+    // requests (judgePairs), not one sequential round trip each.
+    const pairs = [];
+    await compactMessages({ ...opts, judge: async (pair) => { pairs.push(pair); return 'keep'; } });
+    const { choices, failed } = await judgePairs(node$, key, '', pairs);
+    // ponytail: pass 2 replays verdicts by call order — compactMessages walks
+    // pairs in Map insertion order, so its i-th judge call is pass 1's i-th pair.
+    let i = 0;
+    const result = await compactMessages({ ...opts, judge: async () => choices[i++] ?? 'keep' });
     respond(failed !== null ? { ...result, reason: `judge-http-${failed}` } : result);
     break;
   }

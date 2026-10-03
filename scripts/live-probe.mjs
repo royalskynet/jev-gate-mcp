@@ -44,7 +44,7 @@ function counted(fn) {
 }
 
 const KEY_FILE = process.env.JEV_API_KEY_FILE
-  ?? `${process.env.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`;
+  ?? `${process.env.HOME}/.creds/kv/OPENROUTER_SECOND_API_KEY.txt`;
 try {
   readFileSync(KEY_FILE, 'utf8');
 } catch {

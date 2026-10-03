@@ -1269,7 +1269,7 @@ runtime。
    middleware（`hermes_cli/middleware.py` 的 `VALID_MIDDLEWARE`）跟 hook
    （`hermes_cli/plugins.py` 的 `VALID_HOOKS`）是**兩個不同介面**，manifest 沒有
    middleware 宣告欄位，正解是不宣告。另外 plugin 要放在 **profile 的 home**
-   （`~/.hermes/profiles/koko/plugins/`），放 `~/.hermes/plugins/` 不會被掃到——
+   （`~/.hermes/profiles/coco/plugins/`），放 `~/.hermes/plugins/` 不會被掃到——
    `hermes plugins list --plain --no-bundled` 完全沒有那一筆，沒有任何報錯。
 
 ### 20.3 沙箱裡怎麼實證（兩條路都試過）
@@ -1282,7 +1282,7 @@ runtime。
   **改走 gateway**：`openclaw agent --agent main --session-id ... -m '<240 字的
   機械改名任務>'`。多 agent 設定下沒有 `--agent` 會被拒
   （"agent command session creation has no explicit owner"）。
-- Hermes 的一次性 turn（`hermes -p koko --yolo -z ...`）撞
+- Hermes 的一次性 turn（`hermes -p coco --yolo -z ...`）撞
   `HTTP 401: [openrouter] All 1 connection(s) authentication expired`——provider
   憑證問題，與 plugin 無關。**改用 `integrations/hermes/live-probe.py`**：真
   loader（`discover_plugins(force=True)`）＋真 middleware chain
@@ -2161,6 +2161,85 @@ PR #14（`wip/openclaw-jev-compact`）的 1–6 已換 hash 進 main，只剩 `b
 - 原本「openclaw 不能做快速壓縮」的前提被 2026.9 推翻：`registerCompactionProvider()` 讓 plugin 回傳要落盤的摘要字串。已對本機 openclaw 2026.9.6 的 `.d.ts` 核對 `summarize({ messages, previousSummary, … }): Promise<string>`，manifest 不需宣告 contract。
 - `pluginConfigOf(api)`：以前讀 `ctx.config`／`api.config`，那是整份 openclaw 設定，`cheapProvider` 等 plugin 設定全數無效。本機沒設 plugin config，所以修正後行為不變。
 - provider 預設不啟用：只有在 `agents.defaults.compaction.provider` 指名 `jev-compact` 時才會跑。本機 Bess 還沒切換，因為那是正式環境的系統設定，要等使用者決定。
+
+## 32. Laya 夜間自訓練：上線閘、兩群人口與 ask_first 拆題（2026-10-01 ～ 10-02）
+
+分支 `feat/laya-real-training`。決策本身在 ADR 0002，可泛化的教訓在 fixindex 9869–9892；
+這節只記前因後果與接手點。
+
+### 迴路長什麼樣（03:00，launchd，zero-token）
+
+1. `laya-label-corpus.mjs`：用**凍結的出廠 int8**（`JEV_LAYA_BASELINE_DIR`）標當天語料。
+   基線不跟著 `JEV_LAYA_MODEL_DIR` 漂，否則下一輪「vs int8」會變成自我比較。
+2. `laya-train.py --promote`：encoder 凍結，只訓 decision head；grouped 5-fold cross-fit，
+   溫度用 OOF logits 擬（in-sample 樂觀約 5pp）。升級閘＝配對增益 bootstrap CI 下界 > 0。
+3. `laya-nightly.sh` 三道上線閘：地板（`live_gated.accuracy` ≥ 0.95）、現役回歸
+   （`~/.jevgate/laya-champion.json`，容差 0.01，`conf_min` 不同就不比）、人口（`qids` 變長就不導出）。
+4. 導出：只量化 encoder，decision layers 留 fp32（量化會移 logit scale，打壞 fp32 擬的溫度）；
+   parity 比 argmax 翻轉；原子替換，舊 bundle 留 `.prev`。
+
+10-02 那輪（rc=0，03:10 跑完）：語料 521→559 units，OOF 67.4%→69.8%，對 int8 配對增益
++33.8pp CI [+28.8, +38.8]；fp32 1288MB → int8 548MB，parity n=32 max|Δlogit|=1.0681、0/32 翻轉。
+
+### 上線閘原本量錯東西（`2b9b61a`）
+
+地板原本讀全題型的 `coverage_curve`（95.3%，只差 0.3pp 過關），但線上只有兩條 lane 會留在本機。
+改成 `live_gated`：完全照 `gateway/src/laya-routing.js` 的規則挑出「線上真的本機答」的那些題來算。
+另加現役回歸：訓練側的升級閘只對出廠 int8 比，比現役差的模型一樣會被換上。
+
+### 閾值改成分題型（`fd3cb58`）
+
+`JEV_LAYA_CONF_MIN` 接受 `score=0.65,noul=0.70`；**沒列到的題型給不可達的地板**，所以只放寬
+`QTYPE_PILOT` 不會讓沒量測過的題型上線。score 0.70→0.65：覆蓋 97.5%、準確率 100%、CP95 下界
+95.2%（比 0.70 的 93.9% 高，因為 n 變大）。noul 的轉折點真的是 0.70（0.60 時 CP95 下界 82.7%）。
+請求層全本機比例 29.2%→38.1%。只有全本機的請求才省錢：gateway 把所有退回的題併成一次雲端呼叫
+（`config.js:113`）。
+
+### 語料是兩群人口，不是一個
+
+語料 100% 是真實 jev 流量（帶 `ts`＋`teacher_model`，無合成，全世界只有 7 個 `question_digest`），
+但按題組拆開：
+
+| 題組 | n | OOF 準確率 |
+|---|---|---|
+| jev-route（`tier`／`route`／`ask_first`） | 369（66%） | 55.0% |
+| 其他（`difficulty`／`costly_mistake`／`kind`） | 190（34%） | 98.4% |
+
+OOF 69.8% 是兩群混出來的數字，描述的母體不存在。choice 的 state 過濾（只准
+`user_request`／`char_bucket`）擋掉 81.6%，多出的 key 永遠是 `dirty_paths,phase`——它實際上是
+在認題組。被擋的那群 OOF 47.2%、沒有任何子集及格，所以不是過嚴；但它很脆，caller 增減欄位會讓
+lane 靜默換人口。對策（`fc6d630`）：`oof_rows` 補 `qid`，`live_gated` 回報 `qids`，champion 記名單；
+名單變長擋（未量測的題上線），變短放（流量退潮不是漂移，擋了模型會永凍）。
+
+**迴路的結構上限**：`withTeacherCorpus` 包在雲端 adapter 上，只有送雲端的請求才產生語料
+（`4d1f525` 修正了說反的註解）。學會的題留本機、不再長語料；學不會的題持續累積。
+語料只會越來越偏向 jev-route，「每天自動變強」只發生在雲端還在答、而且答得乾脆的題上。
+
+### Python 鏡像的閘寫錯，算出一個幻影錯誤（`a2e2730`）
+
+JS 先對**每一題**套 state 過濾，pilot 只放寬題型；Python 鏡像卻讓 pilot 題型跳過 state 閘，
+把線上必送雲端的 2 筆 `ask_first` 算進本機 lane。舊數字 n=188、99.47%（唯一的錯是幻影），
+修正後 **n=186、100%**，名單 `[costly_mistake, difficulty, kind]`。champion 已用同一份 report 重算。
+drift guard 只比常數沒比組合邏輯，selftest 加了一列「pilot 高信心但 state 不過」的反例。
+副作用：基準 100%＋容差 0.01，約 186 題錯 2 題就會被擋。
+
+### ask_first 拆題（Ether-claude `7d175da`）
+
+`ask_first` 是三條件 AND（歧義 且 錯了不可逆 且 查檔查不到），teacher 分布是中心 0.48 的鐘形。
+noul 的 conf＝`|p−0.5|` 的單調函數，所以低信心量的是標籤模糊度，閾值切不開。另外 noul 判對是
+`|pred−truth| < 0.2`，猜 0.5 白拿 0.3–0.7 那段：帳面 70.7%，truth 在 0.1–0.3 時只有 15.4%。
+
+40 筆真實 state 重放到雲端 teacher：`ask_first` 與 `ambiguous` 分數幾乎重合（0.78/0.78），
+teacher 只答了第一個條件；`wrong_reading_costly` 落在 0.3–0.7 的只有 13%（`ask_first` 70%）。
+改成兩題、程式碼 AND（`ambiguous > 0.5 且 wrong_reading_costly > 0.5`），「查檔查不查得到」
+改寫進提示文字讓 agent 自己查。這只改善判斷品質，**不省雲端呼叫**：jev-route 的 state 帶
+`phase`／`dirty_paths`，整批送雲端。
+
+### 接手點
+
+- 10-03 03:00 是第一輪帶人口閘＋100% champion 的 nightly；被擋時推播會寫明是哪道閘。
+- 要讓 jev-route 題組本機答，不是調閾值也不是改特徵，是讓題目本身有 margin（同 `ask_first` 的做法）。
+- `q1`（criteria=null）等零星雜訊約 2/559，低於量測噪音，未清。
 
 ## 33. idcheck 恢復 block：證據端三類漏看（2026-10-04）
 （§32 編號留給 `feat/laya-real-training`，避免合併時撞號。）

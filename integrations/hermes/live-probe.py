@@ -1,10 +1,10 @@
-"""Prove jev-prune is live in Hermes: real plugin discovery for the koko profile, then the
+"""Prove jev-prune is live in Hermes: real plugin discovery for the coco profile, then the
 real tool_execution middleware chain around a fake `terminal` tool with oversized output.
 No LLM turn, but every layer the gateway uses between a tool and the model's context.
 """
 import os, sys
 
-os.environ["HERMES_HOME"] = os.path.expanduser("~/.hermes/profiles/koko")
+os.environ["HERMES_HOME"] = os.path.expanduser("~/.hermes/profiles/coco")
 sys.path.insert(0, os.path.expanduser("~/.hermes/hermes-agent"))
 
 from hermes_cli.plugins import discover_plugins, get_plugin_manager, has_middleware

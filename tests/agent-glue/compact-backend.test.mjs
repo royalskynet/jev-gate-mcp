@@ -126,3 +126,44 @@ test('askerFor honours the configured endpoint/model and drops provider off Open
   assert.match(seen[1].url, /^https:\/\/openrouter\.ai\//);
   assert.ok(seen[1].body.provider, 'OpenRouter keeps its ZDR routing');
 });
+
+// Why: the four core knobs (keepThreshold, maxStateTokens, maxRequestTokens,
+// truncateHeadChars) were readable from the environment but had to reach the
+// core to mean anything. A 0.6 answer sits between the two thresholds here, so
+// a knob that is read and dropped on the floor shows up as "keeps either way".
+test('compactAnthropic forwards the core knobs', async () => {
+  const asker = (seen) => askerFor(async (url, init) => {
+    seen.push(JSON.parse(init.body));
+    return { ok: true, status: 200, text: JSON.stringify({ answers: { call_t1: { noul: 0.6 }, result_t1: { noul: 0.6 } } }) };
+  }, 'k');
+
+  const lenient = [];
+  const keptAt05 = await compactAnthropic({
+    messages: anthropic, asker: asker(lenient),
+    config: { pinLast: 1, minReductionChars: 1, keepThreshold: 0.5, truncateHeadChars: 7 },
+  });
+  const strict = [];
+  const droppedAt08 = await compactAnthropic({
+    messages: anthropic, asker: asker(strict),
+    config: { pinLast: 1, minReductionChars: 1, keepThreshold: 0.8, truncateHeadChars: 7 },
+  });
+
+  // 0.6 >= 0.5 keeps the pair; 0.6 < 0.8 drops both call and result.
+  assert.equal(keptAt05.reducedBy, 0, 'a lenient threshold must keep the pair');
+  assert.ok(droppedAt08.reducedBy > 0, 'a strict threshold must drop the pair');
+
+  // truncateHeadChars only shows when the call stays and the result goes, so
+  // this answer keeps the call (1) and drops the result (0).
+  const kept = [];
+  const truncated = await compactAnthropic({
+    messages: anthropic,
+    asker: askerFor(async (url, init) => {
+      kept.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: JSON.stringify({ answers: { call_t1: { noul: 1 }, result_t1: { noul: 0 } } }) };
+    }, 'k'),
+    config: { pinLast: 1, minReductionChars: 1, keepThreshold: 0.5, truncateHeadChars: 7 },
+  });
+  const body = JSON.stringify(truncated.messages);
+  assert.ok(body.includes('x'.repeat(7)), '7 chars of head must survive');
+  assert.ok(!body.includes('x'.repeat(8)), 'and no more than 7');
+});

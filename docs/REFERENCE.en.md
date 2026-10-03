@@ -320,7 +320,7 @@ loop would have bought.
 ```sh
 npm install
 claude plugin validate .
-node --test              # 'live' tests need ~/.creds/kv/OPENROUTER_API_KEY.txt
+node --test              # 'live' tests need ~/.creds/kv/OPENROUTER_SECOND_API_KEY.txt
 ```
 
 Then register it as a local marketplace in `~/.claude/settings.json`:
@@ -349,7 +349,7 @@ balance does not lift it, and OpenCode Go does not include Jev
 (`/zen/go/v1/models` lists none). Do not forge official client headers. Any Zen failure writes `cooldown_until` to
 `~/.jevgate/zen-free-status.json` (retry-after for a 429, 5 minutes otherwise);
 until it lapses the gateway, Stop gate, prune and compact ask OpenRouter
-(`~/.creds/kv/OPENROUTER_API_KEY.txt`; the gateway honours
+(`~/.creds/kv/OPENROUTER_SECOND_API_KEY.txt`; the gateway honours
 `JEV_ZEN_BACKUP_KEY_FILE`), then return to Zen. No OpenRouter key keeps the old
 fail-closed behaviour. A hook with an explicit `JEV_ENDPOINT` / `JEV_MODEL` /
 `JEV_API_KEY_FILE` does not follow the swap. `scripts/zen-free-probe.mjs` exits
@@ -485,7 +485,11 @@ one System One judgment per tool call/result pair (~350 in / ~35 out tokens,
 | payload head shown to the judge | `JEV_COMPACT_ASK_CHARS` | 1,200 |
 | off switch | `JEV_COMPACT_ENABLED=0` | on |
 | backend | `JEV_COMPACT_BACKEND` | `auto` (`anthropic` / `openai` pin one) |
-| judge endpoint / model | `JEV_ENDPOINT` / `JEV_MODEL` (shared with prune) | Anthropic backend: OpenRouter decisions / `~typesafe/jev-latest`; a non-OpenRouter endpoint gets no `provider` field |
+| keep-probability threshold | `JEV_COMPACT_KEEP_THRESHOLD` | 0.5 (a call/result below it is removed) |
+| state token ceiling | `JEV_COMPACT_MAX_STATE_TOKENS` | 25,000 |
+| per-request token ceiling | `JEV_COMPACT_MAX_REQUEST_TOKENS` | 30,000 (state + questions) |
+| head kept from a dropped result | `JEV_COMPACT_TRUNCATE_HEAD` | 300 chars (0 = the note only) |
+| judge endpoint / model | `JEV_ENDPOINT` / `JEV_MODEL` (shared with prune) | the same pair as `hooks/jev.js`: `https://opencode.ai/zen/v1/systemone` / `jev-1.13-free`; a non-OpenRouter endpoint gets no `provider` field |
 | show outcome lines in the session | `JEV_UI_LOG=1` | off — SDK hosts (Happy, desktop) render every `ui.log` as a message; read `~/.openclaw/state/jev-*.log` instead |
 
 #### Two backends, one per transcript shape

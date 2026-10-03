@@ -12,11 +12,11 @@ test('unified report keeps prune and routing savings separate', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'jev-savings-'));
   const hermes = path.join(root, 'hermes');
   const openclaw = path.join(root, 'openclaw');
-  mkdirSync(path.join(hermes, 'profiles', 'koko', 'plugins', 'jev-prune'), { recursive: true });
-  mkdirSync(path.join(hermes, 'profiles', 'koko', 'logs'), { recursive: true });
+  mkdirSync(path.join(hermes, 'profiles', 'coco', 'plugins', 'jev-prune'), { recursive: true });
+  mkdirSync(path.join(hermes, 'profiles', 'coco', 'logs'), { recursive: true });
   mkdirSync(path.join(openclaw, 'logs'), { recursive: true });
   writeFileSync(
-    path.join(hermes, 'profiles', 'koko', 'logs', 'jev-prune.jsonl'),
+    path.join(hermes, 'profiles', 'coco', 'logs', 'jev-prune.jsonl'),
     `${JSON.stringify({ reason: 'judged', before: 1000, after: 200, dropped_lines: 8 })}\n`,
   );
   writeFileSync(
@@ -28,7 +28,7 @@ test('unified report keeps prune and routing savings separate', () => {
     ].map(JSON.stringify).join('\n') + '\n',
   );
 
-  const stdout = execFileSync(process.execPath, [SCRIPT, '--json', 'koko'], {
+  const stdout = execFileSync(process.execPath, [SCRIPT, '--json', 'coco'], {
     encoding: 'utf8',
     env: { ...process.env, HERMES_HOME: hermes, OPENCLAW_HOME: openclaw },
   });

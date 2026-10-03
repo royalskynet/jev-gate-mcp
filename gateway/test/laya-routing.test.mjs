@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeLayaRouter, TASK_KIND, MESSAGE_TOPIC } from '../src/laya-routing.js';
+import { makeLayaRouter, maxSoftmax, TASK_KIND, MESSAGE_TOPIC } from '../src/laya-routing.js';
 import { buildGateway } from '../src/config.js';
 import { makeLayaAdapter } from '../src/adapters.js';
 import { ERR } from '../src/core.js';
@@ -125,4 +125,101 @@ test('policy breaker failure is visible in readiness and policy telemetry', asyn
   assert.equal(built.readiness().ready, false);
   assert.equal(built.readiness().policy_breaker_state, 'open');
   assert.equal(events.at(-1).breaker_state, 'open');
+});
+
+// --- Calibrated question-type lane (score/noul behind max-softmax) ---
+
+const SCORE_Q = { type: 'score', instructions: 'How hard?', criteria: ['low', 'mid', 'high'] };
+const NOUL_Q = { type: 'noul', instructions: 'Is it reversible?' };
+
+function setupTyped(answers) {
+  const calls = [], samples = [];
+  const local = async (s, q) => { calls.push(['laya', Object.keys(q)]);
+    return { model: 'local', answers, usage: { input_tokens: 1, output_tokens: 0 } }; };
+  const cloud = async (s, q) => { calls.push(['jev', Object.keys(q)]);
+    return { model: 'cloud', answers: Object.fromEntries(Object.keys(q).map(id => [id, { teacher: true }])),
+      usage: { input_tokens: 1, output_tokens: 0 } }; };
+  return { calls, samples, run: makeLayaRouter({ local, cloud, record: s => samples.push(s) }) };
+}
+
+test('confident score and noul are answered locally; the state filter still applies', async () => {
+  const { run, calls, samples } = setupTyped({
+    hard: { type: 'score', score: 2, probabilities: { 0: 0.05, 1: 0.1, 2: 0.85 } },
+    rev: { type: 'noul', noul: 0.95 },
+  });
+  const r = await run({ user_request: '幫我改一行設定', char_bucket: 's' }, { hard: SCORE_Q, rev: NOUL_Q });
+  assert.deepEqual(calls, [['laya', ['hard', 'rev']]]);
+  assert.equal(r.model, 'local');
+  assert.deepEqual(samples.map(s => s.fallback_reason), [null, null]);
+  assert.deepEqual(samples.map(s => s.local_confidence), [0.85, 0.95]);
+
+  // A state the conservative filter rejects never reaches the local model at all.
+  const far = setupTyped({});
+  await far.run({ user_request: '先改設定再部署', char_bucket: 's' }, { hard: SCORE_Q });
+  assert.deepEqual(far.calls, [['jev', ['hard']]]);
+});
+
+test('each question type is held to its own calibrated floor', async () => {
+  // Same confidence, opposite outcomes: 0.66 clears score's 0.65 but not noul's
+  // 0.70. A single shared floor cannot produce this split, so it proves the
+  // per-type floors are applied and not collapsed to one number.
+  const { run, calls, samples } = setupTyped({
+    hard: { type: 'score', score: 2, probabilities: { 0: 0.17, 1: 0.17, 2: 0.66 } },
+    rev: { type: 'noul', noul: 0.66 },
+  });
+  await run({ user_request: '幫我改一行設定', char_bucket: 's' }, { hard: SCORE_Q, rev: NOUL_Q });
+  assert.deepEqual(calls, [['laya', ['hard', 'rev']], ['jev', ['rev']]]);
+  assert.deepEqual(samples.map(s => s.fallback_reason), [null, 'low-confidence']);
+});
+
+test('a question type with no calibrated floor is never served locally', async () => {
+  const { parseConfMin } = await import('../src/laya-routing.js');
+  const floor = parseConfMin('score=0.65');
+  assert.equal(floor('score'), 0.65);
+  assert.equal(floor('noul'), Infinity, 'an unlisted type must not inherit a floor');
+  assert.equal(parseConfMin('0.7')('anything'), 0.7, 'a bare number still applies to every type');
+});
+
+test('under-threshold confidence falls back to Jev and is recorded as such', async () => {
+  const { run, calls, samples } = setupTyped({
+    hard: { type: 'score', score: 0, probabilities: { 0: 0.34, 1: 0.33, 2: 0.33 } },
+    rev: { type: 'noul', noul: 0.55 },
+  });
+  const r = await run({ user_request: '調一下參數', char_bucket: 's' }, { hard: SCORE_Q, rev: NOUL_Q });
+  assert.deepEqual(calls, [['laya', ['hard', 'rev']], ['jev', ['hard', 'rev']]]);
+  assert.deepEqual(samples.map(s => s.fallback_reason), ['low-confidence', 'low-confidence']);
+  // The teacher's answer is what the caller gets, and it is kept as the label source.
+  assert.deepEqual(r.answers, { hard: { teacher: true }, rev: { teacher: true } });
+  assert.deepEqual(samples.map(s => s.teacher_model), ['cloud', 'cloud']);
+  assert.equal(r.model, 'cloud');
+});
+
+test('the lane does not widen to choice: an unknown choice schema stays on Jev', async () => {
+  const { run, calls } = setupTyped({});
+  const q = { type: 'choice', instructions: 'Which?', criteria: { a: 'a', b: 'b' } };
+  await run({ user_request: '挑一個', char_bucket: 's' }, { pick: q });
+  assert.deepEqual(calls, [['jev', ['pick']]]);
+});
+
+test('maxSoftmax reads choice/score distributions and binary noul, and nothing else', () => {
+  assert.equal(maxSoftmax({ probabilities: { a: 0.2, b: 0.8 } }), 0.8);
+  assert.equal(maxSoftmax({ noul: 0.2 }), 0.8);
+  assert.equal(maxSoftmax({ noul: 0.9 }), 0.9);
+  for (const a of [null, undefined, {}, { probabilities: {} }, { probabilities: null }, { noul: 'x' }]) {
+    assert.equal(maxSoftmax(a), null, `expected null for ${JSON.stringify(a)}`);
+  }
+});
+
+test('the profile lane keeps its own fallback and is not put behind the threshold', async () => {
+  // Gating the fixed schemas too would send most of that pilot's traffic to the
+  // cloud, so a low-confidence task-kind answer must still be served locally.
+  const { run, calls, samples } = setupTyped({
+    kind: { type: 'choice', choice: 'coding', probabilities: { ...Object.fromEntries(
+      Object.keys(TASK_KIND.criteria).map(k => [k, 0])), coding: 0.34, general: 0.33, writing: 0.33 } },
+  });
+  const r = await run({ user_request: '幫我接一個函式', char_bucket: 's' }, { kind: TASK_KIND });
+  assert.deepEqual(calls, [['laya', ['kind']]]);
+  assert.equal(r.model, 'local');
+  assert.equal(samples[0].fallback_reason, null);
+  assert.ok(samples[0].local_confidence < 0.7, 'fixture must be below the threshold to prove the point');
 });

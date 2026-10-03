@@ -46,7 +46,23 @@ export const CONFIG = {
   minReductionChars: 4000,
   askChars: 1200,
   backend: 'auto',
+  // Undefined on purpose: the vendored core owns these defaults (0.5, 25000,
+  // 30000, 300). See `refreshConfig`.
+  keepThreshold: undefined,
+  maxStateTokens: undefined,
+  maxRequestTokens: undefined,
+  truncateHeadChars: undefined,
 };
+
+/**
+ * A number from the environment, or `undefined` when unset or unparseable —
+ * `Number('')` is 0, which would silently mean "keep nothing" for a threshold.
+ */
+function numOrUndef(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
 
 /** Whether the module answers `session.compact` at all; `JEV_COMPACT_ENABLED=0` turns it off. */
 export let ENABLED = true;
@@ -64,9 +80,13 @@ export function refreshConfig(backup = false) {
   CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/${backup ? ZEN_BACKUP.keyName : 'OPENCODE_ZEN_API_KEY.txt'}`;
   // Same endpoint/model pair as hooks/jev.js. Left unread, a typesafe key file
   // was sent to OpenRouter's URL, every judge 401'd, and every compaction fell
-  // back to the slow built-in summary. Unset, each backend keeps its default.
-  CONFIG.endpoint = ENV.JEV_ENDPOINT || (backup ? ZEN_BACKUP.endpoint : '');
-  CONFIG.model = ENV.JEV_MODEL || (backup ? ZEN_BACKUP.model : '');
+  // back to the slow built-in summary. The primary default must name the same
+  // host as the primary key file above (OPENCODE_ZEN_API_KEY): an empty default
+  // let the vendored core fall back to its OpenRouter decisions URL, so a Zen
+  // key reached OpenRouter and every compact 401'd `Missing Authentication
+  // header` (2026-10-01). Keep these three in lockstep with hooks/jev.js.
+  CONFIG.endpoint = ENV.JEV_ENDPOINT || (backup ? ZEN_BACKUP.endpoint : 'https://opencode.ai/zen/v1/systemone');
+  CONFIG.model = ENV.JEV_MODEL || (backup ? ZEN_BACKUP.model : 'jev-1.13-free');
   // Compact when the session passes this much of its context window. This is
   // the "fast" in fast compaction: acting at 60% costs one cheap pass, acting
   // at 100% costs a summary of everything.
@@ -82,6 +102,14 @@ export function refreshConfig(backup = false) {
   // How much of one call/result pair the judge is shown. The judgment is
   // "is this still needed", which the head of a payload answers.
   CONFIG.askChars = Number(ENV.JEV_COMPACT_ASK_CHARS ?? 1200);
+  // The four knobs the retired fast-jev-compaction plugin exposed as userConfig
+  // and this one only inherited as core defaults. Same values, now overridable;
+  // `undefined` means "let the core decide", so an unset name stays the core's
+  // own default rather than this module's copy of it drifting away from it.
+  CONFIG.keepThreshold = numOrUndef(ENV.JEV_COMPACT_KEEP_THRESHOLD);
+  CONFIG.maxStateTokens = numOrUndef(ENV.JEV_COMPACT_MAX_STATE_TOKENS);
+  CONFIG.maxRequestTokens = numOrUndef(ENV.JEV_COMPACT_MAX_REQUEST_TOKENS);
+  CONFIG.truncateHeadChars = numOrUndef(ENV.JEV_COMPACT_TRUNCATE_HEAD);
   // 'auto' detects the shape per transcript; 'anthropic'/'openai' pin a backend.
   CONFIG.backend = ENV.JEV_COMPACT_BACKEND ?? 'auto';
   ENABLED = ENV.JEV_COMPACT_ENABLED !== '0';
@@ -113,6 +141,10 @@ function hydrate($) {
         JEV_COMPACT_PIN_LAST: await $.env.get('JEV_COMPACT_PIN_LAST'),
         JEV_COMPACT_ASK_CHARS: await $.env.get('JEV_COMPACT_ASK_CHARS'),
         JEV_COMPACT_BACKEND: await $.env.get('JEV_COMPACT_BACKEND'),
+        JEV_COMPACT_KEEP_THRESHOLD: await $.env.get('JEV_COMPACT_KEEP_THRESHOLD'),
+        JEV_COMPACT_MAX_STATE_TOKENS: await $.env.get('JEV_COMPACT_MAX_STATE_TOKENS'),
+        JEV_COMPACT_MAX_REQUEST_TOKENS: await $.env.get('JEV_COMPACT_MAX_REQUEST_TOKENS'),
+        JEV_COMPACT_TRUNCATE_HEAD: await $.env.get('JEV_COMPACT_TRUNCATE_HEAD'),
       });
     } catch {
       /* no `$.env` (Node): ENV already came from process.env */
@@ -194,6 +226,62 @@ export async function judgePair($, key, userRequest, pair) {
   } catch {
     return 'keep';
   }
+}
+
+/**
+ * `judgePair` over many pairs: the same bounded `pairState` per pair, but up to
+ * `per` pairs share one request and the requests run in parallel. One call per
+ * pair made a 300-pair Hermes pass 300 sequential round trips — past its 20 s
+ * subprocess deadline, and through Zen free's daily quota in a few passes.
+ * Resolves to `{ choices, failed }`: `failed` is the first non-ok HTTP status
+ * (or 'network'); every pair a failed request covered answers 'keep'.
+ */
+export async function judgePairs($, key, userRequest, pairs, per = 40) {
+  const choices = pairs.map(() => 'keep');
+  let failed = null;
+  const starts = [];
+  for (let i = 0; i < pairs.length; i += per) starts.push(i);
+  await Promise.all(starts.map(async (start) => {
+    const ids = pairs.slice(start, start + per).map((_, j) => `p${start + j}`);
+    const state = { user_request: userRequest, pairs: {} };
+    const questions = {};
+    ids.forEach((id, j) => {
+      state.pairs[id] = pairState(pairs[start + j]);
+      questions[id] = {
+        type: 'choice',
+        instructions: `state.pairs.${id} is a tool call and its result from earlier in a coding session. Decide whether the model still needs its full payload to continue the current task.`,
+        criteria: CRITERIA,
+      };
+    });
+    let res;
+    try {
+      res = await $.http.fetch(CONFIG.endpoint || 'https://opencode.ai/zen/v1/systemone', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model: CONFIG.model || 'jev-1.13-free', state, questions }),
+      });
+    } catch {
+      failed ??= 'network';
+      return;
+    }
+    if (!res || !res.ok) {
+      failed ??= res?.status ?? 'network';
+      return;
+    }
+    try {
+      const answers = JSON.parse(res.text)?.answers ?? {};
+      ids.forEach((id, j) => {
+        if (answers[id]?.choice === 'drop') choices[start + j] = 'drop';
+      });
+    } catch {
+      /* unreadable answer: those pairs stay 'keep' */
+    }
+  }));
+  return { choices, failed };
 }
 
 /** The newest real user turn, which is what "still needed" is judged against. */

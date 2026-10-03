@@ -5,20 +5,26 @@
 // This is deliberately a batch job and not part of the request path. A hook
 // process would cold-load the 540MB ONNX graph on every prompt and spend the
 // caller's whole deadline on it; here the session loads once and answers as
-// many records as it is given.
+// many records as it is given. Zero tokens: only local weights run here.
 //
 //   node scripts/laya-label-corpus.mjs --limit 50
 //   node scripts/laya-label-corpus.mjs --dry-run     # score, write nothing
 //
 // It writes `local_model` / `local_answer` and leaves `label` alone: a teacher
 // answer is a suggestion, so promotion to a training set stays a human step.
-import { readFileSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
+//
+// It also writes a cumulative per-question agreement report (JEV_LAYA_REPORT,
+// default ~/.jevgate/laya-agreement.json). Grouped by question_digest + question
+// id, because a digest is one exact label space: the jev-route question's
+// criteria change whenever the route table does, and answers across two label
+// spaces do not compare.
+import { readFileSync, writeFileSync, renameSync, existsSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { makeLayaAdapter } from '../gateway/src/adapters.js';
 import { TEACHER_CORPUS_FILE } from '../gateway/src/teacher-corpus.js';
 
 const FILE = process.env.JEV_TEACHER_CORPUS ?? TEACHER_CORPUS_FILE;
+const REPORT = process.env.JEV_LAYA_REPORT ?? join(homedir(), '.jevgate', 'laya-agreement.json');
 const MODEL_DIR = process.env.JEV_LAYA_MODEL_DIR
   ?? join(homedir(), '.jevgate', 'laya-multilingual-int8');
 const limitArg = process.argv.indexOf('--limit');
@@ -27,51 +33,101 @@ const dryRun = process.argv.includes('--dry-run');
 
 if (!existsSync(FILE)) {
   process.stdout.write(`no teacher corpus at ${FILE} — run the gateway with JEV_PROVIDER=zen first\n`);
-  process.exitCode = 0;
+  process.exit(0);
 }
 
-const records = readFileSync(FILE, 'utf8').split('\n').filter(Boolean).map((l) => {
+const parse = (text) => text.split('\n').filter(Boolean).map((l) => {
   try { return JSON.parse(l); } catch { return null; }
 }).filter(Boolean);
+
+// The gateway keeps appending while this runs; remember where our snapshot ends
+// so those rows can be carried over instead of overwritten.
+const initial = readFileSync(FILE);
+const records = parse(initial.toString('utf8'));
 
 // Only the records Laya has never been asked about; re-scoring a fixed corpus
 // is a different job and needs its own output.
 const pending = records.filter((r) => !r.local_answer).slice(0, LIMIT);
 process.stdout.write(`corpus=${records.length} pending=${pending.length} model_dir=${MODEL_DIR}\n`);
-if (!pending.length) process.exit(0);
 
-const laya = makeLayaAdapter({ modelDir: MODEL_DIR });
 let scored = 0, agreed = 0, failed = 0;
-for (const record of pending) {
-  try {
-    const r = await laya(record.state, record.questions);
-    record.local_model = r.model ?? 'laya';
-    record.local_answer = r.answers ?? null;
-    scored++;
-    if (sameAnswer(r.answers, record.teacher_answer)) agreed++;
-  } catch (e) {
-    // A local miss is a missing data point, not a job failure: skip the
-    // record and keep going so one bad row cannot cost the whole batch.
-    failed++;
-    process.stdout.write(`  skip ${record.id}: ${e?.message ?? e}\n`);
+if (pending.length) {
+  // Lazy: a report-only run (nothing pending) never loads the 540MB graph.
+  const { makeLayaAdapter } = await import('../gateway/src/adapters.js');
+  const laya = makeLayaAdapter({ modelDir: MODEL_DIR });
+  for (const record of pending) {
+    try {
+      const r = await laya(record.state, record.questions);
+      record.local_model = r.model ?? 'laya';
+      record.local_answer = r.answers ?? null;
+      scored++;
+      if (sameAnswer(r.answers, record.teacher_answer)) agreed++;
+    } catch (e) {
+      // A local miss is a missing data point, not a job failure: skip the
+      // record and keep going so one bad row cannot cost the whole batch.
+      failed++;
+      process.stdout.write(`  skip ${record.id}: ${e?.message ?? e}\n`);
+    }
   }
+  await laya.release?.();
 }
-if (!dryRun) {
-  writeFileSync(FILE, records.map((r) => JSON.stringify(r)).join('\n') + '\n', { mode: 0o600 });
-  chmodSync(FILE, 0o600);
+if (!dryRun && scored) {
+  // ponytail: append-during-rename window is the few ms between this re-read and
+  // renameSync; a row written in it is lost. Add a lock shared with
+  // recordTeacherSample if the corpus ever gets concurrent writers at 03:10.
+  const appended = readFileSync(FILE).subarray(initial.length).toString('utf8');
+  const tmp = `${FILE}.tmp-${process.pid}`;
+  writeFileSync(tmp, records.map((r) => JSON.stringify(r)).join('\n') + '\n' + appended, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, FILE);
 }
 const rate = scored ? (agreed / scored) : 0;
 process.stdout.write(`${dryRun ? '[dry-run] ' : ''}scored=${scored} agree=${agreed} (${(rate * 100).toFixed(1)}%) failed=${failed}\n`);
+
+const groups = agreement(records);
+for (const [key, g] of Object.entries(groups)) {
+  process.stdout.write(`  ${key} n=${g.n} agree=${g.agree} (${(g.rate * 100).toFixed(1)}%)\n`);
+}
+if (!dryRun) {
+  writeFileSync(REPORT, JSON.stringify({ ts: new Date().toISOString(), corpus: records.length, groups }, null, 2) + '\n', { mode: 0o600 });
+}
 process.stdout.write('label stays null — promotion to a training set is a human step.\n');
+
+const DONE = process.env.JEV_LAYA_LABEL_DONE ?? join(homedir(), '.jevgate', 'laya-label.done');
+writeFileSync(DONE, JSON.stringify({
+  ts: new Date().toISOString(),
+  epoch: Math.floor(Date.now() / 1000),
+  corpus: records.length,
+  scored,
+  failed,
+  pid: process.pid,
+}) + '\n', { mode: 0o600 });
+
+/** Cumulative agreement per `<digest12>/<question id>` over records that carry both answers. */
+function agreement(rows) {
+  const out = {};
+  for (const r of rows) {
+    if (!r.local_answer || !r.teacher_answer) continue;
+    for (const id of Object.keys(r.teacher_answer)) {
+      const key = `${String(r.question_digest).slice(0, 12)}/${id}`;
+      const g = (out[key] ??= { n: 0, agree: 0, rate: 0 });
+      g.n++;
+      if (sameOne(r.local_answer[id], r.teacher_answer[id])) g.agree++;
+      g.rate = g.agree / g.n;
+    }
+  }
+  return out;
+}
 
 function sameAnswer(a, b) {
   if (!a || !b) return false;
-  return Object.keys(b).every((id) => {
-    const x = a[id], y = b[id];
-    if (!x || !y) return false;
-    if (x.choice !== undefined) return x.choice === y.choice;
-    if (x.score !== undefined) return Math.round(x.score) === Math.round(y.score);
-    if (x.noul !== undefined) return Math.abs(x.noul - y.noul) < 0.2;
-    return false;
-  });
+  return Object.keys(b).every((id) => sameOne(a[id], b[id]));
+}
+
+function sameOne(x, y) {
+  if (!x || !y) return false;
+  if (x.choice !== undefined) return x.choice === y.choice;
+  if (x.score !== undefined) return Math.round(x.score) === Math.round(y.score);
+  if (x.noul !== undefined) return Math.abs(x.noul - y.noul) < 0.2;
+  return false;
 }

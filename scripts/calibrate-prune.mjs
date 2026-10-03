@@ -33,7 +33,7 @@ const SWEEP = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
 
 function readKey() {
   const path = process.env.OPENROUTER_API_KEY_FILE
-    ?? `${process.env.HOME}/.creds/kv/OPENROUTER_API_KEY.txt`;
+    ?? `${process.env.HOME}/.creds/kv/OPENROUTER_SECOND_API_KEY.txt`;
   return readFileSync(path, 'utf8').trim();
 }
 

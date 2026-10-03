@@ -8,13 +8,13 @@
 #   4. secrets clean: no API key / token / request payload in any ledger
 #
 # Exit 0 and prints:
-#   repo-tests=pass plugin-tests=pass koko=loaded mannie=loaded xuanjun=loaded secrets=clean
+#   repo-tests=pass plugin-tests=pass coco=loaded mannie=loaded xuanjun=loaded secrets=clean
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 HERMES_AGENT="${HERMES_AGENT:-$HOME/.hermes/hermes-agent}"
 PY="${HERMES_AGENT}/.venv/bin/python3"
-PROFILES=(koko mannie xuanjun)
+PROFILES=(coco mannie xuanjun)
 FAIL=0
 
 pass() { echo "$1"; }

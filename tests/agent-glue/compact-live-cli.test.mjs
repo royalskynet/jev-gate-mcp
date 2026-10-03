@@ -26,7 +26,9 @@ function startServer(status = 200) {
       // Connection: close so undici's keep-alive pool releases the socket;
       // otherwise server.close() waits on a live connection and the test hangs.
       res.writeHead(status, { 'Content-Type': 'application/json', 'Connection': 'close' });
-      res.end(JSON.stringify({ answers: { q: { choice: 'drop' } } }));
+      // Drop every question asked, whatever the batch: judgePairs keys them p0, p1, ...
+      const answers = Object.fromEntries(Object.keys(JSON.parse(body).questions ?? {}).map((k) => [k, { choice: 'drop' }]));
+      res.end(JSON.stringify({ answers }));
     });
   });
   return new Promise((resolve, reject) => {
@@ -99,8 +101,10 @@ test('compact-live: no payload or user request crosses the wire, even with judge
     assert.ok(bodies.length > 0, 'the judge must have been called');
     for (const body of bodies) {
       assert.equal(body.state.user_request, '', 'user request must stay empty');
-      assert.equal(body.state.pair.result, '', 'no result payload crosses the wire');
-      assert.equal(body.state.pair.arguments, '', 'no argument payload crosses the wire');
+      for (const pair of Object.values(body.state.pairs)) {
+        assert.equal(pair.result, '', 'no result payload crosses the wire');
+        assert.equal(pair.arguments, '', 'no argument payload crosses the wire');
+      }
     }
   } finally {
     server.close();
@@ -131,6 +135,39 @@ test('compact-live: a 429 judge aborts the pass after one call, reason judge-htt
     assert.equal(v.compacted, false);
     assert.equal(v.reason, 'judge-http-429');
     assert.equal(bodies.length, 1, 'no further judge calls after the first failure');
+  } finally {
+    server.close();
+    server.closeAllConnections();
+  }
+});
+
+// One request per pair made a 300-pair Hermes pass 300 sequential round trips:
+// past the 20 s subprocess deadline and through Zen free's daily quota. Pairs
+// are now batched (40 per request), so 60 pairs cost 2 requests, not 60.
+test('compact-live: many pairs are judged in batched requests, not one each', async () => {
+  const { server, bodies, port } = await startServer();
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-compact-live-'));
+    const keyFile = path.join(dir, 'key.txt');
+    fs.writeFileSync(keyFile, 'test-key');
+    const messages = bigMessages();
+    const extra = [];
+    for (let k = 0; k < 59; k++) {
+      extra.push(
+        { role: 'assistant', content: '', tool_calls: [{ id: `m${k}`, function: { name: 'Read', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: `m${k}`, content: 'z'.repeat(500) },
+      );
+    }
+    messages.splice(3, 0, ...extra);
+    const r = await runCli(
+      { messages },
+      { JEV_ENDPOINT: `http://127.0.0.1:${port}/zen/v1/systemone`, JEV_API_KEY_FILE: keyFile },
+    );
+    assert.equal(r.status, 0, `stderr=${r.stderr}`);
+    const v = JSON.parse(r.stdout);
+    assert.equal(bodies.length, 2, `60 pairs must cost 2 requests, got ${bodies.length}`);
+    assert.equal(v.compacted, true);
+    assert.ok(v.reducedBy > 9000 + 59 * 500, `every pair's drop verdict must apply, reducedBy=${v.reducedBy}`);
   } finally {
     server.close();
     server.closeAllConnections();

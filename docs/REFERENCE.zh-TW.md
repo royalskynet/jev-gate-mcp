@@ -265,7 +265,7 @@ hook 載入了**。hook ledger 空著、CLI ledger 很忙，正是「hook 從沒
 ```sh
 npm install
 claude plugin validate .
-node --test              # 'live' 測試需要 ~/.creds/kv/OPENROUTER_API_KEY.txt
+node --test              # 'live' 測試需要 ~/.creds/kv/OPENROUTER_SECOND_API_KEY.txt
 ```
 
 然後在 `~/.claude/settings.json` 註冊成 local marketplace：
@@ -292,7 +292,7 @@ Zen 免費層有額度（2026-09-30 實測：429 `FreeUsageLimitError`，retry-a
 不要偽造官方 client header 繞過。
 Zen 一失敗就把 `cooldown_until` 寫進 `~/.jevgate/zen-free-status.json`（429 取
 retry-after，其他錯誤 5 分鐘）；冷卻期間 gateway、Stop gate、prune、compact 都改問
-OpenRouter（`~/.creds/kv/OPENROUTER_API_KEY.txt`，gateway 可用
+OpenRouter（`~/.creds/kv/OPENROUTER_SECOND_API_KEY.txt`，gateway 可用
 `JEV_ZEN_BACKUP_KEY_FILE` 改），到期自動回 Zen。沒有 OpenRouter key 就維持 fail closed。
 顯式設了 `JEV_ENDPOINT`／`JEV_MODEL`／`JEV_API_KEY_FILE` 的 hook 不跟隨切換。
 `scripts/zen-free-probe.mjs` 回 0＝Zen 主用、2＝冷卻中由備援頂、1＝失效且無備援。
@@ -413,7 +413,11 @@ transport 任何失敗都保持現狀，絕不往上或往下猜。
 | 給 judge 看的 payload 開頭 | `JEV_COMPACT_ASK_CHARS` | 1,200 |
 | 關閉 | `JEV_COMPACT_ENABLED=0` | 預設開 |
 | 後端 | `JEV_COMPACT_BACKEND` | `auto`；可固定 `anthropic`／`openai` |
-| judge 端點／模型 | `JEV_ENDPOINT`／`JEV_MODEL`（與 prune 共用） | Anthropic 後端預設 OpenRouter decisions／`~typesafe/jev-latest`；非 OpenRouter 端點移除 `provider` 欄位 |
+| 保留機率門檻 | `JEV_COMPACT_KEEP_THRESHOLD` | 0.5（低於此機率的 call／result 刪掉） |
+| state token 上限 | `JEV_COMPACT_MAX_STATE_TOKENS` | 25,000 |
+| 單次請求 token 上限 | `JEV_COMPACT_MAX_REQUEST_TOKENS` | 30,000（state＋questions） |
+| 被刪 result 保留的開頭 | `JEV_COMPACT_TRUNCATE_HEAD` | 300 字元（0＝只留註記） |
+| judge 端點／模型 | `JEV_ENDPOINT`／`JEV_MODEL`（與 prune 共用） | 與 `hooks/jev.js` 同一組：`https://opencode.ai/zen/v1/systemone`／`jev-1.13-free`；非 OpenRouter 端點移除 `provider` 欄位 |
 | 工作階段顯示結果訊息 | `JEV_UI_LOG=1` | 預設關閉；持久紀錄見 `~/.openclaw/state/jev-*.log` |
 
 契約在 `agent-glue/src/compact.js`，是契約不是調參：user/assistant 文字
