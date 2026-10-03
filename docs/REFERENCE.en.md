@@ -320,7 +320,7 @@ loop would have bought.
 ```sh
 npm install
 claude plugin validate .
-node --test              # 'live' tests need ~/.creds/kv/OPENROUTER_API_KEY.txt
+node --test              # 'live' tests need ~/.creds/kv/OPENROUTER_SECOND_API_KEY.txt
 ```
 
 Then register it as a local marketplace in `~/.claude/settings.json`:
@@ -349,7 +349,7 @@ balance does not lift it, and OpenCode Go does not include Jev
 (`/zen/go/v1/models` lists none). Do not forge official client headers. Any Zen failure writes `cooldown_until` to
 `~/.jevgate/zen-free-status.json` (retry-after for a 429, 5 minutes otherwise);
 until it lapses the gateway, Stop gate, prune and compact ask OpenRouter
-(`~/.creds/kv/OPENROUTER_API_KEY.txt`; the gateway honours
+(`~/.creds/kv/OPENROUTER_SECOND_API_KEY.txt`; the gateway honours
 `JEV_ZEN_BACKUP_KEY_FILE`), then return to Zen. No OpenRouter key keeps the old
 fail-closed behaviour. A hook with an explicit `JEV_ENDPOINT` / `JEV_MODEL` /
 `JEV_API_KEY_FILE` does not follow the swap. `scripts/zen-free-probe.mjs` exits

@@ -4,7 +4,7 @@
   "apiKeyFile": "${HOME}/.creds/kv/OPENCODE_ZEN_API_KEY.txt",
   "backupBaseUrl": "https://openrouter.ai/api",
   "backupModel": "typesafe/jev-1.13",
-  "backupKeyFile": "${HOME}/.creds/kv/OPENROUTER_API_KEY.txt",
+  "backupKeyFile": "${HOME}/.creds/kv/OPENROUTER_SECOND_API_KEY.txt",
   "zenStatusFile": "${HOME}/.jevgate/zen-free-status.json",
   "timeoutMs": 2000,
   "maxRetries": 0,

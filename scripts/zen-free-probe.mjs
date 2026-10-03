@@ -21,7 +21,7 @@ const KEY_FILE = process.env.JEV_API_KEY_FILE
   ?? join(homedir(), '.creds', 'kv', 'OPENCODE_ZEN_API_KEY.txt');
 
 const BACKUP_KEY_FILE = process.env.JEV_ZEN_BACKUP_KEY_FILE
-  ?? join(homedir(), '.creds', 'kv', 'OPENROUTER_API_KEY.txt');
+  ?? join(homedir(), '.creds', 'kv', 'OPENROUTER_SECOND_API_KEY.txt');
 const say = (line) => { if (!quiet) process.stdout.write(line + '\n'); };
 
 const QUESTIONS = {

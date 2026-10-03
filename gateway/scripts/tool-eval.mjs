@@ -131,7 +131,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()
     process.stdout.write(JSON.stringify({ mode: 'offline-config-validation', ok: cfg.ok, errors: cfg.errors, positive: cfg.positive, negative: cfg.negative }, null, 2) + '\n');
     process.exit(cfg.ok ? 0 : 1);
   }
-  const keyFile = process.env.JEV_API_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENROUTER_API_KEY.txt');
+  const keyFile = process.env.JEV_API_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENROUTER_SECOND_API_KEY.txt');
   let apiKey;
   try { apiKey = readFileSync(keyFile, 'utf8').trim(); } catch { apiKey = null; }
   if (!apiKey) { process.stderr.write('tool-eval live: no OpenRouter key; run offline only\n'); process.exit(2); }

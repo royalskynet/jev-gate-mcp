@@ -26,7 +26,7 @@ export const DEFAULTS = Object.freeze({
   fallbackProvider: process.env.JEV_FALLBACK_PROVIDER ?? null,
   // OpenRouter key that backs Zen during its free-quota cooldown. A missing
   // file just means no backup (Zen failures then fail closed as before).
-  zenBackupKeyFile: process.env.JEV_ZEN_BACKUP_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENROUTER_API_KEY.txt'),
+  zenBackupKeyFile: process.env.JEV_ZEN_BACKUP_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENROUTER_SECOND_API_KEY.txt'),
   fakeMode: process.env.JEV_FAKE_MODE ?? FakeMode.SUCCESS,
   killSwitch: (process.env.JEV_KILL_SWITCH ?? '') === '1',
   registryDir: process.env.JEV_POLICY_DIR ?? null,

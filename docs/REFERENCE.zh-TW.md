@@ -265,7 +265,7 @@ hook 載入了**。hook ledger 空著、CLI ledger 很忙，正是「hook 從沒
 ```sh
 npm install
 claude plugin validate .
-node --test              # 'live' 測試需要 ~/.creds/kv/OPENROUTER_API_KEY.txt
+node --test              # 'live' 測試需要 ~/.creds/kv/OPENROUTER_SECOND_API_KEY.txt
 ```
 
 然後在 `~/.claude/settings.json` 註冊成 local marketplace：
@@ -292,7 +292,7 @@ Zen 免費層有額度（2026-09-30 實測：429 `FreeUsageLimitError`，retry-a
 不要偽造官方 client header 繞過。
 Zen 一失敗就把 `cooldown_until` 寫進 `~/.jevgate/zen-free-status.json`（429 取
 retry-after，其他錯誤 5 分鐘）；冷卻期間 gateway、Stop gate、prune、compact 都改問
-OpenRouter（`~/.creds/kv/OPENROUTER_API_KEY.txt`，gateway 可用
+OpenRouter（`~/.creds/kv/OPENROUTER_SECOND_API_KEY.txt`，gateway 可用
 `JEV_ZEN_BACKUP_KEY_FILE` 改），到期自動回 Zen。沒有 OpenRouter key 就維持 fail closed。
 顯式設了 `JEV_ENDPOINT`／`JEV_MODEL`／`JEV_API_KEY_FILE` 的 hook 不跟隨切換。
 `scripts/zen-free-probe.mjs` 回 0＝Zen 主用、2＝冷卻中由備援頂、1＝失效且無備援。

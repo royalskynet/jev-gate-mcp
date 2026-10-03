@@ -176,7 +176,7 @@ test('the primary endpoint/model defaults name the same host as the primary key 
   // Backup is the OpenRouter pair, and all three must switch together.
   refreshConfig(true);
   assert.match(CONFIG.endpoint, /^https:\/\/openrouter\.ai\//);
-  assert.match(CONFIG.apiKeyFile, /OPENROUTER_API_KEY\.txt$/);
+  assert.match(CONFIG.apiKeyFile, /OPENROUTER_SECOND_API_KEY\.txt$/);
   refreshConfig();
 });
 

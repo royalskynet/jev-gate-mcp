@@ -52,7 +52,7 @@ export function fillEnv(values) {
 export const ZEN_BACKUP = Object.freeze({
   endpoint: 'https://openrouter.ai/api/v1/systemone',
   model: 'typesafe/jev-1.13',
-  keyName: 'OPENROUTER_API_KEY.txt',
+  keyName: 'OPENROUTER_SECOND_API_KEY.txt',
 });
 
 /** True when the status text's cooldown is still ahead of `now` (ms). */
