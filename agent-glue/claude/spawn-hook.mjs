@@ -16,7 +16,6 @@
  * list is advisory only and never affects model choice.
  */
 import { triage, DEFAULT_TRIAGE } from '../src/triage.js';
-import { liveTransport } from '../src/live.js';
 import { ENV, fillEnv } from './env.mjs';
 
 // The shipped tier ladder, cheapest first. Same mapping the community
@@ -128,11 +127,14 @@ export async function spawnDecision(input = {}, deps = {}) {
     return { change: false, model: undefined, skills: [], decision: null, reason: 'fork' };
   }
   const catalog = input.skills ?? deps.skillCatalog ?? [];
-  // A missing transport is the silent failure this hook shipped with: triage
-  // fail-opens to status quo and an enabled hook looks identical to a disabled
-  // one. Tests inject their own; production gets the in-process gateway (null
-  // when there is no credential, which still fail-opens — but on purpose).
-  const transport = deps.transport ?? (await liveTransport()) ?? undefined;
+  // Tests inject a transport. The hook itself has none: the in-process gateway
+  // (`src/live.js`) needs node:fs, a hooks module has no Node, and the dynamic
+  // import that used to reach it is refused by the engine from 2.1.289 — it
+  // took the whole aggregator down. Without a transport triage fail-opens to
+  // status quo, which is what the hook did before anyway (the import always
+  // landed in live.js's catch).
+  // ponytail: no live triage inside the hook; a `$.http.fetch` transport is the upgrade path.
+  const transport = deps.transport;
   const decision = await triage(
     {
       text: input.prompt ?? '',

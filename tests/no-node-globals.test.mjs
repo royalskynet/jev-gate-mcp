@@ -6,31 +6,75 @@ import { dirname, join } from 'node:path';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
-/**
- * Every file the hooks module pulls in at load time. `hooks/index.js` is a
- * single aggregator, so one of these touching a Node global takes all seven
- * hooks down — and `claude plugin validate` passes anyway, because it checks
- * the shape of the `$` calls and not what else the source names.
- *
- * ponytail: a hand-written list, not a parsed import graph. It is five files;
- * a new import here is a line in this list, and a stale list fails loud the
- * first time someone adds one without reading this comment.
- */
-const LOADED_BY_THE_HOOK = [
-  'hooks/index.js',
-  'hooks/jev.js',
-  'agent-glue/claude/env.mjs',
-  'agent-glue/claude/spawn-hook.mjs',
-  'agent-glue/claude/compact-hook.mjs',
-  'agent-glue/src/compact.js',
-  'agent-glue/src/triage.js',
-  'agent-glue/src/live.js',
-];
-
 /** Strip block and line comments so a `process` in prose does not fail the test. */
 function code(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 }
+
+/**
+ * Every file the hooks module pulls in at load time, found by following the
+ * static `import … from './x'` declarations out of `hooks/index.js`. It is a
+ * single aggregator, so one of these failing takes every hook down — and
+ * `claude plugin validate` passed the 2026-09-23 break, because it checks the
+ * shape of the `$` calls and not what else the source names.
+ *
+ * This used to be a hand-written list. It went stale twice without failing:
+ * compact-anthropic.mjs and the vendored fast-jev core were never on it.
+ */
+function loadedByTheHook(entry = 'hooks/index.js') {
+  const seen = new Set();
+  const walk = (relative) => {
+    if (seen.has(relative)) return;
+    seen.add(relative);
+    const source = code(readFileSync(join(ROOT, relative), 'utf8'));
+    for (const m of source.matchAll(/^\s*(?:import|export)\b[^'"]*?\bfrom\s*['"](\.{1,2}\/[^'"]+)['"]/gm)) {
+      walk(join(dirname(relative), m[1]));
+    }
+  };
+  walk(entry);
+  return [...seen];
+}
+
+const LOADED_BY_THE_HOOK = loadedByTheHook();
+
+/**
+ * Node names a file may keep, each with why it never runs in the hook worker.
+ * env.mjs: the one guarded `typeof process` reader. vendor client.js:
+ * `options.apiKey ?? process.env…` — compact-hook returns before `askerFor`
+ * when the key is empty, so the `??` always short-circuits. Vendored, not
+ * edited here (see vendor/fast-jev/VENDORED.md).
+ */
+const ALLOWED = {
+  'agent-glue/claude/env.mjs': ['process'],
+  'agent-glue/vendor/fast-jev/client.js': ['process'],
+};
+
+test('the import walk reaches the files the 2026-09 list missed', () => {
+  for (const relative of [
+    'agent-glue/claude/compact-anthropic.mjs',
+    'agent-glue/vendor/fast-jev/client.js',
+    'gateway/src/classification-profiles.js',
+  ]) {
+    assert.ok(LOADED_BY_THE_HOOK.includes(relative), `${relative} not reached from hooks/index.js`);
+  }
+});
+
+// 2026-10-05: Claude Code 2.1.289 refuses a dynamic import() anywhere in the
+// module's closure ("a hooks module imports its own files with an import
+// declaration"), and the aggregator took every hook down with it. The one
+// offender was spawn-hook -> src/live.js, which lazily imported the Node-only
+// gateway; it is out of the closure now and must stay out.
+test('the hooks module chain has no dynamic import()', () => {
+  for (const relative of LOADED_BY_THE_HOOK) {
+    const source = code(readFileSync(join(ROOT, relative), 'utf8'));
+    assert.doesNotMatch(
+      source,
+      /\bimport\s*\(/,
+      `${relative} calls import(); the engine refuses the whole hooks module for it. Use a static import declaration, or keep the file out of hooks/index.js's closure.`,
+    );
+  }
+  assert.ok(!LOADED_BY_THE_HOOK.includes('agent-glue/src/live.js'), 'src/live.js is back in the hooks closure');
+});
 
 // The regression this file exists for: on 2026-09-23 `hooks/jev.js` read
 // `process.env` at module scope, so the module threw
@@ -44,7 +88,7 @@ test('the hooks module chain names no Node global', () => {
     const source = code(readFileSync(join(ROOT, relative), 'utf8'));
     const offenders = [...source.matchAll(/\b(process|require|__dirname|__filename|Buffer)\b/g)]
       .map((m) => m[1])
-      .filter((name) => !(relative.endsWith('claude/env.mjs') && name === 'process'));
+      .filter((name) => !(ALLOWED[relative] ?? []).includes(name));
     assert.deepEqual(
       offenders,
       [],
