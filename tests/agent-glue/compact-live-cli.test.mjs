@@ -174,6 +174,51 @@ test('compact-live: many pairs are judged in batched requests, not one each', as
   }
 });
 
+// The default (Zen) path can't point at the fake server, so the child gets a
+// preloaded fetch stub instead: Zen answers 429, OpenRouter answers drop. Each
+// request's host is appended to HITS so the test can see the order.
+const STUB = `data:text/javascript,${encodeURIComponent(`
+  import { appendFileSync } from 'node:fs';
+  globalThis.fetch = async (url, init) => {
+    const host = new URL(url).host;
+    appendFileSync(process.env.HITS, host + '\\n');
+    if (host === 'opencode.ai') return new Response('{}', { status: 429 });
+    const q = Object.keys(JSON.parse(init.body).questions ?? {});
+    return new Response(JSON.stringify({ answers: Object.fromEntries(q.map((k) => [k, { choice: 'drop' }])) }), { status: 200 });
+  };
+`)}`;
+
+// 2026-10-01: Zen ran dry at 10:33Z, the hourly probe wrote the cooldown at
+// 10:39Z, and Hermes ate four 429s in between because only the probe and the
+// gateway ever wrote the file. compact-live now starts the cooldown itself.
+test('compact-live: a Zen 429 starts the cooldown and the backup answers the same pass', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-compact-live-home-'));
+  fs.mkdirSync(path.join(home, '.creds', 'kv'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.creds', 'kv', 'OPENCODE_ZEN_API_KEY.txt'), 'zen-test-key');
+  fs.writeFileSync(path.join(home, '.creds', 'kv', 'OPENROUTER_SECOND_API_KEY.txt'), 'or-test-key');
+  const statusFile = path.join(home, 'zen-free-status.json');
+  const hits = path.join(home, 'hits.txt');
+  const r = await new Promise((resolve, reject) => {
+    const env = { ...process.env, HOME: home, HITS: hits, JEV_ZEN_STATUS_FILE: statusFile };
+    for (const k of ['JEV_ENDPOINT', 'JEV_MODEL', 'JEV_API_KEY_FILE']) delete env[k];
+    const child = spawn(process.execPath, ['--import', STUB, CLI, 'compact-live'], { env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c) => { stdout += c; });
+    child.stderr.on('data', (c) => { stderr += c; });
+    child.on('error', reject);
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+    child.stdin.end(JSON.stringify({ messages: bigMessages() }));
+  });
+  assert.equal(r.status, 0, `stderr=${r.stderr}`);
+  const v = JSON.parse(r.stdout);
+  assert.equal(v.compacted, true, `reason=${v.reason}`);
+  assert.deepEqual(fs.readFileSync(hits, 'utf8').trim().split('\n'), ['opencode.ai', 'openrouter.ai']);
+  const status = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
+  assert.equal(status.ok, false);
+  assert.ok(status.cooldown_until > Date.now(), 'the next call must skip Zen');
+});
+
 test('compact-live: no key file and no env key -> reason "no key", exit 0', async () => {
   const r = await runCli(
     { messages: bigMessages() },

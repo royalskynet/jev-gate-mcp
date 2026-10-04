@@ -33,6 +33,7 @@ import { compactMessages, verifyCompletion, reviewDiff, route, describeCandidate
 import { pruneCommand } from './src/prune.js';
 import { apiKey, judgePairs, refreshConfig } from './claude/compact-hook.mjs';
 import { followsZen, zenCooling } from './claude/env.mjs';
+import { ZEN_STATUS_FILE, recordZenStatus } from '../gateway/src/zen-status.js';
 
 /**
  * Node-side `$` for the shared judge, written the same way as
@@ -107,9 +108,11 @@ switch (sub) {
     const { messages = [], pinFirst, pinLast, minReductionChars } = payload;
     // Zen free in its quota cooldown: ask OpenRouter until it lapses, as the
     // Claude Code hook does. Without this Hermes got 429 for the whole cooldown.
+    let onBackup = false;
     if (followsZen()) {
-      const status = await readFile(`${process.env.HOME}/.jevgate/zen-free-status.json`, 'utf8').catch(() => '');
-      refreshConfig(zenCooling(status, Date.now()));
+      const status = await readFile(ZEN_STATUS_FILE, 'utf8').catch(() => '');
+      onBackup = zenCooling(status, Date.now());
+      refreshConfig(onBackup);
     }
     const key = await apiKey(node$, {});
     if (!key) {
@@ -121,7 +124,16 @@ switch (sub) {
     // requests (judgePairs), not one sequential round trip each.
     const pairs = [];
     await compactMessages({ ...opts, judge: async (pair) => { pairs.push(pair); return 'keep'; } });
-    const { choices, failed } = await judgePairs(node$, key, '', pairs);
+    let { choices, failed } = await judgePairs(node$, key, '', pairs);
+    // Zen ran out before the hourly probe noticed (2026-10-01: four 429s in the
+    // 36 min before it did). Start the cooldown here and answer from the backup
+    // now; the probe later overwrites the guessed hour with the real retry-after.
+    if (failed === 429 && followsZen() && !onBackup) {
+      recordZenStatus(false, { error: 'HTTP 429 (agent-glue compact-live)', error_class: 'quota', cooldown_until: Date.now() + 60 * 60_000 });
+      refreshConfig(true);
+      const backupKey = await apiKey(node$, {});
+      if (backupKey) ({ choices, failed } = await judgePairs(node$, backupKey, '', pairs));
+    }
     // ponytail: pass 2 replays verdicts by call order — compactMessages walks
     // pairs in Map insertion order, so its i-th judge call is pass 1's i-th pair.
     let i = 0;
