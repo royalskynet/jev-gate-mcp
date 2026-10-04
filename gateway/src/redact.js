@@ -18,6 +18,8 @@ const PATTERNS = [
   ['aws', /\bAKIA[0-9A-Z]{16}\b/g],
   ['slack', /\bxox[abprs]-[A-Za-z0-9-]{10,}/g],
   ['google', /\bAIza[0-9A-Za-z_-]{35}\b/g],
+  ['groq', /\bgsk_[A-Za-z0-9]{40,}/g],
+  ['telegram', /\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b/g],
   ['jwt', /\beyJ[\w-]{8,}\.eyJ[\w-]{8,}\.[\w-]{8,}/g],
   ['bearer', /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/g],
 ];

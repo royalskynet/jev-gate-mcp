@@ -20,6 +20,13 @@ test('redact masks known key shapes at any depth and leaves prose alone', () => 
   assert.equal(redact('sk-or-v1-short and task-ant-farm'), 'sk-or-v1-short and task-ant-farm');
 });
 
+test('redact masks groq and telegram bot tokens, not their near-misses', () => {
+  const groq = 'gsk' + '_' + 'Q'.repeat(52);
+  const tg = '1234567890' + ':' + 'AA' + 'b'.repeat(33);
+  assert.equal(redact(`g ${groq} t ${tg}`), 'g [REDACTED:groq] t [REDACTED:telegram]');
+  assert.equal(redact('gsk_x 12345:AAshort'), 'gsk_x 12345:AAshort');
+});
+
 // The incident: a pasted key in a hook prompt reached the cloud teacher and the
 // teacher corpus. Both sinks sit behind the adapter boundary and must see only
 // the masked state.
