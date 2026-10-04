@@ -604,6 +604,11 @@ openclaw config set plugins.entries.jev-gate.hooks.allowConversationAccess true
 openclaw plugins inspect jev-gate --runtime --json   # hookCount must be 1, not 0
 ```
 
+Exception: with plugin config `triage: false`, `hookCount` 0 is correct (`register()` skips
+the hook and keeps only the compaction provider). Turn triage off when the primary model is
+already the cheapest rung (e.g. `openrouter/free`) or `cheapModel` is unset; otherwise a
+downgrade routes the turn onto a provider that does not exist.
+
 Escape hatch `JEV_OPENCLAW_TRIAGE=off`. Every decision — change or not — appends
 one line to `~/.openclaw/logs/jev-gate.jsonl`.
 

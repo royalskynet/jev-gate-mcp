@@ -498,6 +498,10 @@ openclaw config set plugins.entries.jev-gate.hooks.allowConversationAccess true
 openclaw plugins inspect jev-gate --runtime --json   # hookCount 要是 1，不是 0
 ```
 
+例外：plugin config 設了 `triage: false` 時，`hookCount` 是 0 才正確（`register()` 直接跳過
+hook，只留 compaction provider）。主模型已是最便宜一階（例如 `openrouter/free`），或沒設
+`cheapModel` 時，就該關 triage；開了只會把對話導到不存在的 provider。
+
 逃生開關 `JEV_OPENCLAW_TRIAGE=off`。每次決策——不論有沒有改——都往
 `~/.openclaw/logs/jev-gate.jsonl` 寫一行。
 
