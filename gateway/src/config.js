@@ -12,6 +12,7 @@ import { makeTelemetry } from './telemetry.js';
 import { makeMetrics } from './metrics.js';
 import { makeLayaRouter } from './laya-routing.js';
 import { withTeacherCorpus } from './teacher-corpus.js';
+import { withRedaction } from './redact.js';
 
 export const DEFAULTS = Object.freeze({
   provider: process.env.JEV_PROVIDER ?? 'zen',
@@ -134,6 +135,9 @@ export function buildGateway(cfg = {}) {
     // real judgment, so remote/stdio installs must supply one. Tests use 'fake'.
     throw new Error(`provider ${cfg.provider} has no usable credential (checked ${cfg.apiKeyFile})`);
   }
+  // Mask secrets before any provider, Laya or corpus sees the state (src/redact.js).
+  rawAdapter = withRedaction(rawAdapter);
+  if (policyAdapter) policyAdapter = withRedaction(policyAdapter);
   // One breaker per provider, process-wide: every request on this gateway routes
   // through it. Only retryable provider/timeout/rate-limit failures open it;
   // auth/invalid-request fail closed for the caller but never take the provider
