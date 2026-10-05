@@ -111,6 +111,8 @@ def prune_text(tool: str, request: str, text: str, run=None) -> Dict[str, Any]:
             text=True,
             timeout=_TIMEOUT_S,
             cwd=str(_REPO),
+            # Names this plugin in ~/.jevgate/usage.jsonl (`prune:hermes-prune`).
+            env={**os.environ, "JEV_USAGE_CALLER": "hermes-prune"},
         )
     )
     proc = runner(payload)

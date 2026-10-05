@@ -10,6 +10,10 @@
 import { pruneText, judgeChunks, followZenCooldown, TARGETS, CONFIG } from '../../hooks/jev.js';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { meteredFetch, callerName } from './usage-ledger.js';
+
+// `prune:<who>`: the Hermes plugin sets JEV_USAGE_CALLER on the subprocess.
+const usageFetch = meteredFetch(callerName('prune'));
 
 /**
  * CLI ledger: separate from the hook ledger by design (#4/#6 option 2). The
@@ -41,7 +45,7 @@ export async function writeCliLedger(ledger, tool, reason) {
 const fetchHost = {
   http: {
     fetch: async (url, opts) => {
-      const r = await globalThis.fetch(url, opts);
+      const r = await usageFetch(url, opts);
       return { ok: r.ok, text: await r.text() };
     },
   },

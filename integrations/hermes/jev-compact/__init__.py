@@ -384,6 +384,8 @@ class JevCompactCompressor(ContextCompressor):
             text=True,
             timeout=_timeout_s(),
             cwd=str(_REPO),
+            # Names this plugin in ~/.jevgate/usage.jsonl (`cli:hermes-compact`).
+            env={**os.environ, "JEV_USAGE_CALLER": "hermes-compact"},
         )
 
     def _record(self, before: int, after: int, path: str, reason: str) -> None:

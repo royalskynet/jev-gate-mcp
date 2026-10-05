@@ -25,6 +25,9 @@ import { join } from 'node:path';
 
 import { compactMessages } from '../../agent-glue/src/compact.js';
 import { CONFIG, apiKey, judgePair, userRequestOf } from '../../agent-glue/claude/compact-hook.mjs';
+import { meteredFetch } from '../../agent-glue/src/usage-ledger.js';
+
+const usageFetch = meteredFetch('openclaw-compact');
 
 export const PROVIDER_ID = 'jev-compact';
 export const LEDGER = join(homedir(), '.openclaw', 'state', 'jev-compact.log');
@@ -103,7 +106,7 @@ const node$ = {
   fs: { read: (p) => readFile(p, 'utf8') },
   http: {
     fetch: async (url, init) => {
-      const res = await fetch(url, init);
+      const res = await usageFetch(url, init);
       return { ok: res.ok, status: res.status, text: await res.text() };
     },
   },

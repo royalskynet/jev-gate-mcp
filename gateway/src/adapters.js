@@ -8,6 +8,11 @@ import path from 'node:path';
 import { JevDecisionModel } from 'jevwire';
 import { ERR, LIMITS } from './core.js';
 import { recordZenStatus, zenCoolingDown } from './zen-status.js';
+import { meteredFetch, callerName } from '../../agent-glue/src/usage-ledger.js';
+
+// `gateway:<script>` (jev-route, stdio = MCP, zen-free-probe…) unless
+// JEV_USAGE_CALLER names the caller. One usage line per HTTP attempt.
+const usageFetch = (fetchImpl) => meteredFetch(callerName('gateway', { fromArgv: true }), fetchImpl);
 
 // --- Shared helper: normalize a jevwire answer or annotate a typed error ---
 
@@ -78,13 +83,13 @@ export function makeTypesafeAdapter({ apiKey, baseUrl = 'https://api.typesafe.ai
     const bare = String(id ?? '').replace(/^typesafe\//, '');
     return bare === 'jev-latest' ? bare : 'jev-latest';
   };
-  const m = new JevDecisionModel({ apiKey, baseUrl, model: toTypeSafeId(model), timeoutMs, maxRetries: LIMITS.maxRetries });
+  const m = new JevDecisionModel({ apiKey, baseUrl, model: toTypeSafeId(model), timeoutMs, maxRetries: LIMITS.maxRetries, fetch: usageFetch() });
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: toTypeSafeId(opts.model) });
 }
 
 export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai/api', model = 'typesafe/jev-1.13', timeoutMs = LIMITS.deadlineMs, maxRetries = LIMITS.maxRetries, fetch: fetchImpl, sleep }) {
   // JevDecisionModel appends `/v1/systemone`; the base must stop at `/api`.
-  const m = new JevDecisionModel({ apiKey, baseUrl, model, timeoutMs, maxRetries, fetch: fetchImpl, sleep });
+  const m = new JevDecisionModel({ apiKey, baseUrl, model, timeoutMs, maxRetries, fetch: usageFetch(fetchImpl), sleep });
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: opts.model });
 }
 

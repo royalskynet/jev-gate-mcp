@@ -28,6 +28,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { CONFIG, TARGETS, requestTerms, vetoOnTerms } from '../hooks/jev.js';
+import { meteredFetch } from '../agent-glue/src/usage-ledger.js';
 
 const SWEEP = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
 
@@ -65,7 +66,7 @@ async function ask(key, { request, criteria, blocks }) {
     };
   });
   const started = Date.now();
-  const res = await fetch(CONFIG.endpoint, {
+  const res = await meteredFetch('calibrate-prune')(CONFIG.endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${key}`,

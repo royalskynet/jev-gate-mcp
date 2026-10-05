@@ -31,6 +31,7 @@
 import { compactMessages } from '../src/compact.js';
 import { askerFor, backendFor, compactAnthropic } from './compact-anthropic.mjs';
 import { ENV, fillEnv, ZEN_BACKUP, zenCooling, followsZen } from './env.mjs';
+import { usageRecord, tokensOf, modelOf, hookUsageFile } from './usage-line.mjs';
 
 let LEDGER = '';
 
@@ -145,6 +146,7 @@ function hydrate($) {
         JEV_COMPACT_MAX_STATE_TOKENS: await $.env.get('JEV_COMPACT_MAX_STATE_TOKENS'),
         JEV_COMPACT_MAX_REQUEST_TOKENS: await $.env.get('JEV_COMPACT_MAX_REQUEST_TOKENS'),
         JEV_COMPACT_TRUNCATE_HEAD: await $.env.get('JEV_COMPACT_TRUNCATE_HEAD'),
+        JEV_USAGE_LOG: await $.env.get('JEV_USAGE_LOG'),
       });
     } catch {
       /* no `$.env` (Node): ENV already came from process.env */
@@ -307,6 +309,44 @@ export async function appendLedger($, line) {
   }
 }
 
+let usageChain = Promise.resolve();
+
+/**
+ * `$.http.fetch` plus one usage line (./usage-line.mjs), 429s and throws
+ * included, so a spent Zen quota names this hook. Only the session.compact
+ * handler uses it: Node callers of judgePair/judgePairs (cli.mjs, openclaw)
+ * meter their own fetch. Never throws on the logging side.
+ */
+async function meteredFetch($, url, init) {
+  const started = await $.clock.now().catch(() => null);
+  const log = (status, body) => {
+    usageChain = usageChain.then(async () => {
+      try {
+        const now = await $.clock.now();
+        const at = new Date(now).toISOString();
+        const file = hookUsageFile(ENV, at);
+        if (!file) return;
+        // Missing is the only reason to start empty; any other read failure
+        // skips the line rather than overwrite the day's file.
+        const previous = (await $.fs.exists(file)) ? await $.fs.read(file) : '';
+        const line = usageRecord({ caller: 'claude-compact', model: modelOf(init?.body), status, ...tokensOf(body),
+          latency_ms: started == null ? null : now - started }, at);
+        await $.fs.write(file, `${previous}${JSON.stringify(line)}\n`);
+      } catch { /* observation only */ }
+    });
+    return usageChain;
+  };
+  let res;
+  try {
+    res = await $.http.fetch(url, init);
+  } catch (e) {
+    await log('error', '');
+    throw e;
+  }
+  await log(res?.status ?? (res?.ok ? 200 : 'error'), res?.text);
+  return res;
+}
+
 /**
  * Is the standalone fast-jev-compaction plugin also enabled? Two modules
  * answering the same `session.compact` is undefined behaviour, and the symptom
@@ -377,15 +417,16 @@ export const register = (on, options = {}) => {
     }
     const request = userRequestOf(messages);
     const backend = CONFIG.backend === 'auto' ? backendFor(messages) : CONFIG.backend;
+    const metered = (url, init) => meteredFetch($, url, init);
     const out = backend === 'anthropic'
-      ? await compactAnthropic({ messages, config: CONFIG, asker: askerFor((url, init) => $.http.fetch(url, init), key, CONFIG) })
+      ? await compactAnthropic({ messages, config: CONFIG, asker: askerFor(metered, key, CONFIG) })
       : await compactMessages({
         messages,
         minReductionChars: CONFIG.minReductionChars,
         pinFirst: CONFIG.pinFirst,
         pinLast: CONFIG.pinLast,
         judgeHeadChars: CONFIG.askChars,
-        judge: (pair) => judgePair($, key, request, pair),
+        judge: (pair) => judgePair({ http: { fetch: metered } }, key, request, pair),
       });
     const before = JSON.stringify(messages).length;
     if (!out.compacted) {

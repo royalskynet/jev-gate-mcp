@@ -34,6 +34,10 @@ import { pruneCommand } from './src/prune.js';
 import { apiKey, judgePairs, refreshConfig } from './claude/compact-hook.mjs';
 import { followsZen, zenCooling } from './claude/env.mjs';
 import { ZEN_STATUS_FILE, recordZenStatus } from '../gateway/src/zen-status.js';
+import { meteredFetch, callerName } from './src/usage-ledger.js';
+
+// `cli:<who>`: the Hermes plugins set JEV_USAGE_CALLER on the subprocess.
+const usageFetch = meteredFetch(callerName('cli'));
 
 /**
  * Node-side `$` for the shared judge, written the same way as
@@ -44,7 +48,7 @@ const node$ = {
   fs: { read: (p) => readFile(p, 'utf8') },
   http: {
     fetch: async (url, init) => {
-      const res = await fetch(url, init);
+      const res = await usageFetch(url, init);
       return { ok: res.ok, status: res.status, text: await res.text() };
     },
   },

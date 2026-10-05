@@ -11,6 +11,7 @@
  */
 
 import { ENV, fillEnv, ZEN_BACKUP, zenCooling, followsZen } from '../agent-glue/claude/env.mjs';
+import { usageRecord, tokensOf, modelOf, hookUsageFile } from '../agent-glue/claude/usage-line.mjs';
 
 export const CONFIG = {
   // The three env-backed fields are filled by `refreshConfig`, below: under
@@ -218,7 +219,7 @@ export let lastLatencyMs = null;
  * Returns one verdict per chunk; every failure path answers 'keep', so a bad
  * key, a 4xx or a bad schema can only pass output through unchanged.
  */
-export async function judgeChunks($, key, userRequest, chunks, criteria = TARGETS.Bash.criteria) {
+export async function judgeChunks($, key, userRequest, chunks, criteria = TARGETS.Bash.criteria, httpFetch = (url, init) => $.http.fetch(url, init)) {
   const keepAll = chunks.map(() => 'keep');
   if (!chunks.length) return keepAll;
   const questions = {};
@@ -237,7 +238,7 @@ export async function judgeChunks($, key, userRequest, chunks, criteria = TARGET
     // abandoned, not cancelled — `$.http.fetch` has no signal — which is fine:
     // it settles into nothing and the hook has already moved on.
     res = await Promise.race([
-      $.http.fetch(CONFIG.endpoint, {
+      httpFetch(CONFIG.endpoint, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${key}`,
@@ -405,6 +406,7 @@ function hydrate($) {
         JEV_LEDGER: await $.env.get('JEV_LEDGER'),
         JEV_TIMEOUT_MS: await $.env.get('JEV_TIMEOUT_MS'),
         JEV_UI_LOG: await $.env.get('JEV_UI_LOG'),
+        JEV_USAGE_LOG: await $.env.get('JEV_USAGE_LOG'),
       });
     } catch {
       /* no `$.env` (Node): ENV already came from process.env */
@@ -454,6 +456,43 @@ export async function appendLedger($, line) {
   }
 }
 
+let usageChain = Promise.resolve();
+
+/**
+ * `$.http.fetch` plus one usage line (agent-glue/claude/usage-line.mjs), 429s
+ * and throws included, so a spent Zen quota names this hook. Only the hook
+ * handler passes it: Node callers of judgeChunks (src/prune.js) meter their own
+ * fetch. The line is written in the background and never throws.
+ */
+async function meteredFetch($, url, init) {
+  const started = await $.clock.now().catch(() => null);
+  const log = (status, body) => {
+    usageChain = usageChain.then(async () => {
+      try {
+        const now = await $.clock.now();
+        const at = new Date(now).toISOString();
+        const file = hookUsageFile(ENV, at);
+        if (!file) return;
+        // Missing is the only reason to start empty; any other read failure
+        // skips the line rather than overwrite the day's file.
+        const previous = (await $.fs.exists(file)) ? await $.fs.read(file) : '';
+        const line = usageRecord({ caller: 'hook-triage', model: modelOf(init?.body), status, ...tokensOf(body),
+          latency_ms: started == null ? null : now - started }, at);
+        await $.fs.write(file, `${previous}${JSON.stringify(line)}\n`);
+      } catch { /* observation only */ }
+    });
+  };
+  let res;
+  try {
+    res = await $.http.fetch(url, init);
+  } catch (e) {
+    log('error', '');
+    throw e;
+  }
+  log(res?.status ?? (res?.ok ? 200 : 'error'), res?.text);
+  return res;
+}
+
 /** The body of every pruning hook; `tool` picks the row of TARGETS to use. */
 async function prune(tool, $, e, next) {
   // The module's environment has no `process`; this is where `$.env` is first
@@ -481,7 +520,7 @@ async function prune(tool, $, e, next) {
 
   const request = await userRequestOf($, e);
   const { kept, droppedLines, unsure } = await pruneText(out, (chunks) =>
-    judgeChunks($, key, request, chunks, target.criteria),
+    judgeChunks($, key, request, chunks, target.criteria, (url, init) => meteredFetch($, url, init)),
   );
   const line = `jev-prune(${tool}): ${out.length} → ${kept.length} chars, ${droppedLines} lines dropped`
     + (unsure ? `, ${unsure} unsure drops vetoed` : '')
@@ -500,6 +539,7 @@ async function prune(tool, $, e, next) {
   // indistinguishable from a hook that never loaded. appendLedger never throws,
   // so a broken ledger cannot stop the prune itself.
   await appendLedger($, line);
+  await usageChain; // the usage line above, written before the hook returns
   if (!droppedLines) return r;
   // ponytail: a persisted result was already out of the model's context at 2 KB.
   // Replacing it is only an improvement while the judged version stays small —
