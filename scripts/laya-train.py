@@ -27,6 +27,7 @@
   laya-train.py --promote               # 達標才寫出權重（nightly 用）
 """
 import argparse
+import glob
 import json
 import math
 import os
@@ -42,6 +43,13 @@ BASE_DIR = Path(os.environ.get("JEV_LAYA_FP_DIR", HOME / ".jevgate" / "laya-fp")
 OUT_DIR = Path(os.environ.get("JEV_LAYA_TRAINED_DIR", HOME / ".jevgate" / "laya-trained"))
 REPORT = Path(os.environ.get("JEV_LAYA_TRAIN_REPORT", HOME / ".jevgate" / "laya-train-report.json"))
 SEED = 20261001
+# 外部語料（scripts/laya-external-corpus.mjs 的產物，label_source=external:*）。
+# 只進訓練 fold、不進 OOF／溫度／live_gated，否則「退步不導出」的閘量到的就不是線上那批題。
+# ponytail: 單一全域權重（預設 0.2，=0 或 JEV_LAYA_EXTERNAL_CORPUS=off 即關）。外部題只佔訓練
+# 量的一部分時夠用；要分來源調權重再改成 label_source→weight 的表。上限：外部標註與 teacher
+# 判準不同源，權重拉到 ~0.5 以上前要先看外部考卷與線上 lane 有沒有被拖下水。
+EXTERNAL = os.environ.get("JEV_LAYA_EXTERNAL_CORPUS", str(HOME / ".jevgate" / "external" / "train-*.jsonl"))
+EXTERNAL_WEIGHT = float(os.environ.get("JEV_LAYA_EXTERNAL_WEIGHT", "0.2"))
 
 
 # ---------------------------------------------------------------- gold 轉換
@@ -168,10 +176,45 @@ def load_cases(path):
     return rows
 
 
-def build_units(rows):
+def is_external(row):
+    return str(row.get("label_source") or "").startswith("external:")
+
+
+def load_external(spec=None, weight=None):
+    """讀外部訓練列。只收 external:* 且 split=='train'——考卷（split=='eval'）就算被
+    glob 到也不會混進訓練。權重 <= 0 或 spec=off 回空。"""
+    spec = EXTERNAL if spec is None else spec
+    weight = EXTERNAL_WEIGHT if weight is None else weight
+    if weight <= 0 or not spec or spec == "off":
+        return []
+    rows = []
+    for pat in filter(None, (s.strip() for s in spec.split(","))):
+        for p in sorted(glob.glob(os.path.expanduser(pat))):
+            rows += [r for r in load_cases(p) if is_external(r) and r.get("split") == "train"]
+    return rows
+
+
+def cv_splits(units, folds):
+    """grouped K-fold：同一 record 的題目不跨 fold。外部題永遠只在訓練側，
+    所以 OOF logits、溫度與 live_gated 全部只來自線上語料。"""
+    recs = sorted({u["rec"] for u in units if not u["external"]})
+    random.Random(SEED).shuffle(recs)
+    fold_of = {r: i % folds for i, r in enumerate(recs)}
+    ext = [u for u in units if u["external"]]
+    out = []
+    for f in range(folds):
+        own = [u for u in units if not u["external"]]
+        out.append(([u for u in own if fold_of[u["rec"]] != f] + ext,
+                    [u for u in own if fold_of[u["rec"]] == f]))
+    return out
+
+
+def build_units(rows, external_weight=None):
     """展平成「一題一筆」，並記住它來自哪個 record（分組切 fold 用）。"""
+    external_weight = EXTERNAL_WEIGHT if external_weight is None else external_weight
     units, skipped = [], 0
     for rec_i, r in enumerate(rows):
+        ext = is_external(r)
         questions = r.get("questions") or {}
         teacher = r.get("teacher_answer") or {}
         local = r.get("local_answer") or {}
@@ -192,6 +235,8 @@ def build_units(rows):
                 "n_opt": n_opt,
                 "truth": teacher_hard(q, teacher.get(qid)),
                 "baseline": local.get(qid),
+                "external": ext,
+                "weight": external_weight if ext else 1.0,
             })
     return units, skipped
 
@@ -429,6 +474,23 @@ def selftest():
            {"qtype": "score", "conf": 0.66, "correct": True, "state_ok": True}]
     assert live_gated(_r2, conf_min_spec="score=0.65,noul=0.70")["n"] == 1, "分題型地板沒分開套"
 
+    # 外部語料：只進訓練側。fold 若把外部題分進驗證側，OOF／溫度／live_gated 就混進
+    # 非線上的題目，nightly 的「退步不導出」閘量到的就不是線上那批。
+    _rows = [{"questions": {"d": qs}, "teacher_answer": {"d": {"type": "score", "score": 1}},
+              "state": {"user_request": f"r{i}"}} for i in range(10)]
+    _rows += [{"questions": {"d": qs}, "teacher_answer": {"d": {"type": "score", "score": 2}},
+               "state": {"user_request": f"x{i}"}, "label_source": "external:t", "split": "train"}
+              for i in range(4)]
+    _u, _ = build_units(_rows, external_weight=0.2)
+    assert [u["weight"] for u in _u if u["external"]] == [0.2] * 4
+    assert all(u["weight"] == 1.0 for u in _u if not u["external"])
+    for _tr, _va in cv_splits(_u, 5):
+        assert not any(u["external"] for u in _va), "外部題進了驗證 fold"
+        assert sum(u["external"] for u in _tr) == 4, "外部題沒進訓練 fold"
+    # 線上列的 fold 分配不因接上外部列而改變（rec 索引不變）
+    _base = [[u["rec"] for u in va] for _, va in cv_splits(build_units(_rows[:10])[0], 5)]
+    assert _base == [[u["rec"] for u in va] for _, va in cv_splits(_u, 5)]
+
     print("selftest PASS")
 
 
@@ -449,6 +511,11 @@ def head_logits(model, h, attention_mask, marker_pos, marker_mask, qtype, torch)
     m = torch.gather(h, 1, idx)
     logits = model.scorer(m).squeeze(-1).float()
     return logits.masked_fill(~marker_mask, -1e4)
+
+
+def weighted_ce(logits, tgt, w, torch):
+    """soft cross-entropy 乘逐題權重再取平均；權重全 1 時等於原本的 .mean()。"""
+    return (-(tgt * torch.log_softmax(logits, -1)).sum(-1) * w).mean()
 
 
 def fit_temperature(logit_rows, target_rows, torch):
@@ -501,12 +568,21 @@ def main():
         print(f"no corpus at {CORPUS}", file=sys.stderr)
         return 1
     rows = load_cases(CORPUS)
+    n_own = len(rows)
+    rows += load_external()  # 接在後面：線上列的 rec 索引不變，fold 分配也就不變
     units, skipped = build_units(rows)
     by_type = {}
     for u in units:
         by_type[u["qtype"]] = by_type.get(u["qtype"], 0) + 1
     n_rec = len({u["rec"] for u in units})
-    print(f"corpus={len(rows)} units={len(units)} records={n_rec} skipped={skipped} by_type={by_type}")
+    ext_by_source = {}
+    for u in units:
+        if u["external"]:
+            src = rows[u["rec"]].get("label_source")
+            ext_by_source[src] = ext_by_source.get(src, 0) + 1
+    print(f"corpus={n_own} units={len(units)} records={n_rec} skipped={skipped} by_type={by_type}")
+    if ext_by_source:
+        print(f"external（只進訓練 fold，weight={EXTERNAL_WEIGHT}）: {ext_by_source}")
 
     base_hits = [c for c in (baseline_correct(u) for u in units) if c is not None]
     base_acc = (sum(base_hits) / len(base_hits)) if base_hits else None
@@ -627,14 +703,8 @@ def main():
 
     # ---- grouped K-fold：同一 record 的題目不跨 fold，否則同一請求的
     # 答案會同時出現在訓練與驗證兩邊，OOF 準確率會虛高。
-    recs = sorted({u["rec"] for u in units})
-    random.Random(SEED).shuffle(recs)
-    fold_of = {r: i % args.folds for i, r in enumerate(recs)}
-
     oof = {}
-    for f in range(args.folds):
-        tr = [u for u in units if fold_of[u["rec"]] != f]
-        va = [u for u in units if fold_of[u["rec"]] == f]
+    for f, (tr, va) in enumerate(cv_splits(units, args.folds)):
         if not tr or not va:
             continue
         model.load_state_dict(pristine, strict=True)
@@ -654,7 +724,8 @@ def main():
                 ids, am, mp, mm, qt, tgt, h = collate(batch, h_cache)
                 logits = head_logits(model, h.to(device), am.to(device), mp.to(device),
                                      mm.to(device), qt.to(device), torch)
-                loss = -(tgt.to(device) * torch.log_softmax(logits, -1)).sum(-1).mean()
+                w = torch.tensor([b["weight"] for b in batch], device=device)
+                loss = weighted_ce(logits, tgt.to(device), w, torch)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 opt.step()
@@ -717,8 +788,12 @@ def main():
     delta = [a - b for a, b in zip(paired_new, paired_old)]
     report = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "corpus": len(rows),
-        "units": len(units),
+        "corpus": n_own,
+        # units 只算線上語料，跟歷史報告與 champion 同口徑；外部另列
+        "units": sum(1 for u in units if not u["external"]),
+        "external_units": {src: sum(1 for u in units if u["external"] and rows[u["rec"]].get("label_source") == src)
+                           for src in ext_by_source},
+        "external_weight": EXTERNAL_WEIGHT if ext_by_source else None,
         "records": n_rec,
         "by_type": by_type,
         "trainable": trainable_names,
@@ -790,7 +865,8 @@ def main():
                     ids, am, mp, mm, qt, tgt, h = collate(batch, h_cache)
                     logits = head_logits(model, h.to(device), am.to(device), mp.to(device),
                                          mm.to(device), qt.to(device), torch)
-                    loss = -(tgt.to(device) * torch.log_softmax(logits, -1)).sum(-1).mean()
+                    w = torch.tensor([b["weight"] for b in batch], device=device)
+                    loss = weighted_ce(logits, tgt.to(device), w, torch)
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(params, 1.0)
                     opt.step()

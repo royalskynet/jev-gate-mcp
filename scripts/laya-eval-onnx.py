@@ -46,6 +46,7 @@ def main():
                     help="模擬線上路由：只路由這些題型（逗號分隔），"
                          "並套用 laya-routing.js 的 shortStandaloneState state 過濾")
     ap.add_argument("--threshold", type=float, default=0.70, help="--route-sim 的信心閾值")
+    ap.add_argument("--dump", metavar="PATH", help="逐題寫出 qid/truth/probs（jsonl），給混淆矩陣等離線分析")
     args = ap.parse_args()
 
     bundle = Path(args.bundle)
@@ -78,6 +79,7 @@ def main():
     conf, correct, pairs = [], [], []
     per_type = {}
     gate_rows = []  # (qtype, conf, correct, state_ok) — 工作點上的分題型表現
+    dumped = []
     for u in units:
         q = u["question"]
         qq = {"t": q["type"], "ins": q["instructions"], "crit": q.get("criteria")}
@@ -108,6 +110,8 @@ def main():
         d[0] += bool(ok)
         d[1] += 1
         gate_rows.append((u["qtype"], max(p), bool(ok), T.short_standalone_state(u["state"])))
+        if args.dump:
+            dumped.append({"qid": u["qid"], "qtype": u["qtype"], "truth": u["truth"], "probs": p, "correct": bool(ok)})
         b = T.baseline_correct(u)
         if b is not None:
             pairs.append(bool(ok) - bool(b))
@@ -115,6 +119,8 @@ def main():
     if not correct:
         print("無可評估題目", file=sys.stderr)
         return 1
+    if args.dump:
+        Path(args.dump).write_text("".join(json.dumps(d) + "\n" for d in dumped))
     acc = sum(correct) / len(correct)
     print(f"\naccuracy {acc * 100:.1f}%  (n={len(correct)})")
     for qt, (c, n) in sorted(per_type.items()):
