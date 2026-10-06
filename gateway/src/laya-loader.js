@@ -81,6 +81,11 @@ export async function shadowDirFor(src) {
     }
     tok.added_tokens = added;
     await writeFile(path.join(tmp, 'tokenizer', 'tokenizer.json'), JSON.stringify(tok));
+    // A shadow that exists but fails hasAliases is a gutted one: macOS purges
+    // $TMPDIR files untouched for 3 days and leaves the dirs and symlinks, so
+    // tokenizer.json vanished and every later rename hit ENOTEMPTY — Laya
+    // failed to load on every call from 10-01 on. Clear it and take its place.
+    if (!(await hasAliases(dir))) await rm(dir, { recursive: true, force: true });
     await rename(tmp, dir);
   } catch (err) {
     await rm(tmp, { recursive: true, force: true });
