@@ -2256,3 +2256,43 @@ issue #12 的 shadow 期（09-30～10-02）共記 5 筆 `idcheck_observe`。逐�
 驗收：用 5 筆實際 Stop 重放，舊程式重現 5 筆命中，新程式只剩 `4fb3ac9`。近 5 天 48 個 session、666 次 Stop（278 次帶 id）全量重放，新程式只標出 1 筆，就是 `4fb3ac9`。所以 `idcheckShadow` 預設改成 `false`。要回到只記錄不擋，把它設成 `true`。
 
 未處理：persisted-output（`Full output saved to:`）只有 2KB 預覽進 transcript，id 若只出現在完整檔裡，仍會誤報。這次重放沒有遇到，所以先不做。
+
+## 34. jev-route `tier` 拆成三題 noul：40 筆重放（2026-10-06）
+
+§32 接手點說 `tier` 要本機答，得先讓題目有 margin。這次照 `ask_first` 的做法，把 `tier` 拆成三題 noul，再用程式碼組回級別：
+
+- `broken`：既有系統壞了、報錯或行為異常，要找根因？
+- `multi_file`：做完會建立或修改兩個以上檔案？
+- `high_stakes`：會碰到 agent 規則檔、交易、cron、fallback 順序或不可逆操作？
+- 組回規則：`high_stakes > 0.5` → L2；否則 `broken > 0.5` → L1；否則 `multi_file > 0.5` → L2；其餘 L0。
+
+重放：teacher-corpus 最新且不重複的 jev-route state，含 PII 的先排除，三級各取最多 10 筆，再補到 40 筆。原 `tier` 與三題放在同一次呼叫，排除 teacher 版本漂移。語料寫入導到暫存檔，沒寫進真語料。延遲中位數 471ms。
+
+| 題目 | 落在 0.3–0.7 | 中位數 |
+| --- | --- | --- |
+| `broken` | 15% | 0.17 |
+| `multi_file` | 42% | 0.30 |
+| `high_stakes` | 32% | 0.34 |
+| 原 `tier`（choice） | conf < 0.5 佔 40%（16/40） | conf 0.67 |
+
+對照人工標註（40 筆，照 CLAUDE.md 判斷閘逐筆判）：
+
+| 做法 | 命中 |
+| --- | --- |
+| 原 `tier` | 24/40（60%） |
+| 三題組回 | 33/40（83%） |
+| 三題都落在 0.3–0.7 以外的 13 筆 | 13/13 |
+
+閾值改 0.4 一樣是 33，改 0.6 降到 31，所以結果不是靠閾值調出來的。
+
+結論：
+
+- **拆題確實提高準確率**。原 `tier` 錯的 16 筆裡，最多的是把「改規則／fallback／cron」判成 L1 或 L0（#11、#12、#15、#19、#28、#36、#38）；`high_stakes` 單獨問時都抓到了。
+- **只有 `broken` 達到「模稜兩可 < 20%」的門檻**，Laya 學得會。
+- `multi_file` 有 42% 落在中間。從一句話本來就看不出要改幾個檔，這跟 §32 的「查檔查不查得到」是同一類問題，不該問模型。下一步改用 `dirty_paths` 的數量、`phase` 和本次 turn 改過的檔數，由程式碼判斷。
+- `high_stakes` 有 32% 落在中間。五個條件綁成一題，跟 `ask_first` 當初的病一樣。下一步拆成「改規則檔」「交易／金流」「排程／fallback」「不可逆」四題再量。
+- 剩下的錯：#34「子代理預設派 dc」是改規則，`high_stakes` 只給 0.46；#16 和 #39 這兩筆是「修東西」同時「改 fallback／做清理」的混合請求。
+
+限制：人工標註只有一人，而且是看過模型答案後才標，可能有偏差。`tier` 的 gold 仍要在 shadow 期用 `prev=` 代理真值複核。這次沒有改 `jev-route.mjs`，線上行為不變。
+
+重放腳本：`replay-split.mjs`（scratchpad，未入 repo）。
