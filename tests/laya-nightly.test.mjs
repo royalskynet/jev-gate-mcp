@@ -155,6 +155,18 @@ test('an unpromoted night neither exports nor claims a gain it did not get', () 
   assert.match(summary, /未達標/);
 });
 
+test('too few online-lane rows to measure anything: nothing ships, and it says why', () => {
+  const { at, run, pushes } = sandbox();
+  // 10-06: removing test probes left ~5 rows per lane. 5/5 correct clears the
+  // floor and no McNemar test can find a regression on 5 rows, so without this
+  // gate any candidate would ship unmeasured.
+  fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 5, accuracy: 1.0 }));
+  run();
+  assert.equal(fs.existsSync(at('exported.txt')), false, 'shipped a model measured on 5 rows');
+  assert.equal(serving(at), 'champ');
+  assert.match(pushes().join('\n'), /不導出：線上 lane 只有 n=5 題 < 最少 30/);
+});
+
 test('a better model that lost its calibration at the gate is not served', () => {
   const { at, run, pushes } = sandbox();
   // Overall gain clears the upgrade gate, but the online lanes are worse than

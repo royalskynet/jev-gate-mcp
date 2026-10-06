@@ -63,7 +63,10 @@ fi
 #                    McNemar 精確檢定，只有新版本機答錯的題顯著較多才擋。先前拿當晚
 #                    數字比 champion 檔裡 10-02 在 186 題上的舊數字，不同母體，
 #                    從那天起每晚都誤判退步（理由與上限見 laya_paired_gate.py）。
+#   最少題數         線上 lane 題數 < MIN_N 時地板與配對都量不出東西（10-06 語料去掉
+#                    測試探針後兩條 lane 只剩約 5 題），一律不導出。
 FLOOR="${JEV_LAYA_ACC_FLOOR:-0.95}"
+MIN_N="${JEV_LAYA_MIN_N:-30}"
 CHAMP="${JEV_LAYA_CHAMPION:-$HOME/.jevgate/laya-champion.json}"
 LIVE="${JEV_LAYA_EXPORT_DIR:-$HOME/.jevgate/laya-trained-onnx}"
 CAND="${JEV_LAYA_CANDIDATE_DIR:-$HOME/.jevgate/laya-candidate-onnx}"
@@ -77,7 +80,9 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
     ($c[0].qids // null) as $k
     | if $k == null then "" else [.live_gated.qids[] | select(. as $q | $k | index($q) | not)] | join(",") end
   ' "$REPORT" 2>/dev/null)
-  if [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson f "$FLOOR" '$a >= $f')" != true ]; then
+  if [ "${GATE_N:-0}" -lt "$MIN_N" ]; then
+    hpush "⚠️ Laya 權重已換但不導出：線上 lane 只有 n=${GATE_N} 題 < 最少 ${MIN_N}，量不出好壞，bundle 維持舊版"
+  elif [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson f "$FLOOR" '$a >= $f')" != true ]; then
     hpush "⚠️ Laya 權重已換但不導出：線上 lane 準確率 ${GATE_ACC}（n=${GATE_N}）< 地板 ${FLOOR}，bundle 維持舊版"
   elif [ -n "$NEW_QIDS" ]; then
     hpush "⚠️ Laya 權重已換但不導出：本機 lane 出現現役沒有的題目 ${NEW_QIDS}（從未量測就上線），bundle 維持舊版"

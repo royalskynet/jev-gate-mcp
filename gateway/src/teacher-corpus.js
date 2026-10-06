@@ -18,13 +18,17 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
-export const TEACHER_CORPUS_FILE = process.env.JEV_TEACHER_CORPUS
-  ?? join(homedir(), '.jevgate', 'teacher-corpus.jsonl');
+const REAL_TEACHER_CORPUS = join(homedir(), '.jevgate', 'teacher-corpus.jsonl');
+export const TEACHER_CORPUS_FILE = process.env.JEV_TEACHER_CORPUS ?? REAL_TEACHER_CORPUS;
 
 export function recordTeacherSample({ state, questions, result }, file = TEACHER_CORPUS_FILE) {
   if (!file || file === 'off') return false;
   // Fakes exist to make tests deterministic; training on them teaches nothing.
   if (/^(fake|mock)(\/|$)/.test(result?.model ?? '')) return false;
+  // Real-call tests answer with a real model, so the check above misses them;
+  // their probe prompts were 96% of the score/noul rows by 10-05. `node --test`
+  // sets this in the test process and every subprocess it spawns.
+  if (process.env.NODE_TEST_CONTEXT && file === REAL_TEACHER_CORPUS) return false;
   try {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     if (existsSync(file)) chmodSync(file, 0o600);

@@ -5,9 +5,14 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
-export function recordRoutingSample(sample, file = process.env.JEV_ROUTING_LOG
-  ?? join(homedir(), '.jevgate', 'routing-samples.jsonl')) {
+const REAL_ROUTING_LOG = join(homedir(), '.jevgate', 'routing-samples.jsonl');
+
+export function recordRoutingSample(sample, file = process.env.JEV_ROUTING_LOG ?? REAL_ROUTING_LOG) {
   if (!file || file === 'off') return false;
+  // A test that makes a real call (codex-adapters, spawn-hook) still answers
+  // with a real model, so the fake/mock check below misses it. `node --test`
+  // sets this in the test process and every subprocess it spawns.
+  if (process.env.NODE_TEST_CONTEXT && file === REAL_ROUTING_LOG) return false;
   if ([sample.local_model, sample.teacher_model].some(m => /^(fake|mock)(\/|$)/.test(m ?? ''))) return false;
   try {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
