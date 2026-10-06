@@ -21,6 +21,7 @@ argmax 是否一致——bundle 的用途是決策，差個 1e-2 不要緊，翻
   laya-export-onnx.py --parity-n 64   # 多比幾題
 """
 import argparse
+import atexit
 import json
 import os
 import shutil
@@ -76,6 +77,10 @@ def main():
     staging = out.with_name(out.name + ".new")
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
+    # 任何沒走到 commit() 的出口（parity 失敗、缺 tokenizer、例外）都要清掉 staging，
+    # 否則 548MB 的半成品會一直留在磁碟上（10-06 parity 翻 1 題留下 laya-trained-onnx.new）。
+    # commit() 會把 staging rename 走，這裡就變成 no-op。
+    atexit.register(shutil.rmtree, staging, ignore_errors=True)
     onnx_path = staging / "laya.onnx"
     tmp_path = staging / "laya.fp32.onnx"
 
