@@ -47,6 +47,10 @@ def main():
                          "並套用 laya-routing.js 的 shortStandaloneState state 過濾")
     ap.add_argument("--threshold", type=float, default=0.70, help="--route-sim 的信心閾值")
     ap.add_argument("--dump", metavar="PATH", help="逐題寫出 qid/truth/probs（jsonl），給混淆矩陣等離線分析")
+    ap.add_argument("--gate-dump", metavar="PATH",
+                    help="夜訓上線閘用：只跑線上語料（跳過外部），逐題寫出 key/routed/correct，"
+                         "routed 用 laya-train.py 的 live_gated 同一套判斷；兩個 bundle 各跑一次"
+                         "交給 laya_paired_gate.py 配對")
     args = ap.parse_args()
 
     bundle = Path(args.bundle)
@@ -71,8 +75,13 @@ def main():
     _fix_tokenizer_config(args.src_dir)
     tk = AutoTokenizer.from_pretrained(bundle / "tokenizer")
     units, skipped = T.build_units(T.load_cases(args.corpus))
+    if args.gate_dump:
+        # 與 live_gated 同口徑：外部語料只進訓練，不算線上 lane 的題。
+        units = [u for u in units if not u["external"]]
     if args.limit:
         units = units[:args.limit]
+    lane_floor = T.parse_conf_min(T.CONF_MIN_SPEC)
+    gated = []
     print(f"units={len(units)} skipped={skipped}")
 
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
@@ -110,6 +119,12 @@ def main():
         d[0] += bool(ok)
         d[1] += 1
         gate_rows.append((u["qtype"], max(p), bool(ok), T.short_standalone_state(u["state"])))
+        if args.gate_dump:
+            state_ok = T.short_standalone_state(u["state"])
+            gated.append({"key": f'{u["rec"]}:{u["digest"]}:{u["qid"]}', "qid": u["qid"],
+                          "routed": bool(state_ok and (u["qtype"] not in T.QTYPE_PILOT
+                                                       or max(p) >= lane_floor(u["qtype"]))),
+                          "correct": bool(ok)})
         if args.dump:
             dumped.append({"qid": u["qid"], "qtype": u["qtype"], "truth": u["truth"], "probs": p, "correct": bool(ok)})
         b = T.baseline_correct(u)
@@ -119,6 +134,8 @@ def main():
     if not correct:
         print("無可評估題目", file=sys.stderr)
         return 1
+    if args.gate_dump:
+        Path(args.gate_dump).write_text("".join(json.dumps(d) + "\n" for d in gated))
     if args.dump:
         Path(args.dump).write_text("".join(json.dumps(d) + "\n" for d in dumped))
     acc = sum(correct) / len(correct)

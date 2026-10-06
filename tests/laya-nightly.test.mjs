@@ -22,6 +22,12 @@ const REPORT = (promoted, live = { n: 170, accuracy: 0.994 }) => JSON.stringify(
   coverage_curve: [{ threshold: 0.7, coverage: 0.278, accuracy: 0.952 }],
 });
 
+// n same-paper rows, all routed locally; `wrong` lists the indices answered wrong.
+const DUMP = (n, wrong) => Array.from({ length: n }, (_, i) =>
+  JSON.stringify({ key: `k${i}`, qid: 'difficulty', routed: true, correct: !wrong.includes(i) })).join('\n') + '\n';
+const range = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
+const serving = (at) => fs.readFileSync(at('.jevgate/laya-trained-onnx/laya.onnx'), 'utf8').trim();
+
 function sandbox() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'laya-nightly-'));
   const bin = path.join(home, 'bin');
@@ -32,13 +38,25 @@ function sandbox() {
   // Shadow node so the labelling step records the bundle it was pointed at.
   fs.writeFileSync(at('bin/node'), `#!/bin/sh\necho "$JEV_LAYA_MODEL_DIR" > ${at('labelled-with.txt')}\n`, { mode: 0o755 });
   // Stand in for the train venv: write the report, and mark that export ran.
+  // Export lands in the candidate dir it is pointed at; eval writes the gate dump
+  // for whichever bundle it was given (fixtures dump-champ / dump-cand); the
+  // paired gate itself is the real script, so the tests exercise its verdict.
   fs.writeFileSync(at('bin/fakepy'), `#!/bin/sh
 case "$1" in
   *laya-train.py) cat ${at('next-report.json')} > "$JEV_LAYA_TRAIN_REPORT" ;;
-  *laya-export-onnx.py) echo ran >> ${at('exported.txt')} ;;
+  *laya-export-onnx.py) echo ran >> ${at('exported.txt')}; mkdir -p "$JEV_LAYA_EXPORT_DIR"; echo cand > "$JEV_LAYA_EXPORT_DIR/laya.onnx" ;;
+  *laya-eval-onnx.py)
+    while [ $# -gt 0 ]; do case "$1" in --bundle) B="$2"; shift ;; --gate-dump) G="$2"; shift ;; esac; shift; done
+    case "$B" in *candidate*) cp ${at('dump-cand.jsonl')} "$G" ;; *) cp ${at('dump-champ.jsonl')} "$G" ;; esac ;;
+  *laya_paired_gate.py) exec python3 "$@" ;;
 esac
 exit 0
 `, { mode: 0o755 });
+  // A serving bundle, and same-paper dumps where both models are equally good.
+  fs.mkdirSync(at('.jevgate/laya-trained-onnx'));
+  fs.writeFileSync(at('.jevgate/laya-trained-onnx/laya.onnx'), 'champ');
+  fs.writeFileSync(at('dump-champ.jsonl'), DUMP(338, []));
+  fs.writeFileSync(at('dump-cand.jsonl'), DUMP(338, []));
   const pushes = () => (fs.existsSync(at('pushes.txt')) ? fs.readFileSync(at('pushes.txt'), 'utf8').trim().split('\n') : []);
   const run = (extraEnv = {}) => execFileSync('bash', [path.join(ROOT, 'scripts/laya-nightly.sh')], {
     env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`,
@@ -68,9 +86,13 @@ test('a promoted night labels against int8, exports, and says what it gained', (
   assert.match(summary, /已換權重/);
   assert.doesNotMatch(summary, /n\/a|null|undefined/);
 
-  // Only a bundle that actually reached production may become the champion.
+  // Only a bundle that actually reached production may become the champion,
+  // and it records the same-paper number (the paired eval), not the OOF one —
+  // a number nobody can re-measure is what froze the gate from 10-02 on.
+  assert.equal(serving(at), 'cand');
   const champ = JSON.parse(fs.readFileSync(at('.jevgate/laya-champion.json'), 'utf8'));
-  assert.equal(champ.accuracy, 0.994);
+  assert.equal(champ.accuracy, 1);
+  assert.equal(champ.n, 338);
   assert.equal(champ.units, 533);
   // Without the question list on the record there is nothing for the next night
   // to compare against, and the population gate silently stops gating.
@@ -143,45 +165,71 @@ test('a better model that lost its calibration at the gate is not served', () =>
   assert.match(pushes().join('\n'), /不導出：線上 lane 準確率 0\.88（n=300）< 地板 0\.95/);
 });
 
-test('a model that beats stock int8 but regresses against the serving one is not served', () => {
+test('a model that beats stock int8 but answers significantly more wrong on the same paper is not served', () => {
   const { at, run, pushes } = sandbox();
   // The trainer's upgrade gate compares against frozen int8, so this model got
-  // its weights written. Against the model actually serving traffic it is worse.
+  // its weights written. On the same questions the serving model gets right,
+  // it is wrong 12 more times (vs 1 the other way): McNemar p≈0.003.
   fs.writeFileSync(at('.jevgate/laya-champion.json'),
-    JSON.stringify({ accuracy: 0.994, n: 170, units: 533, conf_min: 0.7 }));
-  fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 180, accuracy: 0.96 }));
+    JSON.stringify({ accuracy: 0.994, n: 170, units: 533, conf_min: 0.7, qids: QIDS }));
+  fs.writeFileSync(at('dump-champ.jsonl'), DUMP(338, [300]));
+  fs.writeFileSync(at('dump-cand.jsonl'), DUMP(338, range(0, 12)));
+  fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 340, accuracy: 0.98 }));
   run();
-  assert.equal(fs.existsSync(at('exported.txt')), false, 'replaced the champion with a worse model');
-  assert.match(pushes().join('\n'), /比現役 0\.994 退步超過 0\.01/);
-  // The champion record must survive a rejected challenger.
+  assert.equal(serving(at), 'champ', 'replaced the champion with a worse model');
+  assert.match(pushes().join('\n'), /不導出：同卷 n=338 新版 96\.4%（本機 338）vs 現役 99\.7%（本機 338），新版多錯 12／少錯 1，McNemar p=0\.0034 < 0\.05/);
+  // The champion record must survive a rejected challenger, and the rejected
+  // candidate must not linger at 500MB.
   assert.equal(JSON.parse(fs.readFileSync(at('.jevgate/laya-champion.json'), 'utf8')).accuracy, 0.994);
+  assert.equal(fs.existsSync(at('.jevgate/laya-candidate-onnx')), false);
 });
 
-test('a champion measured at another threshold is not used as the comparison', () => {
+test('a stale champion number cannot block: same paper 98.8% vs 98.2% on 338 ships and is re-recorded', () => {
   const { at, run, pushes } = sandbox();
-  // Move the threshold and a different set of questions stays local, so the two
-  // accuracies are not the same measurement. Comparing them would block or wave
-  // through a model on arithmetic between unlike populations; the floor still applies.
+  // The 10-02 bug: champion said 1.0 on 186 old questions, the new model was
+  // measured on 338 that night, and 98.2% < 1.0 - 0.01 blocked every night.
+  // On the same paper the serving model also misses some; 4 vs 2 discordant
+  // is noise (p≈0.69), so it ships and the champion takes the re-measured numbers.
   fs.writeFileSync(at('.jevgate/laya-champion.json'),
-    JSON.stringify({ accuracy: 0.994, n: 170, conf_min: 'score=0.65,noul=0.70' }));
-  fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 180, accuracy: 0.96 }));
+    JSON.stringify({ accuracy: 1.0, n: 186, conf_min: 'score=0.65,noul=0.70', qids: QIDS }));
+  fs.writeFileSync(at('dump-champ.jsonl'), DUMP(338, [4, 5, 6, 7]));
+  fs.writeFileSync(at('dump-cand.jsonl'), DUMP(338, [0, 1, 2, 3, 4, 5]));
+  fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 338, accuracy: 0.982 }));
   run();
-  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran');
-  assert.doesNotMatch(pushes().join('\n'), /退步/, 'compared accuracies from two different thresholds');
+  assert.equal(serving(at), 'cand');
+  assert.equal(fs.readFileSync(at('.jevgate/laya-trained-onnx.prev/laya.onnx'), 'utf8').trim(), 'champ');
+  const champ = JSON.parse(fs.readFileSync(at('.jevgate/laya-champion.json'), 'utf8'));
+  assert.equal(champ.n, 338);
+  assert.equal(Math.round(champ.accuracy * 1000), 982);
+  assert.equal(Math.round(champ.paired.prev_accuracy * 1000), 988);
+  assert.deepEqual([champ.paired.b, champ.paired.c], [4, 2]);
+  assert.doesNotMatch(pushes().join('\n'), /不導出/);
+  assert.match(pushes().at(-1), /已換權重，同卷 n=338 新版 98\.2%.*McNemar p=0\.6875/);
 });
 
-test('noise within tolerance still ships', () => {
+test('no serving bundle: nothing to pair, the floor alone decides', () => {
   const { at, run } = sandbox();
-  fs.writeFileSync(at('.jevgate/laya-champion.json'),
-    JSON.stringify({ accuracy: 0.994, n: 170, conf_min: 0.7 }));
+  fs.rmSync(at('.jevgate/laya-trained-onnx'), { recursive: true });
   fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 175, accuracy: 0.99 }));
   run();
-  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran',
-    'a 0.4pp wobble is sampling noise, not a regression — blocking it freezes the model forever');
+  assert.equal(serving(at), 'cand');
+});
+
+test('a failed paired evaluation keeps the serving bundle', () => {
+  const { at, run, pushes } = sandbox();
+  fs.rmSync(at('dump-cand.jsonl'));  // the candidate has no gate dump, so the paired gate fails
+  fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 175, accuracy: 0.99 }));
+  run();
+  assert.equal(serving(at), 'champ');
+  assert.match(pushes().join('\n'), /同卷配對評估失敗/);
 });
 
 test('a missing train venv is reported, not silently skipped', () => {
   const { run, pushes } = sandbox();
   run({ JEV_LAYA_PYTHON: '/nonexistent/python' });
   assert.match(pushes().at(-1), /訓練跳過/);
+});
+
+test('paired gate selftest (McNemar arithmetic and the ship/block cases)', () => {
+  assert.match(execFileSync('python3', [path.join(ROOT, 'scripts/laya_paired_gate.py'), '--selftest'], { encoding: 'utf8' }), /selftest ok/);
 });
