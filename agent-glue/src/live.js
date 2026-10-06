@@ -14,17 +14,57 @@
  *     key is never an error a host has to handle.
  */
 
+import { existsSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ENV } from '../claude/env.mjs';
 
-let transportPromise;
+const transportPromises = new Map();
+
+/**
+ * Question types triage lets the local Laya lane answer: `score` (difficulty).
+ * `kind` rides the task-kind-v1 profile lane, which needs no type here.
+ * `costly_mistake` is noul and deliberately absent — the cost of a wrong
+ * "this is safe" stays with the cloud judge, whatever the MCP lane admits.
+ */
+export const TRIAGE_LAYA_QTYPES = Object.freeze(['score']);
+
+const CLOUD_PROVIDERS = new Set(['zen', 'typesafe', 'openrouter']);
+
+/**
+ * Gateway overrides for the triage transport. With a Laya bundle on disk,
+ * triage runs the laya router. A cloud JEV_PROVIDER (zen / typesafe /
+ * openrouter — ~/.claude/settings.json sets `zen` for every Claude Code child)
+ * is read as the router's cloud fallback, not as an opt-out: it was set to
+ * pick the cloud host, before triage had a local lane. No bundle -> `{}`, the
+ * gateway's own default (zen): a missing model is never a triage failure.
+ * The bundle is the same one the MCP serves (JEV_LAYA_MODEL_DIR, else the
+ * nightly-exported ~/.jevgate/laya-trained-onnx). Enabled by the bundle's
+ * presence, not a flag (fix 9310).
+ * @returns {object}
+ */
+export function triageGatewayConfig(env = ENV, exists = existsSync) {
+  const qtypes = { layaQtypes: TRIAGE_LAYA_QTYPES };
+  const p = env.JEV_PROVIDER;
+  if (p === 'laya') return qtypes;
+  if (p && !CLOUD_PROVIDERS.has(p)) return {}; // fake / anything unknown: leave it alone
+  const dir = env.JEV_LAYA_MODEL_DIR || path.join(os.homedir(), '.jevgate', 'laya-trained-onnx');
+  if (!exists(path.join(dir, 'laya.onnx'))) return {};
+  return { provider: 'laya', layaModelDir: dir, ...qtypes,
+    ...(p && !env.JEV_FALLBACK_PROVIDER ? { fallbackProvider: p } : {}) };
+}
 
 /**
  * The in-process gateway as an agent-glue transport, or `null` when there is
- * no usable credential. Built once per process.
+ * no usable credential. Built once per process and flavour. `{ triage: true }`
+ * is the triage caller's gateway (Laya for difficulty/kind when the bundle is
+ * there); every other caller (verify, retriever, jev-route) keeps the plain
+ * env-configured gateway, so their score/noul questions do not move lanes.
  * @returns {Promise<object|null>}
  */
-export function liveTransport() {
-  transportPromise ??= (async () => {
+export function liveTransport({ triage = false } = {}) {
+  const slot = triage ? 'triage' : 'default';
+  if (!transportPromises.has(slot)) transportPromises.set(slot, (async () => {
     try {
       const [{ buildGateway }, { makeGatewayTransport }] = await Promise.all([
         import('../../gateway/src/config.js'),
@@ -32,13 +72,16 @@ export function liveTransport() {
       ]);
       // Telemetry off by default here: a hook writing JSONL to the host's
       // stderr is noise in a TUI, and the ledger is the durable record.
-      const { gateway } = buildGateway({ telemetry: ENV.JEV_TELEMETRY === 'on' });
+      const { gateway } = buildGateway({
+        telemetry: ENV.JEV_TELEMETRY === 'on',
+        ...(triage ? triageGatewayConfig() : {}),
+      });
       return makeGatewayTransport(gateway);
     } catch {
       return null; // no credential / no provider -> caller keeps status quo
     }
-  })();
-  return transportPromise;
+  })());
+  return transportPromises.get(slot);
 }
 
 let judgeCache;
@@ -86,7 +129,7 @@ export function localLayaJudge() {
 
 /** Test seam: drop the memoized provider handles. */
 export function resetLive() {
-  transportPromise = undefined;
+  transportPromises.clear();
   judgeCache = undefined;
   layaJudgeCache = undefined;
 }

@@ -78,7 +78,7 @@ export function buildGateway(cfg = {}) {
   } else if (cfg.provider === 'laya') {
     // Only fixed, short advisory classifications may use local weights.
     // Injection is internal JS wiring for offline tests, never MCP arguments.
-    const layaAdapter = cfg.layaAdapter ?? makeLayaAdapter();
+    const layaAdapter = cfg.layaAdapter ?? makeLayaAdapter({ modelDir: cfg.layaModelDir });
     const key = readKey(cfg.apiKeyFile);
     // Pick the fallback adapter by the key's type. Inferred from the file
     // basename, never the value: a typesafe key hitting the OpenRouter
@@ -108,7 +108,7 @@ export function buildGateway(cfg = {}) {
     // own `!cloud` credential error.
     const teacher = !fallback || cfg.teacherCorpus === false ? fallback : withTeacherCorpus(fallback, cfg.recordTeacherSample);
     rawAdapter = makeLayaRouter({ local: layaAdapter, cloud: teacher,
-      record: cfg.recordRoutingSample,
+      record: cfg.recordRoutingSample, qtypes: cfg.layaQtypes,
       onRoute: ({ local, cloud, fallback: count }) => telemetry?.record({
         event: count ? 'laya_fallback' : 'provider_route',
         provider: local && cloud ? 'hybrid' : local ? 'laya' : keyType,

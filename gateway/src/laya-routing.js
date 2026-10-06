@@ -65,7 +65,11 @@ function shortStandaloneState(state) {
   return !/[\r\n]|不要|別|别|不是|並且|并且|然後|然后|先.*再|剛才|刚才|上述|前面|照.*說|照.*说|刪除|删除|部署|付款|密碼|密码|\b(not|don't|never|then|previous|delete|deploy|password|payment)\b/i.test(text);
 }
 
-export function makeLayaRouter({ local, cloud, record = recordRoutingSample, onRoute = () => {} }) {
+// `qtypes` narrows the question-type lane per caller. The MCP keeps the env
+// default; agent-glue's triage passes ['score'] so its costly_mistake (noul)
+// always goes to the cloud (agent-glue/src/live.js).
+export function makeLayaRouter({ local, cloud, record = recordRoutingSample, onRoute = () => {}, qtypes = QTYPE_PILOT }) {
+  const pilot = new Set(qtypes);
   return async (state, questions, opts = {}) => {
     const deadlineAtMs = opts.deadlineAtMs ?? Date.now() + LIMITS.deadlineMs;
     const checkDeadline = () => {
@@ -75,7 +79,7 @@ export function makeLayaRouter({ local, cloud, record = recordRoutingSample, onR
     const localQs = {}, cloudQs = {}, samples = [];
     const eligible = !opts.model && shortStandaloneState(state);
     for (const [id, q] of Object.entries(questions)) {
-      (eligible && (profile(q) || QTYPE_PILOT.has(q?.type)) ? localQs : cloudQs)[id] = q;
+      (eligible && (profile(q) || pilot.has(q?.type)) ? localQs : cloudQs)[id] = q;
     }
     let localResult;
     const answers = {};

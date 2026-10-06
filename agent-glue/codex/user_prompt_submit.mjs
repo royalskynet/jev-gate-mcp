@@ -22,7 +22,7 @@ const prompt = typeof event?.prompt === 'string' ? event.prompt : '';
 
 // The live gateway when the provider is configured, otherwise undefined -> the
 // triage's own fail-open path (status quo, one ledger line saying so).
-const transport = (await liveTransport()) ?? undefined;
+const transport = (await liveTransport({ triage: true })) ?? undefined;
 const decision = await triage(
   { text: prompt, contextChars: Number(process.env.JEV_CTX_CHARS ?? 0) },
   { transport },
