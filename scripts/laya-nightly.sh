@@ -81,7 +81,9 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
     | if $k == null then "" else [.live_gated.qids[] | select(. as $q | $k | index($q) | not)] | join(",") end
   ' "$REPORT" 2>/dev/null)
   if [ "${GATE_N:-0}" -lt "$MIN_N" ]; then
-    hpush "⚠️ Laya 權重已換但不導出：線上 lane 只有 n=${GATE_N} 題 < 最少 ${MIN_N}，量不出好壞，bundle 維持舊版"
+    # 不另發 ⚠️：本機 lane 自己答掉的題拿不到老師答案，n 只能慢慢長，這個狀態會連續好幾週，
+    # 每晚一則警告沒有可行動的資訊。原因併進下面那行摘要，跟「已換權重」放在一起才不像矛盾。
+    PAIRED="不導出：線上 lane 只有 n=${GATE_N} 題 < 最少 ${MIN_N}，量不出好壞，bundle 維持舊版"
   elif [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson f "$FLOOR" '$a >= $f')" != true ]; then
     hpush "⚠️ Laya 權重已換但不導出：線上 lane 準確率 ${GATE_ACC}（n=${GATE_N}）< 地板 ${FLOOR}，bundle 維持舊版"
   elif [ -n "$NEW_QIDS" ]; then

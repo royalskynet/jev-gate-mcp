@@ -165,6 +165,11 @@ test('too few online-lane rows to measure anything: nothing ships, and it says w
   assert.equal(fs.existsSync(at('exported.txt')), false, 'shipped a model measured on 5 rows');
   assert.equal(serving(at), 'champ');
   assert.match(pushes().join('\n'), /不導出：線上 lane 只有 n=5 題 < 最少 30/);
+  // 10-07: the lane's own local answers never get a teacher label, so n stays
+  // tiny for weeks and a separate ⚠️ fired every night next to a summary saying
+  // 已換權重. One push, the reason inside the summary, nothing to alarm on.
+  assert.equal(pushes().length, 1, pushes().join('\n'));
+  assert.match(pushes()[0], /已換權重，不導出：線上 lane 只有 n=5 題/);
 });
 
 test('a better model that lost its calibration at the gate is not served', () => {
