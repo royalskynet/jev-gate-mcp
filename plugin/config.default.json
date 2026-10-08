@@ -7,6 +7,8 @@
   "backupKeyFile": "${HOME}/.creds/kv/OPENROUTER_SECOND_API_KEY.txt",
   "zenStatusFile": "${HOME}/.jevgate/zen-free-status.json",
   "timeoutMs": 2000,
+  "stopCascadeUrl": "http://127.0.0.1:8793",
+  "stopCascadeTimeoutMs": 4000,
   "maxRetries": 0,
   "maxConcurrency": 2,
   "thresholdChars": 16000,

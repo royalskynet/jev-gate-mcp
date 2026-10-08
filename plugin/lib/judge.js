@@ -46,6 +46,44 @@ export function getModel(cfg = DEFAULT_CONFIG) {
 }
 
 /**
+ * Stop gate's model. With `stopCascadeUrl` set it talks to the local cascade
+ * daemon (one ledger, shared Zen cooldown, OR daily cap, 402 stop); the
+ * daemon owns the real keys, so the bearer here is a placeholder. If the
+ * daemon is unreachable the same request goes straight to Zen/OR as before,
+ * so a dead daemon never silently turns the gate off.
+ */
+let stopModelCache = null;
+export function getStopModel(cfg = DEFAULT_CONFIG, fetchImpl = globalThis.fetch) {
+  if (!cfg.stopCascadeUrl) return getModel(cfg);
+  if (stopModelCache) return stopModelCache;
+  const base = cfg.stopCascadeUrl.replace(/\/+$/, '');
+  const viaCascade = async (url, init) => {
+    try {
+      return await fetchImpl(url, { ...init, headers: { ...init.headers, 'x-jev-caller': 'stop-gate' } });
+    } catch (e) {
+      if (init.signal?.aborted) throw e;
+      const backup = zenCooling(cfg.zenStatusFile) ? loadKey(cfg, 'backupKeyFile') : null;
+      const key = backup ?? loadKey(cfg);
+      if (!key) throw e;
+      const direct = backup ? cfg.backupBaseUrl : cfg.baseUrl;
+      const body = init.body ? JSON.stringify({ ...JSON.parse(init.body), model: backup ? cfg.backupModel : cfg.model }) : init.body;
+      return fetchImpl(direct.replace(/\/+$/, '') + url.slice(base.length), {
+        ...init, body, headers: { ...init.headers, Authorization: `Bearer ${key}` },
+      });
+    }
+  };
+  stopModelCache = new JevDecisionModel({
+    apiKey: 'cascade-local',
+    baseUrl: base,
+    model: cfg.model,
+    timeoutMs: cfg.stopCascadeTimeoutMs ?? cfg.timeoutMs,
+    maxRetries: cfg.maxRetries,
+    fetch: viaCascade,
+  });
+  return stopModelCache;
+}
+
+/**
  * Build a fail-open judge: `(state) => Promise<'keep'|'drop'>`.
  * Any error (missing key, API error, timeout, bad schema) -> 'keep'
  * (original output passes through unchanged).

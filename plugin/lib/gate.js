@@ -2,7 +2,7 @@ import { appendFileSync } from 'node:fs';
 import { promises as fsP } from 'node:fs';
 import { dirname } from 'node:path';
 import { runVerify, runNextStep } from 'jevwire';
-import { getModel, DEFAULT_CONFIG } from './judge.js';
+import { getModel, getStopModel, DEFAULT_CONFIG } from './judge.js';
 
 /**
  * jev-gate: Stop completion check + PreToolUse ghost-loop gate.
@@ -77,7 +77,7 @@ export function runConfig(cfg = DEFAULT_CONFIG) {
  */
 export function makeStopGate(cfg = DEFAULT_CONFIG) {
   const stopGate = shadow(async ({ claim, evidence }) => {
-    const model = getModel(cfg);
+    const model = getStopModel(cfg);
     if (!model) throw new Error('no Jev model configured');
     const cfgOut = runConfig(cfg);
     const out = await runVerify(model, { claims: [claim], evidence }, cfgOut);
