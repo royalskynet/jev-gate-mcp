@@ -27,6 +27,19 @@ test('redact masks groq and telegram bot tokens, not their near-misses', () => {
   assert.equal(redact('gsk_x 12345:AAshort'), 'gsk_x 12345:AAshort');
 });
 
+// 10-07: an unprefixed key pasted as "ci key:  <token>" passed every shape above
+// and reached the cloud teacher; gitleaks generic-api-key caught it at rest.
+test('redact masks a labelled bare key, keeps the label and plain identifiers', () => {
+  const bare = 'Ab3' + 'x9Kq'.repeat(13);
+  assert.equal(redact(`另存creds ci key:  ${bare} 謝`), '另存creds ci key:  [REDACTED:labelled] 謝');
+  assert.equal(redact(`API_KEY="${bare}"`), 'API_KEY="[REDACTED:labelled]"');
+  assert.equal(redact(`密鑰：${bare}`), '密鑰：[REDACTED:labelled]');
+  // No digit, too short, or no assignment: ordinary text.
+  assert.equal(redact('key: kv_cache_key_names_for_layer'), 'key: kv_cache_key_names_for_layer');
+  assert.equal(redact('token=abc123'), 'token=abc123');
+  assert.equal(redact(`the key ${bare}`), `the key ${bare}`);
+});
+
 // The incident: a pasted key in a hook prompt reached the cloud teacher and the
 // teacher corpus. Both sinks sit behind the adapter boundary and must see only
 // the masked state.
