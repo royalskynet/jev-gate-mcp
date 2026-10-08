@@ -506,7 +506,13 @@ def head_logits(model, h, attention_mask, marker_pos, marker_mask, qtype, torch)
     if model.head is not None:
         pad = ~attention_mask.bool()
         for layer in model.head.layers:
-            h = layer(h, src_key_padding_mask=pad)
+            if model.head_checkpointing and model.training and torch.is_grad_enabled():
+                # 上游同一分支：反傳時重算，不存 L=1024 的注意力 activation，壓單步峰值。
+                # 數學不變（預設保留 RNG，dropout 一致）。
+                from torch.utils.checkpoint import checkpoint
+                h = checkpoint(layer, h, src_key_padding_mask=pad, use_reentrant=False)
+            else:
+                h = layer(h, src_key_padding_mask=pad)
     idx = marker_pos.clamp(min=0)[:, :, None].expand(-1, -1, h.size(-1))
     m = torch.gather(h, 1, idx)
     logits = model.scorer(m).squeeze(-1).float()
@@ -714,6 +720,7 @@ def main():
         opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
         order = list(range(len(tr)))
         rng = random.Random(SEED + f)
+        model.head_checkpointing = True
         model.train()
         last = None
         for ep in range(args.epochs):
@@ -730,6 +737,8 @@ def main():
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 opt.step()
                 opt.zero_grad()
+                if device.type == "mps":
+                    torch.mps.empty_cache()  # 每批 L 不同，MPS 替每種長度囤快取；不清的話 driver 一路長到 15GB
                 tot += float(loss.detach())
                 nb += 1
             last = tot / max(nb, 1)
@@ -871,6 +880,8 @@ def main():
                     torch.nn.utils.clip_grad_norm_(params, 1.0)
                     opt.step()
                     opt.zero_grad()
+                    if device.type == "mps":
+                        torch.mps.empty_cache()  # 每批 L 不同，MPS 替每種長度囤快取；不清的話 driver 一路長到 15GB
             model.eval()
             save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()},
                       str(out / "model.safetensors"))
