@@ -15,8 +15,11 @@ const cfg = DEFAULT_CONFIG;
  * Fail-open in three places, all of them load-bearing on a headless machine:
  * a second pass (`stop_hook_active`) never blocks, an empty claim or empty
  * evidence never blocks, and an error inside the judgment never blocks.
+ *
+ * `c` lets another host reuse the gate with its own log, caller and shadow
+ * switch (~/bots/mythos/bin/stop-gate.mjs) without forking this logic.
  */
-export async function handleStop(payload) {
+export async function handleStop(payload, c = cfg) {
   // fi-reminder.sh's guard: one block per turn-chain, never a loop.
   if (payload?.stop_hook_active) return undefined;
   const claim = String(payload?.last_assistant_message ?? '').slice(0, 4000);
@@ -36,18 +39,18 @@ export async function handleStop(payload) {
       // idcheckShadow (issue #12) kept this observe-only while the rate was
       // measured: 4/5 shadow hits were evidence-side misses, now fixed; replay of
       // 666 Stops (278 with ids) flags only the one real fabrication. Default
-      // off; set true to go back to observe-only. cfg.shadow still gates both.
-      await logAsync(cfg, {
-        event: cfg.shadow || cfg.idcheckShadow ? 'idcheck_observe' : 'idcheck_block',
+      // off; set true to go back to observe-only. c.shadow still gates both.
+      await logAsync(c, {
+        event: c.shadow || c.idcheckShadow ? 'idcheck_observe' : 'idcheck_block',
         gate: 'stop',
         ids,
       });
-      if (!cfg.shadow && !cfg.idcheckShadow) return idBlock(ids);
+      if (!c.shadow && !c.idcheckShadow) return idBlock(ids);
     }
   } catch {
     // Fail open, like every other guard in this hook.
   }
-  const result = await makeStopGate(cfg)({ claim, evidence });
+  const result = await makeStopGate(c)({ claim, evidence });
   if (result.shadow) return undefined;
   return blockDecision(result.decided?.claims?.[0]);
 }

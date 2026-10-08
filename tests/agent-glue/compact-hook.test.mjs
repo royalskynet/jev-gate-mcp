@@ -214,3 +214,43 @@ test('the four core knobs read their env names and stay undefined when unset', (
     refreshConfig();
   }
 });
+
+// Why: P2 moves compact onto the local cascade daemon by flipping one file,
+// with no restart; a dead daemon or a bad flag file must never stop compaction.
+test('compact-hook: cascade-callers.json routes the judge via the daemon, falls back when it is down', async () => {
+  const { readCascadeUrl, fetchVia } = await import('../../agent-glue/claude/compact-hook.mjs');
+  const flag = `${ENV.HOME || ENV.USERPROFILE}/.jevgate/cascade-callers.json`;
+  const calls = [];
+  let daemonUp = true;
+  const host = (files) => ({
+    fs: { async read(p) { if (p in files) return files[p]; throw new Error('ENOENT'); } },
+    http: { async fetch(url, init) {
+      calls.push({ url, caller: init?.headers?.['x-jev-caller'], auth: init?.headers?.Authorization });
+      if (url.startsWith('http://127.0.0.1:8793') && !daemonUp) throw new TypeError('fetch failed');
+      return { status: 200, ok: true, text: '{}' };
+    } },
+  });
+  const direct = 'https://opencode.ai/zen/v1/systemone';
+  const init = { method: 'POST', headers: { Authorization: 'Bearer k' }, body: '{}' };
+
+  assert.equal(await readCascadeUrl(host({})), '', 'no flag file = off');
+  await fetchVia(host({}), direct, init);
+  assert.equal(calls.at(-1).url, direct);
+  assert.equal(await readCascadeUrl(host({ [flag]: '{not json' })), '', 'bad json = off');
+  assert.equal(await readCascadeUrl(host({ [flag]: '{"compact":"https://evil.example"}' })), '', 'non-loopback = off');
+  assert.equal(await readCascadeUrl(host({ [flag]: '{"stop-gate":"http://127.0.0.1:8793"}' })), '', 'other caller only = off');
+
+  const $ = host({ [flag]: '{"compact":"http://127.0.0.1:8793/"}' });
+  assert.equal(await readCascadeUrl($), 'http://127.0.0.1:8793');
+  calls.length = 0;
+  await fetchVia($, direct, init);
+  assert.deepEqual(calls, [{ url: 'http://127.0.0.1:8793/v1/systemone', caller: 'compact', auth: 'Bearer k' }]);
+
+  daemonUp = false;
+  calls.length = 0;
+  await fetchVia($, direct, init);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].url, direct, 'dead daemon falls back to the original host');
+  assert.equal(calls[1].caller, undefined);
+  await readCascadeUrl(host({}));
+});

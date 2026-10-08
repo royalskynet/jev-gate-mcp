@@ -52,14 +52,15 @@ export function getModel(cfg = DEFAULT_CONFIG) {
  * daemon is unreachable the same request goes straight to Zen/OR as before,
  * so a dead daemon never silently turns the gate off.
  */
-let stopModelCache = null;
+const stopModelCache = new Map();
 export function getStopModel(cfg = DEFAULT_CONFIG, fetchImpl = globalThis.fetch) {
   if (!cfg.stopCascadeUrl) return getModel(cfg);
-  if (stopModelCache) return stopModelCache;
+  const caller = cfg.stopCaller ?? 'stop-gate';
+  if (stopModelCache.has(caller)) return stopModelCache.get(caller);
   const base = cfg.stopCascadeUrl.replace(/\/+$/, '');
   const viaCascade = async (url, init) => {
     try {
-      return await fetchImpl(url, { ...init, headers: { ...init.headers, 'x-jev-caller': 'stop-gate' } });
+      return await fetchImpl(url, { ...init, headers: { ...init.headers, 'x-jev-caller': caller } });
     } catch (e) {
       if (init.signal?.aborted) throw e;
       const backup = zenCooling(cfg.zenStatusFile) ? loadKey(cfg, 'backupKeyFile') : null;
@@ -72,7 +73,7 @@ export function getStopModel(cfg = DEFAULT_CONFIG, fetchImpl = globalThis.fetch)
       });
     }
   };
-  stopModelCache = new JevDecisionModel({
+  const model = new JevDecisionModel({
     apiKey: 'cascade-local',
     baseUrl: base,
     model: cfg.model,
@@ -80,7 +81,8 @@ export function getStopModel(cfg = DEFAULT_CONFIG, fetchImpl = globalThis.fetch)
     maxRetries: cfg.maxRetries,
     fetch: viaCascade,
   });
-  return stopModelCache;
+  stopModelCache.set(caller, model);
+  return model;
 }
 
 /**

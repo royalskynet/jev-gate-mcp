@@ -338,13 +338,43 @@ async function meteredFetch($, url, init) {
   };
   let res;
   try {
-    res = await $.http.fetch(url, init);
+    res = await fetchVia($, url, init);
   } catch (e) {
     await log('error', '');
     throw e;
   }
   await log(res?.status ?? (res?.ok ? 200 : 'error'), res?.text);
   return res;
+}
+
+/**
+ * Local cascade daemon (gateway/src/cascade-server.js), switched on per caller
+ * by ~/.jevgate/cascade-callers.json `{"compact": "http://127.0.0.1:8793"}`
+ * and re-read every session.compact, so cutover and rollback need no restart.
+ * Same contract as the Stop gate (plugin/lib/judge.js getStopModel): the
+ * daemon owns the keys, and an unreachable daemon sends the request straight
+ * to its original host, so a dead daemon never turns compaction off.
+ */
+let cascadeUrl = '';
+export async function readCascadeUrl($, file = `${ENV.HOME || ENV.USERPROFILE}/.jevgate/cascade-callers.json`) {
+  try {
+    const raw = await $.fs.read(file);
+    const url = JSON.parse(raw)?.compact;
+    cascadeUrl = typeof url === 'string' && /^http:\/\/127\.0\.0\.1:\d+\/?$/.test(url) ? url.replace(/\/+$/, '') : '';
+  } catch {
+    cascadeUrl = '';
+  }
+  return cascadeUrl;
+}
+
+export async function fetchVia($, url, init) {
+  const path = url.match(/\/v1\/systemone$/) ? '/v1/systemone' : '';
+  if (!cascadeUrl || !path) return $.http.fetch(url, init);
+  try {
+    return await $.http.fetch(cascadeUrl + path, { ...init, headers: { ...init?.headers, 'x-jev-caller': 'compact' } });
+  } catch {
+    return $.http.fetch(url, init);
+  }
 }
 
 /**
@@ -410,6 +440,7 @@ export const register = (on, options = {}) => {
       const status = await $.fs.read(`${ENV.HOME || ENV.USERPROFILE}/.jevgate/zen-free-status.json`).catch(() => '');
       refreshConfig(zenCooling(status, await $.clock.now().catch(() => NaN)));
     }
+    await readCascadeUrl($);
     const key = await apiKey($, options);
     if (!key) {
       await appendLedger($, 'jev-compact: no provider key, built-in compaction runs');
