@@ -16,7 +16,7 @@ export HPASS_LOG="$SB/hpush.log"
 cat > "$SB/fake-python" <<'EOF'
 #!/bin/sh
 touch "$MARKER"
-exit 0
+exit "${FAKE_TRAIN_RC:-0}"
 EOF
 chmod +x "$SB/fake-python"
 
@@ -67,6 +67,21 @@ rm -f "$MARKER"
 FAKE_RC=134 FAKE_WRITE_DONE=1 FAKE_EPOCH=1 bash "$NIGHTLY" >/dev/null 2>&1; rc=$?
 mk=0; [ -f "$MARKER" ] && mk=1
 check "rc134+stale beacon aborts" 134 "$rc" 0 "$mk"
+
+# 訓練被 ram_guard SIGTERM（fix 10256）：通知要指向守衛 log，並記下峰值行
+rm -f "$MARKER" "$HPASS_LOG"
+OUT=$(FAKE_RC=0 FAKE_TRAIN_RC=143 bash "$NIGHTLY" 2>/dev/null); rc=$?
+check "train rc143 propagates" 143 "$rc" 1 "$([ -f "$MARKER" ] && echo 1 || echo 0)"
+if grep -q "ram_guard" "$HPASS_LOG" 2>/dev/null; then echo "ok - rc143 hpush names ram_guard"; pass=$((pass+1)); else echo "not ok - rc143 hpush names ram_guard"; fail=$((fail+1)); fi
+if echo "$OUT" | grep -qE "train peak_fp=[0-9]+MB rc=143"; then echo "ok - peak line logged"; pass=$((pass+1)); else echo "not ok - peak line logged"; fail=$((fail+1)); fi
+
+# 峰值過門檻要告警（門檻設 0 必觸發），沒過不能告警
+rm -f "$HPASS_LOG"
+FAKE_RC=0 JEV_LAYA_PEAK_WARN_MB=0 bash "$NIGHTLY" >/dev/null 2>&1
+if grep -q "記憶體峰值" "$HPASS_LOG" 2>/dev/null; then echo "ok - peak over threshold warns"; pass=$((pass+1)); else echo "not ok - peak over threshold warns"; fail=$((fail+1)); fi
+rm -f "$HPASS_LOG"
+FAKE_RC=0 bash "$NIGHTLY" >/dev/null 2>&1
+if grep -q "記憶體峰值" "$HPASS_LOG" 2>/dev/null; then echo "not ok - peak under threshold silent"; fail=$((fail+1)); else echo "ok - peak under threshold silent"; pass=$((pass+1)); fi
 
 echo "# pass=$pass fail=$fail"
 [ "$fail" = 0 ]

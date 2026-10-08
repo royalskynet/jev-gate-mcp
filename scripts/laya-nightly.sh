@@ -41,10 +41,23 @@ if [ ! -x "$PY" ]; then
   echo "$(date -u +%FT%TZ) end rc=0 train=skipped"
   exit 0
 fi
-"$PY" "$DIR/scripts/laya-train.py" --promote
+# time -l 量峰值 footprint（ram_guard 用同一個量法）。exec 讓量到的是 python 本身；
+# python 的 stderr 經 fd3 照舊進 err.log，只有 time 的統計進 TIMEF。
+TIMEF=$(mktemp)
+/usr/bin/time -l sh -c 'exec "$@" 2>&3' sh "$PY" "$DIR/scripts/laya-train.py" --promote 3>&2 2>"$TIMEF"
 RC=$?
+PEAK_MB=$(awk '/peak memory footprint/{print int($1/1048576)}' "$TIMEF")
+rm -f "$TIMEF"
+echo "$(date -u +%FT%TZ) train peak_fp=${PEAK_MB:-?}MB rc=${RC}"
+# 10-08/09 MPS 快取囤到 15GB 被 ram_guard 砍（fix 10256），修後實測 8.2GB。超過門檻就是回歸。
+PEAK_WARN_MB="${JEV_LAYA_PEAK_WARN_MB:-10240}"
+if [ "${PEAK_MB:-0}" -ge "$PEAK_WARN_MB" ]; then
+  hpush "⚠️ Laya 訓練記憶體峰值 ${PEAK_MB}MB ≥ ${PEAK_WARN_MB}MB，MPS 快取可能又在囤（fix 10256）"
+fi
 if [ "$RC" != 0 ]; then
-  hpush "⚠️ Laya 夜間訓練失敗 rc=${RC}，看 ~/.jevgate/laya-nightly.log"
+  HINT=""
+  [ "$RC" = 143 ] && HINT="（SIGTERM，多半是 ram_guard 砍：grep 'kill rule' ~/.omlx/logs/ram_guard.log）"
+  hpush "⚠️ Laya 夜間訓練失敗 rc=${RC}${HINT}，看 ~/.jevgate/laya-nightly.log"
   exit "$RC"
 fi
 
