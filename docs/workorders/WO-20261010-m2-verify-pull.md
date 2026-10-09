@@ -1,14 +1,14 @@
 # WO-20261010 M2：pull 到 2b0b668、重跑 npm test、回報 opencode TUI 實測
 
-**在 M2 跑，不是 51mini。** 第一步先核機型，`Mac16,10` 就是 51mini，停。
+本工單在 M2 本機執行，所有路徑都以 `$HOME` 為準。repo 預設在 `~/jev-gate-mcp`，放在別處就先 `export JEV_GATE_DIR=<repo 路徑>`。
 
-背景：`tests/agent-glue/compact-hook.test.mjs` 的「primary endpoint/model defaults name the same host as the primary key file」在 51mini 過、M2 敗。根因是測試沒清掉 `JEV_ENDPOINT`／`JEV_MODEL`／`JEV_API_KEY_FILE`，機器有 export 就讀到環境值（fixindex 10283／10312）。`2b0b668` 修了測試，產品碼沒改。
+背景：上次在這台跑 `npm test`，`tests/agent-glue/compact-hook.test.mjs` 的「primary endpoint/model defaults name the same host as the primary key file」失敗。根因是測試沒清掉 `JEV_ENDPOINT`／`JEV_MODEL`／`JEV_API_KEY_FILE`，這台 shell 有 export 其中之一，測試就讀到環境值。`2b0b668` 修了測試，產品碼沒改。
 
 ## 步驟
 
 ```sh
-# 0. 核機型
-[ "$(sysctl -n hw.model)" != "Mac16,10" ] || { echo "這台是 51mini，停"; exit 1; }
+# 0. 防呆：Mac16,10 是派工端那台，不是 M2
+[ "$(sysctl -n hw.model)" != "Mac16,10" ] || { echo "這台不是 M2，停"; exit 1; }
 
 REPO="${JEV_GATE_DIR:-$HOME/jev-gate-mcp}"
 cd "$REPO"

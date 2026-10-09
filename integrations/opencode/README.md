@@ -16,7 +16,8 @@
 ## 安裝
 
 ```sh
-ln -s /Users/51mini/dev/jev-gate-mcp/integrations/opencode/jev-laya.js ~/.config/opencode/plugins/jev-laya.js
+# 在 repo 根目錄執行
+ln -s "$PWD/integrations/opencode/jev-laya.js" ~/.config/opencode/plugins/jev-laya.js
 ```
 
 M2：`bash scripts/m2-opencode-jev-install.sh`（含煙霧測試；找得到 Genie repo 時一併 pull 並接上 `genie-dedup.js`）。
