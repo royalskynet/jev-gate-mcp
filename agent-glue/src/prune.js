@@ -76,6 +76,39 @@ async function pruneKey(env = process.env) {
 }
 
 /**
+ * keep/drop for caller-built segments (opencode compaction: one segment per
+ * old tool call). Same transport, key order and per-batch deadline as
+ * `pruneCommand`; one request per `per` segments, run in parallel. Every
+ * failure answers 'keep' for the segments it covered.
+ * @returns {Promise<('keep'|'drop')[]>}
+ */
+export async function judgeSegments({ request, segments, criteria, per = 8 }, deps = {}) {
+  const keepAll = (segments ?? []).map(() => 'keep');
+  if (!keepAll.length || !String(request ?? '').trim()) return keepAll;
+  try {
+    if (!deps.key) await followZenCooldown(deps.host ?? fetchHost);
+    const key = deps.key ?? (await pruneKey());
+    if (!key) return keepAll;
+    const judge = deps.judge
+      ?? ((batch) => judgeChunks(deps.host ?? fetchHost, key, request, batch, criteria));
+    const starts = [];
+    for (let i = 0; i < segments.length; i += per) starts.push(i);
+    const parts = await Promise.all(starts.map(async (s) => {
+      const batch = segments.slice(s, s + per);
+      try {
+        const v = await judge(batch);
+        return Array.isArray(v) && v.length === batch.length ? v : batch.map(() => 'keep');
+      } catch {
+        return batch.map(() => 'keep');
+      }
+    }));
+    return parts.flat().map((v) => (v === 'drop' ? 'drop' : 'keep'));
+  } catch {
+    return keepAll;
+  }
+}
+
+/**
  * Judge-and-drop one long tool output. `{ tool, request, text }` in,
  * `{ text, dropped_lines, chars_before, chars_after, judged, reason }` out.
  * Fail-open in every direction: no key, no network, short input or a bad

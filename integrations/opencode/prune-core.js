@@ -47,6 +47,71 @@ export function lastUserText(messages) {
   return '';
 }
 
+// Same wording as agent-glue/claude/compact-hook.mjs, so Claude and opencode
+// compaction answer the same question.
+export const COMPACT_CRITERIA = {
+  keep: 'The call or its output still carries information the current task depends on — a file the work is being done in, an error being fixed, a result later steps refer back to.',
+  drop: 'The payload has served its purpose: exploratory listing, a search that led nowhere, output already summarised into the conversation, or a check that has since been superseded.',
+};
+
+export const COMPACT_DEFAULTS = {
+  atChars: 80000, // tool output in history before a pass runs (~20k tokens)
+  minPartChars: 2000, // smaller outputs are not worth a judgment
+  pinLast: 4, // newest messages are never touched
+  headChars: 800, // how much of each output the judge sees
+  maxPerPass: 48,
+};
+
+function completedTool(part) {
+  return part?.type === 'tool' && part.state?.status === 'completed' && typeof part.state.output === 'string';
+}
+
+/**
+ * Verbatim compaction over opencode's `experimental.chat.messages.transform`
+ * payload: user/assistant text is never touched, only old tool outputs that
+ * Jev judged `drop` are replaced by a marker. `decisions` (callID → verdict)
+ * outlives the pass, so each output is judged once and a dropped one stays
+ * dropped on every later turn — the prompt-cache prefix changes once per
+ * pass, not once per turn. Mutates `messages` in place by swapping in copies
+ * of the touched parts (opencode rebuilds the list from storage each turn).
+ */
+export async function compactParts(messages, { judge, decisions, opts = {} }) {
+  const o = { ...COMPACT_DEFAULTS, ...opts };
+  if (!Array.isArray(messages) || !decisions) return { dropped: 0, judged: 0 };
+  const editable = messages.slice(0, Math.max(0, messages.length - o.pinLast));
+  const sites = [];
+  let total = 0;
+  for (const m of editable) {
+    (m?.parts ?? []).forEach((p, i) => {
+      if (!completedTool(p) || p.state.time?.compacted) return;
+      total += p.state.output.length;
+      if (p.state.output.length >= o.minPartChars && p.callID) sites.push({ m, i, p });
+    });
+  }
+  let judged = 0;
+  const fresh = sites.filter((s) => !decisions.has(s.p.callID)).slice(0, o.maxPerPass);
+  if (total >= o.atChars && fresh.length && judge) {
+    const request = lastUserText(messages);
+    const segments = fresh.map(({ p }) => {
+      const args = JSON.stringify(p.state.input ?? {}).slice(0, 300);
+      return `tool: ${p.tool}\nargs: ${args}\noutput (${p.state.output.length} chars):\n${p.state.output.slice(0, o.headChars)}`;
+    });
+    const verdicts = await judge({ request, segments, criteria: COMPACT_CRITERIA }).catch(() => null);
+    if (Array.isArray(verdicts) && verdicts.length === fresh.length) {
+      fresh.forEach((s, k) => decisions.set(s.p.callID, verdicts[k] === 'drop' ? 'drop' : 'keep'));
+      judged = fresh.length;
+    }
+  }
+  let dropped = 0;
+  for (const { m, i, p } of sites) {
+    if (decisions.get(p.callID) !== 'drop') continue;
+    const n = p.state.output.length;
+    m.parts[i] = { ...p, state: { ...p.state, output: `[jev-compact: dropped ${n} chars; rerun the tool if it is needed again]` } };
+    dropped += n;
+  }
+  return { dropped, judged };
+}
+
 /**
  * Returns the text the model should see. `prune` is `pruneCommand`; it applies
  * its own 16 KB threshold, so the request is only fetched past that point.
