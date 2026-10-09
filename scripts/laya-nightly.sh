@@ -103,9 +103,10 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
     hpush "⚠️ Laya 權重已換但不導出：本機 lane 出現現役沒有的題目 ${NEW_QIDS}（從未量測就上線），bundle 維持舊版"
   else
     rm -rf "$CAND" "$CAND.prev" "$CAND.new"
-    # parity 只比本機會答的題；其餘題的翻轉不影響線上（使用者 10-09 核准）
+    # parity 只比本機會答的題，翻轉只警告：int8 實測會翻 gated 題 10/64（fp32 0/64），
+    # 但翻轉≠答錯，導出到候選目錄後由下面的同卷配對閘拿老師答案判（使用者 10-09 核准）
     GATED_QIDS=$(jq -r '.live_gated.qids // [] | join(",")' "$REPORT" 2>/dev/null)
-    JEV_LAYA_EXPORT_DIR="$CAND" "$PY" "$DIR/scripts/laya-export-onnx.py" --parity-qids "$GATED_QIDS"
+    JEV_LAYA_EXPORT_DIR="$CAND" "$PY" "$DIR/scripts/laya-export-onnx.py" --parity-qids "$GATED_QIDS" --parity-warn-only
     ERC=$?
     rm -rf "$CAND.prev" "$CAND.new"  # .new＝導出被中途砍掉時 atexit 來不及清的殘骸
     if [ "$ERC" != 0 ]; then
