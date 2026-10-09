@@ -168,16 +168,25 @@ test('compact-hook: on a 1M window the absolute token ceiling fires long before 
 // to its own OpenRouter decisions URL while `apiKeyFile` still pointed at the
 // Zen key — every compact answered 401 `Missing Authentication header` and fell
 // back to the built-in summary, silently, for days (2026-10-01).
+// The defaults are what is under test, so a machine that exports the overrides
+// (passed on 51mini, failed on M2 2026-10-09) must not leak them in.
 test('the primary endpoint/model defaults name the same host as the primary key file', () => {
-  refreshConfig();
-  assert.equal(CONFIG.endpoint, 'https://opencode.ai/zen/v1/systemone');
-  assert.equal(CONFIG.model, 'jev-1.13-free');
-  assert.match(CONFIG.apiKeyFile, /OPENCODE_ZEN_API_KEY\.txt$/);
-  // Backup is the OpenRouter pair, and all three must switch together.
-  refreshConfig(true);
-  assert.match(CONFIG.endpoint, /^https:\/\/openrouter\.ai\//);
-  assert.match(CONFIG.apiKeyFile, /OPENROUTER_SECOND_API_KEY\.txt$/);
-  refreshConfig();
+  const saved = { ...ENV };
+  try {
+    for (const k of ['JEV_ENDPOINT', 'JEV_MODEL', 'JEV_API_KEY_FILE']) delete ENV[k];
+    refreshConfig();
+    assert.equal(CONFIG.endpoint, 'https://opencode.ai/zen/v1/systemone');
+    assert.equal(CONFIG.model, 'jev-1.13-free');
+    assert.match(CONFIG.apiKeyFile, /OPENCODE_ZEN_API_KEY\.txt$/);
+    // Backup is the OpenRouter pair, and all three must switch together.
+    refreshConfig(true);
+    assert.match(CONFIG.endpoint, /^https:\/\/openrouter\.ai\//);
+    assert.match(CONFIG.apiKeyFile, /OPENROUTER_SECOND_API_KEY\.txt$/);
+  } finally {
+    for (const k of Object.keys(ENV)) delete ENV[k];
+    Object.assign(ENV, saved);
+    refreshConfig();
+  }
 });
 
 // Why: the retired fast-jev-compaction plugin exposed these four as userConfig;
