@@ -1,6 +1,6 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeCascadeServer } from '../gateway/src/cascade-server.js';
+import { makeCascadeServer, resolveTailnetIps } from '../gateway/src/cascade-server.js';
 
 describe('cascade-server', () => {
   let server;
@@ -128,6 +128,51 @@ describe('cascade-server', () => {
     const r2 = await post(body); // no header -> default cascade, not the lane's cache entry
     assert.equal((await r2.json()).model, 'fake/cascade');
     assert.equal(r2.headers.get('x-jev-cache'), null);
+  });
+
+  // Shared instance for another tailnet node: anyone else who reaches the port
+  // (other tailnet devices, a leaked URL) must be turned away before any judge runs.
+  test('allowFrom rejects other source IPs with 403 and never calls a judge', async () => {
+    await start({ serverOpts: { allowFrom: ['100.125.130.1'] } });
+    const res = await post({ questions: { q1: { type: 'noul' } } });
+    assert.equal(res.status, 403);
+    assert.equal(cascadeCalls + layaOnlyCalls, 0);
+    assert.equal(logs[0].status, 403);
+    assert.equal(logs[0].caller, 'cascade:tailnet:unknown');
+  });
+
+  test('allowFrom admits a listed IP written in IPv4-mapped form', async () => {
+    await start({ serverOpts: { allowFrom: ['::ffff:127.0.0.1'] } });
+    const res = await post({ questions: { q1: { type: 'noul' } } });
+    assert.equal(res.status, 200);
+  });
+
+  // The shared instance must not let the caller opt back into the paid cloud
+  // judge: no x-jev-mode header (or any value) still lands on layaOnly.
+  test('forced laya-only mode ignores the caller header', async () => {
+    await start({ serverOpts: { mode: 'laya-only' } });
+    const r1 = await post({ questions: { q1: { type: 'noul' } } });
+    const r2 = await post({ questions: { q1: { type: 'score' } } }, { 'x-jev-mode': 'cascade', 'x-jev-laya-qtypes': 'score' });
+    assert.equal((await r1.json()).model, 'fake/laya');
+    assert.equal((await r2.json()).model, 'fake/laya');
+    assert.equal(cascadeCalls, 0);
+  });
+
+  test('forced laya-only: Laya abstain is a 503, not a cloud call', async () => {
+    await start({ serverOpts: { mode: 'laya-only' }, layaOnlyImpl: async () => { const e = new Error('abstain'); e.code = 'LAYA_ABSTAIN'; throw e; } });
+    const res = await post({ questions: { q1: { type: 'noul' } } });
+    assert.equal(res.status, 503);
+    assert.equal(cascadeCalls, 0);
+  });
+
+  test('resolveTailnetIps matches HostName or DNS label only', () => {
+    const status = { Peer: {
+      a: { HostName: 'm2-userspace', DNSName: 'm2-userspace.tail.ts.net.', TailscaleIPs: ['100.125.130.1', 'fd7a::1'] },
+      b: { HostName: 'phone', DNSName: 'phone.tail.ts.net.', TailscaleIPs: ['100.1.1.1'] },
+    } };
+    assert.deepEqual(resolveTailnetIps(status, ['m2-userspace']), ['100.125.130.1', 'fd7a::1']);
+    assert.deepEqual(resolveTailnetIps(status, []), []);
+    assert.deepEqual(resolveTailnetIps(null, ['m2-userspace']), []);
   });
 
   test('x-jev-laya-qtypes is ignored in laya-only mode', async () => {

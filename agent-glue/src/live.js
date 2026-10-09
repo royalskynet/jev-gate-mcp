@@ -141,7 +141,10 @@ export function resetLive() {
  * `x-jev-laya-qtypes`), so `costly_mistake` stays with the cloud judge exactly
  * as in-process. Any HTTP failure throws, and the caller falls back.
  */
-export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fetchImpl = fetch } = {}) {
+// `proxy`: a tailscaled in userspace-networking mode cannot route to tailnet IPs
+// directly; JEV_CASCADE_PROXY (its --outbound-http-proxy-listen) is used for
+// this fetch only. Bun's fetch honours `proxy`; Node ignores it.
+export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fetchImpl = fetch, proxy = process.env.JEV_CASCADE_PROXY } = {}) {
   const base = String(url).replace(/\/+$/, '');
   return {
     async evaluate(input) {
@@ -150,6 +153,7 @@ export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fet
         headers: { 'content-type': 'application/json', 'x-jev-caller': caller, 'x-jev-laya-qtypes': TRIAGE_LAYA_QTYPES.join(',') },
         body: JSON.stringify({ state: input?.state, questions: input?.questions }),
         signal: AbortSignal.timeout(timeoutMs),
+        ...(proxy && !base.startsWith('http://127.0.0.1') ? { proxy } : {}),
       });
       if (!res.ok) throw new Error(`cascade ${res.status}`);
       const j = await res.json();
@@ -158,11 +162,15 @@ export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fet
   };
 }
 
-/** `~/.jevgate/cascade-callers.json` entry for `caller`, loopback URLs only. */
+// Loopback, or a tailnet peer (100.64.0.0/10 or a MagicDNS *.ts.net name): the
+// shared daemon on another node (laya-only, source-IP allow list).
+const CASCADE_URL = /^http:\/\/(127\.0\.0\.1|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|[a-z0-9-]+\.[a-z0-9-]+\.ts\.net):\d+\/?$/;
+
+/** `~/.jevgate/cascade-callers.json` entry for `caller`, loopback or tailnet URLs only. */
 export function cascadeUrlFor(caller, raw) {
   try {
     const url = JSON.parse(raw)?.[caller];
-    return typeof url === 'string' && /^http:\/\/127\.0\.0\.1:\d+\/?$/.test(url) ? url.replace(/\/+$/, '') : '';
+    return typeof url === 'string' && CASCADE_URL.test(url) ? url.replace(/\/+$/, '') : '';
   } catch {
     return '';
   }

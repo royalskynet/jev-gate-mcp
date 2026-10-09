@@ -7,6 +7,7 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { logUsage } from '../../agent-glue/src/usage-ledger.js';
 import { DEFAULTS } from './config.js';
@@ -43,11 +44,31 @@ export function parseQtypesHeader(v) {
   return list.length ? list : null;
 }
 
-export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsage, cacheMax = 2000, cacheTtlMs = 86400000, now = Date.now }) {
+// Peer names (HostName or the first DNS label) -> their tailnet IPs, read from
+// `tailscale status --json`. The tailnet authenticates each peer with its own
+// WireGuard node key, so a source IP from this list is that device.
+export function resolveTailnetIps(status, names) {
+  const want = new Set(names);
+  const ips = [];
+  for (const p of Object.values(status?.Peer ?? {})) {
+    const label = (p.DNSName ?? '').split('.')[0];
+    if (want.has(p.HostName) || want.has(label)) ips.push(...(p.TailscaleIPs ?? []));
+  }
+  return ips;
+}
+
+const normalizeIp = (ip) => (ip ?? '').replace(/^::ffff:/, '');
+
+// allowFrom: source IPs allowed to call (null = no check, loopback-only use).
+// mode 'laya-only': the server ignores x-jev-mode and never reaches the paid
+// cloud judge, so a remote caller cannot spend money whatever it sends.
+export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsage, cacheMax = 2000, cacheTtlMs = 86400000, now = Date.now, allowFrom = null, mode: forcedMode = null }) {
   const cache = new Map();
+  const allowed = allowFrom ? new Set(allowFrom.map(normalizeIp)) : null;
   return createServer(async (req, res) => {
     const started = now();
-    const caller = 'cascade:' + (req.headers['x-jev-caller'] || 'unknown');
+    // Remote calls are tagged so the usage ledger never mixes them with local ones.
+    const caller = (allowed ? 'cascade:tailnet:' : 'cascade:') + (req.headers['x-jev-caller'] || 'unknown');
     const send = (status, payload, headers = {}) => {
       res.writeHead(status, { 'content-type': 'application/json', ...headers });
       res.end(JSON.stringify(payload));
@@ -55,6 +76,12 @@ export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsag
     const logReq = (status, model, usage = { input_tokens: 0, output_tokens: 0 }) => {
       log({ caller, model, status, input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, latency_ms: now() - started });
     };
+
+    if (allowed && !allowed.has(normalizeIp(req.socket.remoteAddress))) {
+      send(403, { error: { type: 'forbidden' } });
+      logReq(403, null);
+      return;
+    }
 
     const path = req.url.split('?')[0];
     if (req.method === 'GET' && path === '/health') {
@@ -92,7 +119,7 @@ export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsag
         logReq(422, null);
         return;
       }
-      const mode = req.headers['x-jev-mode'] === 'laya-only' ? 'laya-only' : 'cascade';
+      const mode = forcedMode === 'laya-only' || req.headers['x-jev-mode'] === 'laya-only' ? 'laya-only' : 'cascade';
       const lane = mode === 'cascade' && cascadeFor ? parseQtypesHeader(req.headers['x-jev-laya-qtypes']) : null;
       const fn = mode === 'laya-only' ? layaOnly : lane ? cascadeFor(lane) : cascade;
       const key = createHash('sha256').update(mode + (lane ? lane.join(',') : '') + JSON.stringify({ state: body.state, questions })).digest('hex');
@@ -141,7 +168,26 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     if (!lanes.has(k)) lanes.set(k, withRedaction(makeLayaRouter({ local, cloud: zen ? withTeacherCorpus(zen) : null, qtypes })));
     return lanes.get(k);
   };
-  const server = makeCascadeServer({ cascade, layaOnly, cascadeFor });
+  // Shared instance (e.g. for M2): JEV_CASCADE_HOST=<this node's tailnet IP>,
+  // JEV_CASCADE_ALLOW_NODES=m2-userspace. Fail closed: a non-loopback bind
+  // needs a resolved allow list and runs laya-only.
+  const host = process.env.JEV_CASCADE_HOST ?? '127.0.0.1';
+  let allowFrom = null;
+  if (host !== '127.0.0.1') {
+    const names = (process.env.JEV_CASCADE_ALLOW_NODES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    let status = null;
+    try {
+      status = JSON.parse(execFileSync(process.env.TAILSCALE_BIN ?? 'tailscale', ['status', '--json'], { encoding: 'utf8', timeout: 10000 }));
+    } catch {}
+    allowFrom = resolveTailnetIps(status, names);
+    if (allowFrom.length === 0 || process.env.JEV_CASCADE_MODE !== 'laya-only') {
+      console.error(`refusing to bind ${host}: need JEV_CASCADE_MODE=laya-only and tailnet peers for JEV_CASCADE_ALLOW_NODES (got ${allowFrom.length} IPs)`);
+      process.exit(78);
+    }
+  }
+  // ponytail: no bearer token; tailnet node keys + source IP + laya-only make a
+  // leaked URL worthless. Add one if this ever binds beyond the tailnet.
+  const server = makeCascadeServer({ cascade, layaOnly, cascadeFor, allowFrom, mode: process.env.JEV_CASCADE_MODE ?? null });
   const port = process.env.JEV_CASCADE_PORT ?? 8793;
-  server.listen(port, '127.0.0.1');
+  server.listen(port, host);
 }
