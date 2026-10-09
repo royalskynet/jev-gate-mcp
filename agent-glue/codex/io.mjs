@@ -32,6 +32,12 @@ export function runtimePath(name) {
   return path.join(RUNTIME_DIR, name);
 }
 
+/** Where UserPromptSubmit leaves the session's latest prompt for PostToolUse. */
+export function promptFile(sessionId) {
+  const id = String(sessionId ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  return id ? runtimePath(`prompt-${id}.txt`) : null;
+}
+
 /** Read stdin as JSON; returns null on any parse failure (fail-open input). */
 export async function readEvent() {
   let input = '';

@@ -69,8 +69,8 @@
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/agent-glue/codex/post_tool_use.mjs\"",
-            "timeout": 10,
-            "statusMessage": "jev-agent advisory"
+            "timeout": 30,
+            "statusMessage": "jev-agent prune"
           }
         ]
       }

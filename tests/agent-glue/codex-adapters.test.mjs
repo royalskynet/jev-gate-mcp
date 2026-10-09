@@ -143,3 +143,25 @@ test('codex adapters: the advisory actually carries a Jev answer, not a fail-ope
   assert.doesNotMatch(note, /no live transport/, 'no live transport: the provider is misconfigured');
   assert.match(note, /conf \d\.\d\d/, 'a real triage reports a confidence');
 });
+// Codex has no "replace output" field, so the prune rides `decision: "block"`
+// + `reason`. It must only fire when the text actually shrank, keep the error
+// line, and stay silent on short output (silence = the built-in result stands).
+test('codex post_tool_use prunes long Bash output via block+reason, silent on short', async () => {
+  const noisy = Array.from({ length: 3000 }, (_, i) => `\x1b[32mprogress ${i % 3}\x1b[0m`).join('\n')
+    + '\nERROR: build failed at foo.ts:12';
+  const ev = (output) => ({ hook_event_name: 'PostToolUse', session_id: 'no-prompt', tool_name: 'Bash',
+    tool_input: { command: 'make' }, tool_response: { output }, cwd: '/tmp' });
+
+  const big = await fire('post_tool_use.mjs', ev(noisy), OFFLINE);
+  const out = JSON.parse(big.stdout);
+  assert.equal(out.decision, 'block');
+  assert.ok(out.reason.length < noisy.length, 'reason must be shorter than the raw output');
+  assert.match(out.reason, /ERROR: build failed at foo\.ts:12/);
+  assert.doesNotMatch(out.reason, /\x1b\[/, 'ANSI escapes must be gone');
+
+  const small = await fire('post_tool_use.mjs', ev('ok'), OFFLINE);
+  assert.equal(small.stdout, '');
+
+  const off = await fire('post_tool_use.mjs', ev(noisy), { ...OFFLINE, JEV_PRUNE_ENABLED: '0' });
+  assert.equal(off.stdout, '');
+});

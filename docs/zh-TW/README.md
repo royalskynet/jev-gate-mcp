@@ -90,11 +90,14 @@ codex mcp list
 
 兩端能力差異照實寫，不粉飾：
 
-| | Claude Code | Codex |
-|---|---|---|
-| 改工具結果 | function hook `tool.call` 可在模型讀到前替換 | `PreToolUse` 才擋得住；`PostToolUse` 副作用已發生 |
-| 壓縮 | 可替換內建 compaction | **不能**；只能 `PreCompact` snapshot ＋ `PostCompact` 追加 `additionalContext`（原文 **restoration layer**） |
-| 續跑 | — | `Stop` 用 `decision:block`，必讀 `stop_hook_active`，最多一次 |
+| | Claude Code | Codex | opencode（`integrations/opencode/`） |
+|---|---|---|---|
+| 改工具結果 | function hook `tool.call` 可在模型讀到前替換 | `PostToolUse` 以 `decision:block`＋`reason` 換掉 Bash 結果（只在變短時；prompt 由 `UserPromptSubmit` 落檔） | `tool.execute.after` 直接改 output |
+| 壓縮 | 可替換內建 compaction | **不能**；只能 `PreCompact` snapshot ＋ `PostCompact` 追加 `additionalContext`（原文 **restoration layer**） | `experimental.chat.messages.transform` 每輪剪舊工具輸出 |
+| 推理強度 | 無 per-turn 參數 hook | 無 | `chat.params` 依 triage 降（預設只記 log） |
+| 續跑 | — | `Stop` 用 `decision:block`，必讀 `stop_hook_active`，最多一次 | — |
+
+Codex 的專案層 hook 只在 repo 為 trusted project 且 hook 經 `/hooks` 信任後才跑；未信任時 Codex 靜默略過。
 
 manifest 分檔互不覆寫：Claude 走 `hooks/hooks.json`，Codex 走 `.codex/hooks.json` 或
 `.codex-plugin/hooks.json`。

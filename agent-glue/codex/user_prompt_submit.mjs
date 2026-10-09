@@ -13,12 +13,19 @@
  * status quo" and the notice says so. It never guesses a tier without a Jev
  * answer.
  */
-import { readEvent, respondContext, appendLedger, boundedSummary } from './io.mjs';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { readEvent, respondContext, appendLedger, boundedSummary, RUNTIME_DIR, promptFile } from './io.mjs';
 import { triage } from '../src/triage.js';
 import { liveTransport } from '../src/live.js';
 
 const event = await readEvent();
 const prompt = typeof event?.prompt === 'string' ? event.prompt : '';
+
+// PostToolUse prunes against "what the user asked"; it has no prompt of its own.
+try {
+  const f = promptFile(event?.session_id);
+  if (f && prompt) { mkdirSync(RUNTIME_DIR, { recursive: true }); writeFileSync(f, prompt); }
+} catch { /* prune then just skips the Jev step */ }
 
 // The live gateway when the provider is configured, otherwise undefined -> the
 // triage's own fail-open path (status quo, one ledger line saying so).
