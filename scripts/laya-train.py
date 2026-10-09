@@ -25,6 +25,12 @@
   laya-train.py --dry-run               # 建 items、報規模，不訓練
   laya-train.py                         # cross-fit 訓練 + 校準 + 報告
   laya-train.py --promote               # 達標才寫出權重（nightly 用）
+  laya-train.py --lora --report X.json  # 實驗：encoder 掛 LoRA 一起訓，對照只訓 head
+
+`--lora` 借鏡 Unsloth decision model（Clef head）的做法：encoder 不再全凍，掛 LoRA
+（ModernBERT 的 Wqkv／Wo／Wi）跟 head 一起訓。encoder 要反傳就不能快取，慢很多。
+ponytail: 只做 cross-fit 對照，不支援 --promote；要上線得先 merge_and_unload 回原始
+state_dict 鍵名，再過 laya-export-onnx.py 的 parity。
 """
 import argparse
 import glob
@@ -371,6 +377,11 @@ def coverage_curve(conf, correct, thresholds=None):
     return out
 
 
+def is_trainable(name, trainable_names, lora):
+    """頂層模組在名單裡，或（--lora 時）是 encoder 裡的 LoRA 參數。encoder 原權重永遠凍結。"""
+    return name.split(".")[0] in trainable_names or (lora and "lora_" in name)
+
+
 # ---------------------------------------------------------------- selftest
 def selftest():
     """gold 轉換與判準的最小可跑檢查；不載模型。"""
@@ -491,6 +502,13 @@ def selftest():
     _base = [[u["rec"] for u in va] for _, va in cv_splits(build_units(_rows[:10])[0], 5)]
     assert _base == [[u["rec"] for u in va] for _, va in cv_splits(_u, 5)]
 
+    # --lora：只放行 LoRA 參數，encoder 原權重不能被一起解凍（那就成了全量微調）
+    _tn = ["type_emb", "scorer", "act_head", "head"]
+    assert is_trainable("encoder.layers.0.attn.Wqkv.lora_A.default.weight", _tn, True)
+    assert not is_trainable("encoder.layers.0.attn.Wqkv.base_layer.weight", _tn, True)
+    assert not is_trainable("encoder.layers.0.attn.Wqkv.lora_A.default.weight", _tn, False)
+    assert is_trainable("head.layers.0.linear1.weight", _tn, False)
+
     print("selftest PASS")
 
 
@@ -557,6 +575,8 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--train-head", action=argparse.BooleanOptionalAction, default=True,
                     help="連 14.2M 的 head 一起訓（預設開；--no-train-head 只訓 0.79M）")
+    ap.add_argument("--lora", action="store_true", help="encoder 掛 LoRA 一起訓（實驗，不能配 --promote）")
+    ap.add_argument("--lora-r", type=int, default=16)
     ap.add_argument("--device", choices=["auto", "mps", "cpu"], default="auto")
     ap.add_argument("--promote", action="store_true", help="達標才寫出權重")
     ap.add_argument("--min-gain", type=float, default=0.05, help="OOF 準確率要比 int8 基線高多少才算達標")
@@ -569,6 +589,9 @@ def main():
     if args.selftest:
         selftest()
         return 0
+    if args.lora and args.promote:
+        print("--lora 不支援 --promote（見檔頭 ponytail）", file=sys.stderr)
+        return 2
 
     if not CORPUS.exists():
         print(f"no corpus at {CORPUS}", file=sys.stderr)
@@ -677,18 +700,42 @@ def main():
 
     for i, u in enumerate(units):
         u["_i"] = i
-    t0 = time.time()
-    h_cache = []
-    with torch.no_grad():
-        for s in range(0, len(units), args.batch):
-            batch = units[s:s + args.batch]
-            ids, am, mp, mm, qt, _ = collate(batch)
-            h = model.encoder(input_ids=ids.to(device), attention_mask=am.to(device)).last_hidden_state
-            for i, b in enumerate(batch):
-                h_cache.append(h[i, : len(b["ids"])].detach().to("cpu", torch.float16))
-    print(f"encoder cached {len(h_cache)} units ({time.time() - t0:.1f}s)")
 
-    if args.verify_parity:
+    def batch_logits(batch, cache):
+        """cache=None 時 encoder 現跑（--lora 要反傳過 encoder）；否則吃快取的 h。"""
+        if cache is None:
+            ids, am, mp, mm, qt, tgt = collate(batch)
+            am = am.to(device)
+            h = model.encoder(input_ids=ids.to(device), attention_mask=am).last_hidden_state
+        else:
+            ids, am, mp, mm, qt, tgt, h = collate(batch, cache)
+            am, h = am.to(device), h.to(device)
+        return head_logits(model, h, am, mp.to(device), mm.to(device), qt.to(device), torch), tgt
+
+    if args.lora:
+        from peft import LoraConfig, inject_adapter_in_model
+        # lora_B 初始為 0，掛上去的當下輸出不變，所以 pristine 仍等於出廠權重
+        model.encoder = inject_adapter_in_model(LoraConfig(
+            r=args.lora_r, lora_alpha=2 * args.lora_r, lora_dropout=0.05,
+            target_modules=["Wqkv", "Wo", "Wi"]), model.encoder)
+        # 反傳過 1024 長度的 encoder，不 checkpoint 的 activation 會撞 ram_guard（fixindex 10256）
+        model.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.to(device)
+        h_cache = None
+        print(f"lora r={args.lora_r} on encoder Wqkv/Wo/Wi；不快取 encoder")
+    else:
+        t0 = time.time()
+        h_cache = []
+        with torch.no_grad():
+            for s in range(0, len(units), args.batch):
+                batch = units[s:s + args.batch]
+                ids, am, mp, mm, qt, _ = collate(batch)
+                h = model.encoder(input_ids=ids.to(device), attention_mask=am.to(device)).last_hidden_state
+                for i, b in enumerate(batch):
+                    h_cache.append(h[i, : len(b["ids"])].detach().to("cpu", torch.float16))
+        print(f"encoder cached {len(h_cache)} units ({time.time() - t0:.1f}s)")
+
+    if args.verify_parity and h_cache is not None:
         batch = units[: min(4, len(units))]
         ids, am, mp, mm, qt, _tg, h = collate(batch, h_cache)
         with torch.no_grad():
@@ -704,7 +751,7 @@ def main():
     trainable_names = ["type_emb", "scorer", "act_head"] + (["head"] if args.train_head else [])
     pristine = {k: v.clone() for k, v in model.state_dict().items()}
     n_train = sum(p.numel() for n, p in model.named_parameters()
-                  if n.split(".")[0] in trainable_names)
+                  if is_trainable(n, trainable_names, args.lora))
     print(f"trainable={'+'.join(trainable_names)} ({n_train / 1e6:.2f}M params, {len(units)} units)")
 
     # ---- grouped K-fold：同一 record 的題目不跨 fold，否則同一請求的
@@ -715,7 +762,7 @@ def main():
             continue
         model.load_state_dict(pristine, strict=True)
         for n, p in model.named_parameters():
-            p.requires_grad_(n.split(".")[0] in trainable_names)
+            p.requires_grad_(is_trainable(n, trainable_names, args.lora))
         params = [p for p in model.parameters() if p.requires_grad]
         opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.01)
         order = list(range(len(tr)))
@@ -728,9 +775,7 @@ def main():
             tot, nb = 0.0, 0
             for s in range(0, len(order), args.batch):
                 batch = [tr[i] for i in order[s:s + args.batch]]
-                ids, am, mp, mm, qt, tgt, h = collate(batch, h_cache)
-                logits = head_logits(model, h.to(device), am.to(device), mp.to(device),
-                                     mm.to(device), qt.to(device), torch)
+                logits, tgt = batch_logits(batch, h_cache)
                 w = torch.tensor([b["weight"] for b in batch], device=device)
                 loss = weighted_ce(logits, tgt.to(device), w, torch)
                 loss.backward()
@@ -746,9 +791,7 @@ def main():
         with torch.no_grad():
             for s in range(0, len(va), args.batch):
                 batch = va[s:s + args.batch]
-                ids, am, mp, mm, qt, tgt, h = collate(batch, h_cache)
-                logits = head_logits(model, h.to(device), am.to(device), mp.to(device),
-                                     mm.to(device), qt.to(device), torch)
+                logits, _ = batch_logits(batch, h_cache)
                 for i, b in enumerate(batch):
                     oof[b["_i"]] = logits[i, : b["n_opt"]].detach().cpu().tolist()
         print(f"  fold {f}: train={len(tr)} val={len(va)} loss={last:.4f}")
@@ -807,6 +850,7 @@ def main():
         "by_type": by_type,
         "trainable": trainable_names,
         "trainable_params": n_train,
+        "lora": {"r": args.lora_r, "targets": ["Wqkv", "Wo", "Wi"]} if args.lora else None,
         "folds": args.folds,
         "epochs": args.epochs,
         "oof_accuracy": oof_acc,
