@@ -1,15 +1,27 @@
-import { l0Prune } from '../../agent-glue/src/l0-prune.js';
+import { existsSync } from 'node:fs';
+import { MIN_CHARS, shrink, lastUserText, defaultJevEnv } from './prune-core.js';
 
-export const MIN_CHARS = 2000;
-
-export const JevLaya = async () => ({
-  'tool.execute.after': async (input, output) => {
-    try {
-      if (typeof output?.output !== 'string' || output.output.length < MIN_CHARS) return;
-      const r = l0Prune(output.output);
-      if (r.savedChars > 0) output.output = r.text;
-    } catch {
-      // fail-open: leave original output untouched
-    }
-  },
-});
+// Only the plugin is exported: opencode runs every exported function as one.
+export const JevLaya = async ({ client } = {}) => {
+  defaultJevEnv(process.env, existsSync);
+  // Read by usage-ledger at import time, so it must be set before the import.
+  process.env.JEV_USAGE_CALLER ??= 'prune:opencode';
+  let prune;
+  return {
+    'tool.execute.after': async (input, output) => {
+      try {
+        if (typeof output?.output !== 'string' || output.output.length < MIN_CHARS) return;
+        prune ??= import('../../agent-glue/src/prune.js').then((m) => m.pruneCommand).catch(() => null);
+        const getRequest = async () => {
+          if (!client?.session?.messages || !input?.sessionID) return '';
+          const r = await client.session.messages({ path: { id: input.sessionID } });
+          return lastUserText(r?.data ?? r);
+        };
+        const text = await shrink({ tool: input?.tool, text: output.output }, { prune: await prune, getRequest });
+        if (text.length < output.output.length) output.output = text;
+      } catch {
+        // fail-open: leave original output untouched
+      }
+    },
+  };
+};
