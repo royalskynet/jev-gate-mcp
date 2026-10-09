@@ -30,7 +30,7 @@
  */
 import { compactMessages } from '../src/compact.js';
 import { askerFor, backendFor, compactAnthropic } from './compact-anthropic.mjs';
-import { ENV, fillEnv, ZEN_BACKUP, zenCooling, followsZen } from './env.mjs';
+import { ENV, fillEnv, ZEN_PRIMARY, ZEN_BACKUP, zenCooling, followsZen } from './env.mjs';
 import { usageRecord, tokensOf, modelOf, hookUsageFile } from './usage-line.mjs';
 
 let LEDGER = '';
@@ -78,7 +78,8 @@ export let ENABLED = true;
 export function refreshConfig(backup = false) {
   LEDGER = `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-compact.log`;
   // Same override as hooks/jev.js, so one JEV_API_KEY_FILE points both at a Jev-only key.
-  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/${backup ? ZEN_BACKUP.keyName : 'OPENCODE_ZEN_API_KEY.txt'}`;
+  const zen = backup && followsZen() ? ZEN_BACKUP : null; // see hooks/jev.js refreshConfig (#28)
+  CONFIG.apiKeyFile = zen ? `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/${zen.keyName}` : ENV.JEV_API_KEY_FILE || `${ENV.HOME || ENV.USERPROFILE}/.creds/kv/${ZEN_PRIMARY.keyName}`;
   // Same endpoint/model pair as hooks/jev.js. Left unread, a typesafe key file
   // was sent to OpenRouter's URL, every judge 401'd, and every compaction fell
   // back to the slow built-in summary. The primary default must name the same
@@ -86,8 +87,8 @@ export function refreshConfig(backup = false) {
   // let the vendored core fall back to its OpenRouter decisions URL, so a Zen
   // key reached OpenRouter and every compact 401'd `Missing Authentication
   // header` (2026-10-01). Keep these three in lockstep with hooks/jev.js.
-  CONFIG.endpoint = ENV.JEV_ENDPOINT || (backup ? ZEN_BACKUP.endpoint : 'https://opencode.ai/zen/v1/systemone');
-  CONFIG.model = ENV.JEV_MODEL || (backup ? ZEN_BACKUP.model : 'jev-1.13-free');
+  CONFIG.endpoint = zen ? zen.endpoint : ENV.JEV_ENDPOINT || ZEN_PRIMARY.endpoint;
+  CONFIG.model = zen ? zen.model : ENV.JEV_MODEL || ZEN_PRIMARY.model;
   // Compact when the session passes this much of its context window. This is
   // the "fast" in fast compaction: acting at 60% costs one cheap pass, acting
   // at 100% costs a summary of everything.

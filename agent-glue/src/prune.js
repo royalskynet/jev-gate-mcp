@@ -7,7 +7,9 @@
  * the CLI (`cli.mjs prune`) is their seam onto the SAME judge rather than a
  * second implementation of it.
  */
-import { pruneText, judgeChunks, followZenCooldown, TARGETS, CONFIG } from '../../hooks/jev.js';
+import { pruneText, judgeChunks, followZenCooldown, refreshConfig, TARGETS, CONFIG } from '../../hooks/jev.js';
+import { ZEN_PRIMARY, ZEN_BACKUP, followsZen } from '../claude/env.mjs';
+import { recordZenStatus } from '../../gateway/src/zen-status.js';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { meteredFetch, callerName } from './usage-ledger.js';
@@ -45,7 +47,11 @@ export async function writeCliLedger(ledger, tool, reason) {
 const fetchHost = {
   http: {
     fetch: async (url, opts) => {
-      const r = await usageFetch(url, opts);
+      let r = await usageFetch(url, opts);
+      if (r.status === 429 && url === ZEN_PRIMARY.endpoint && followsZen()) {
+        const retry = await zenFailover(opts);
+        if (retry) r = await usageFetch(ZEN_BACKUP.endpoint, retry);
+      }
       return { ok: r.ok, text: await r.text() };
     },
   },
@@ -58,6 +64,25 @@ const fetchHost = {
   // Read by followZenCooldown: the Zen free status file picks Zen or OpenRouter.
   fs: { read: async (p) => readFileSync(p, 'utf8') },
 };
+
+/**
+ * Zen answered 429 before the hourly probe wrote a cooldown (#28; same gap as
+ * cli.mjs compact-live). Start the cooldown now, switch CONFIG to the backup
+ * for the calls that follow, and return this request re-addressed to it.
+ * null when the backup key is missing: the caller keeps the 429 and fails open.
+ */
+async function zenFailover(opts) {
+  recordZenStatus(false, { error: 'HTTP 429 (agent-glue prune)', error_class: 'quota', cooldown_until: Date.now() + 60 * 60_000 });
+  refreshConfig(true);
+  const key = await pruneKey();
+  if (!key) return null;
+  const body = JSON.parse(opts.body);
+  return {
+    ...opts,
+    headers: { ...opts.headers, Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ ...body, model: ZEN_BACKUP.model }),
+  };
+}
 
 /**
  * The rotated key file first, the environment only as a fallback — the reverse

@@ -10,7 +10,7 @@
  * The module runs with no Node: everything outside it comes through `$`.
  */
 
-import { ENV, fillEnv, ZEN_BACKUP, zenCooling, followsZen } from '../agent-glue/claude/env.mjs';
+import { ENV, fillEnv, ZEN_PRIMARY, ZEN_BACKUP, zenCooling, followsZen } from '../agent-glue/claude/env.mjs';
 import { usageRecord, tokensOf, modelOf, hookUsageFile } from '../agent-glue/claude/usage-line.mjs';
 
 export const CONFIG = {
@@ -375,9 +375,12 @@ export let LEDGER = '';
  */
 export function refreshConfig(backup = false) {
   const home = ENV.HOME || ENV.USERPROFILE;
-  CONFIG.endpoint = ENV.JEV_ENDPOINT || (backup ? ZEN_BACKUP.endpoint : 'https://opencode.ai/zen/v1/systemone');
-  CONFIG.model = ENV.JEV_MODEL || (backup ? ZEN_BACKUP.model : 'jev-1.13-free');
-  CONFIG.apiKeyFile = ENV.JEV_API_KEY_FILE || `${home}/.creds/kv/${backup ? ZEN_BACKUP.keyName : 'OPENCODE_ZEN_API_KEY.txt'}`;
+  // Env set to the Zen defaults still follows Zen, so the backup must win over
+  // it; a non-Zen pin never takes the backup (#28).
+  const zen = backup && followsZen() ? ZEN_BACKUP : null;
+  CONFIG.endpoint = zen ? zen.endpoint : ENV.JEV_ENDPOINT || ZEN_PRIMARY.endpoint;
+  CONFIG.model = zen ? zen.model : ENV.JEV_MODEL || ZEN_PRIMARY.model;
+  CONFIG.apiKeyFile = zen ? `${home}/.creds/kv/${zen.keyName}` : ENV.JEV_API_KEY_FILE || `${home}/.creds/kv/${ZEN_PRIMARY.keyName}`;
   CONFIG.timeoutMs = Number(ENV.JEV_TIMEOUT_MS) > 0 ? Number(ENV.JEV_TIMEOUT_MS) : 2000;
   LEDGER = ENV.JEV_LEDGER || `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-prune.log`;
 }

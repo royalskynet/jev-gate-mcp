@@ -49,6 +49,12 @@ export function fillEnv(values) {
  * OpenRouter instead, and go back to Zen once it lapses. Pure: each hook reads
  * the file through its own `$.fs` (see the ponytail note above).
  */
+export const ZEN_PRIMARY = Object.freeze({
+  endpoint: 'https://opencode.ai/zen/v1/systemone',
+  model: 'jev-1.13-free',
+  keyName: 'OPENCODE_ZEN_API_KEY.txt',
+});
+
 export const ZEN_BACKUP = Object.freeze({
   endpoint: 'https://openrouter.ai/api/v1/systemone',
   model: 'typesafe/jev-1.13',
@@ -65,7 +71,13 @@ export function zenCooling(statusText, now) {
   }
 }
 
-/** Only the default Zen host fails over; an explicitly configured one is left alone. */
+/**
+ * Only Zen fails over; a host pinned elsewhere is left alone. Judged by value,
+ * not by presence: M2 exports the three names set to the Zen defaults, and the
+ * presence check read that as a pin, so a Zen cooldown kept every prune (#28).
+ */
 export function followsZen() {
-  return !ENV.JEV_ENDPOINT && !ENV.JEV_MODEL && !ENV.JEV_API_KEY_FILE;
+  return (!ENV.JEV_ENDPOINT || ENV.JEV_ENDPOINT === ZEN_PRIMARY.endpoint)
+    && (!ENV.JEV_MODEL || ENV.JEV_MODEL === ZEN_PRIMARY.model)
+    && (!ENV.JEV_API_KEY_FILE || ENV.JEV_API_KEY_FILE.endsWith(`/${ZEN_PRIMARY.keyName}`));
 }
