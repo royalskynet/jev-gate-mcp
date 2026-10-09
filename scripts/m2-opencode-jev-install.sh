@@ -29,7 +29,8 @@ REPO="${JEV_GATE_DIR:-$HOME/jev-gate-mcp}"
 # 工作樹有未提交改動時 --ff-only 可能失敗：直接停，不替你 stash。
 git -C "$REPO" pull --ff-only
 
-command -v opencode >/dev/null || notice no-opencode "這台找不到 opencode 指令 → plugin 已接好，但要裝了 opencode 才會載入。"
+# 官方安裝器放 ~/.opencode/bin，PATH 只在 .zshrc 加，非互動 shell（SSH 執行）看不到。
+command -v opencode >/dev/null || [ -x "$HOME/.opencode/bin/opencode" ] || notice no-opencode "這台找不到 opencode 指令 → plugin 已接好，但要裝了 opencode 才會載入。"
 
 PLUGIN_DIR="$HOME/.config/opencode/plugins"
 mkdir -p "$PLUGIN_DIR"
