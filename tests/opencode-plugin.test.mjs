@@ -228,10 +228,12 @@ test('chat.params with JEV_EFFORT_ENABLED=0 leaves options alone', async () => {
   }
 });
 
-test('effort is log-only by default: options untouched and the turn is not held', async () => {
+test('JEV_EFFORT_APPLY=0 is log-only: options untouched and the turn is not held', async () => {
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const prev = process.env.JEV_EFFORT_LOG;
+  const prevApply = process.env.JEV_EFFORT_APPLY;
+  process.env.JEV_EFFORT_APPLY = '0';
   process.env.JEV_EFFORT_LOG = `${mkdtempSync(`${tmpdir()}/effort-`)}/effort.log`;
   try {
     const hook = await JevLaya();
@@ -243,5 +245,6 @@ test('effort is log-only by default: options untouched and the turn is not held'
     assert.equal(out.options.reasoningEffort, 'high');
   } finally {
     if (prev === undefined) delete process.env.JEV_EFFORT_LOG; else process.env.JEV_EFFORT_LOG = prev;
+    if (prevApply === undefined) delete process.env.JEV_EFFORT_APPLY; else process.env.JEV_EFFORT_APPLY = prevApply;
   }
 });

@@ -3,7 +3,7 @@
 # 效果：每個工具輸出先做 L0 剪裁（免費、本機）；剪完仍 ≥16KB 的 bash/read/grep/glob/webfetch
 # 輸出，再交 Jev 依「使用者這次要做的事」判斷 keep/drop。任何失敗都原樣放行，不分模型。
 # 另外：compaction（舊工具輸出交 Jev 判 keep/drop）、推理強度（每則訊息判一次難度，
-# 預設只記 ~/.jevgate/opencode-effort.log，JEV_EFFORT_APPLY=1 才真的降）。
+# 預設直接降，記在 ~/.jevgate/opencode-effort.log；JEV_EFFORT_APPLY=0 只記不降）。
 # Genie repo 在的話一併接上 genie-dedup（零 token 去重，不呼叫 Jev）。
 # 依賴只有 node 內建模組，不用 npm install。
 set -euo pipefail

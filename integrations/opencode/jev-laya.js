@@ -27,8 +27,8 @@ export const JevLaya = async ({ client } = {}) => {
   // gateway (with Laya in-process) took 2.3 s, past the per-message deadline.
   const ready = live && Promise.all([import('../../agent-glue/src/triage.js'), live]).catch(() => null);
   if (live) live.then((m) => { if (!m?.cascadeUrlFor('effort', effortCascade())) inProcessTransport(); });
-  // Log-only (the default) never holds the turn, so it can wait for the answer.
-  const applyEffort = process.env.JEV_EFFORT_APPLY === '1';
+  // Applied by default; JEV_EFFORT_APPLY=0 is log-only, which never holds the turn.
+  const applyEffort = process.env.JEV_EFFORT_APPLY !== '0';
   const tierFor = effortTiers({
     timeoutMs: applyEffort ? 1500 : 15000,
     tierOf: async (text) => {
@@ -92,7 +92,7 @@ export const JevLaya = async ({ client } = {}) => {
       }
     },
     // Easy turns think less: one triage per user message, only ever lowers.
-    // Log-only until JEV_EFFORT_APPLY=1: measure how often it would fire first.
+    // JEV_EFFORT_APPLY=0 logs what it would lower without touching the options.
     'chat.params': async (input, output) => {
       if (process.env.JEV_EFFORT_ENABLED === '0') return;
       try {
