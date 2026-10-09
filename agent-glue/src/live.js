@@ -133,3 +133,37 @@ export function resetLive() {
   judgeCache = undefined;
   layaJudgeCache = undefined;
 }
+
+/**
+ * The local cascade daemon (gateway/src/cascade-server.js) as a triage
+ * transport: one shared Laya load and a 24 h answer cache instead of a 522 MB
+ * model per host process. Laya may answer only `TRIAGE_LAYA_QTYPES` (sent as
+ * `x-jev-laya-qtypes`), so `costly_mistake` stays with the cloud judge exactly
+ * as in-process. Any HTTP failure throws, and the caller falls back.
+ */
+export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fetchImpl = fetch } = {}) {
+  const base = String(url).replace(/\/+$/, '');
+  return {
+    async evaluate(input) {
+      const res = await fetchImpl(`${base}/v1/systemone`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-jev-caller': caller, 'x-jev-laya-qtypes': TRIAGE_LAYA_QTYPES.join(',') },
+        body: JSON.stringify({ state: input?.state, questions: input?.questions }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) throw new Error(`cascade ${res.status}`);
+      const j = await res.json();
+      return { answers: j?.answers ?? {}, model: j?.model ?? null, coverage: 'complete', latency_ms: null };
+    },
+  };
+}
+
+/** `~/.jevgate/cascade-callers.json` entry for `caller`, loopback URLs only. */
+export function cascadeUrlFor(caller, raw) {
+  try {
+    const url = JSON.parse(raw)?.[caller];
+    return typeof url === 'string' && /^http:\/\/127\.0\.0\.1:\d+\/?$/.test(url) ? url.replace(/\/+$/, '') : '';
+  } catch {
+    return '';
+  }
+}

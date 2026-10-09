@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { MIN_CHARS, shrink, lastUserText, defaultJevEnv, compactParts, lowerEffort, effortTiers } from './prune-core.js';
 
 // Only the plugin is exported: opencode runs every exported function as one.
@@ -15,20 +15,36 @@ export const JevLaya = async ({ client } = {}) => {
     return lastUserText(r?.data ?? r);
   };
   const triageCache = new Map();
-  // Built in the background at load: a cold gateway took 2.3 s, past the
-  // per-message deadline, so the first turn would always miss.
-  const ready = process.env.JEV_EFFORT_ENABLED === '0' ? null : Promise.all([
-    import('../../agent-glue/src/triage.js'),
-    import('../../agent-glue/src/live.js').then((m) => m.liveTransport({ triage: true })),
-  ]).catch(() => null);
+  // `{"effort": "http://127.0.0.1:8793"}` in cascade-callers.json sends triage
+  // to the shared cascade daemon; re-read per turn, so switching needs no
+  // restart. A dead daemon falls back to the in-process gateway.
+  const callersFile = `${process.env.HOME}/.jevgate/cascade-callers.json`;
+  const effortCascade = () => { try { return readFileSync(callersFile, 'utf8'); } catch { return ''; } };
+  const live = process.env.JEV_EFFORT_ENABLED === '0' ? null : import('../../agent-glue/src/live.js').catch(() => null);
+  let inProcess;
+  const inProcessTransport = () => (inProcess ??= live.then((m) => m?.liveTransport({ triage: true }) ?? null));
+  // Built in the background at load unless the daemon serves triage: a cold
+  // gateway (with Laya in-process) took 2.3 s, past the per-message deadline.
+  const ready = live && Promise.all([import('../../agent-glue/src/triage.js'), live]).catch(() => null);
+  if (live) live.then((m) => { if (!m?.cascadeUrlFor('effort', effortCascade())) inProcessTransport(); });
   // Log-only (the default) never holds the turn, so it can wait for the answer.
   const applyEffort = process.env.JEV_EFFORT_APPLY === '1';
   const tierFor = effortTiers({
     timeoutMs: applyEffort ? 1500 : 15000,
     tierOf: async (text) => {
-      const [{ triage }, transport] = (await ready) ?? [{}, null];
-      if (!transport) return null;
-      const d = await triage({ text }, { transport, cache: triageCache });
+      const [{ triage }, m] = (await ready) ?? [{}, null];
+      if (!triage || !m) return null;
+      const url = m.cascadeUrlFor('effort', effortCascade());
+      let d;
+      if (url) {
+        try { d = await triage({ text }, { transport: m.cascadeTransport(url, { caller: 'effort:opencode' }), cache: triageCache }); } catch { d = null; }
+        if (d?.failOpen) d = null; // daemon down -> in-process below
+      }
+      if (!d) {
+        const transport = await inProcessTransport();
+        if (!transport) return null;
+        d = await triage({ text }, { transport, cache: triageCache });
+      }
       return d.unchanged || d.failOpen ? null : d.tier;
     },
   });

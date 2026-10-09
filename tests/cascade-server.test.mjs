@@ -113,4 +113,26 @@ describe('cascade-server', () => {
     assert.equal(logs[0].status, 200);
     assert.equal(logs[0].model, 'fake/cascade');
   });
+
+  // Triage keeps costly_mistake (noul) on the cloud judge; the header is how it
+  // says so to the daemon. Without it the default lane (score,noul) would let
+  // Laya call a risky task "safe" and the effort knob would drop on it.
+  test('x-jev-laya-qtypes picks a per-request lane, keyed separately in the cache', async () => {
+    const lanes = [];
+    await start({ serverOpts: { cascadeFor: (q) => { lanes.push(q.join(',')); return async () => ({ model: 'fake/lane', answers: { q1: { type: 'score', score: 1 } } }); } } });
+    const body = { state: { user_request: 'x' }, questions: { q1: { type: 'score' } } };
+    const r1 = await post(body, { 'x-jev-laya-qtypes': 'score, BAD!,score' });
+    assert.equal((await r1.json()).model, 'fake/lane');
+    assert.deepEqual(lanes, ['score']);
+    assert.equal(cascadeCalls, 0);
+    const r2 = await post(body); // no header -> default cascade, not the lane's cache entry
+    assert.equal((await r2.json()).model, 'fake/cascade');
+    assert.equal(r2.headers.get('x-jev-cache'), null);
+  });
+
+  test('x-jev-laya-qtypes is ignored in laya-only mode', async () => {
+    await start({ serverOpts: { cascadeFor: () => { throw new Error('must not be called'); } } });
+    const r = await post({ questions: { q1: { type: 'score' } } }, { 'x-jev-mode': 'laya-only', 'x-jev-laya-qtypes': 'score' });
+    assert.equal((await r.json()).model, 'fake/laya');
+  });
 });

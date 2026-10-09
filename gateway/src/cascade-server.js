@@ -33,7 +33,17 @@ function errorStatus(e) {
   return 502;
 }
 
-export function makeCascadeServer({ cascade, layaOnly, log = logUsage, cacheMax = 2000, cacheTtlMs = 86400000, now = Date.now }) {
+// `x-jev-laya-qtypes: score,…` narrows which question types Laya may answer for
+// this request (the rest go to the cloud), so a caller can keep its own lane
+// policy — triage keeps `costly_mistake` (noul) on the cloud judge. Only
+// honoured in cascade mode and only when `cascadeFor` is wired.
+export function parseQtypesHeader(v) {
+  if (typeof v !== 'string' || !v.trim()) return null;
+  const list = [...new Set(v.split(',').map((s) => s.trim()).filter((s) => /^[a-z_]{1,20}$/.test(s)))].sort();
+  return list.length ? list : null;
+}
+
+export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsage, cacheMax = 2000, cacheTtlMs = 86400000, now = Date.now }) {
   const cache = new Map();
   return createServer(async (req, res) => {
     const started = now();
@@ -83,8 +93,9 @@ export function makeCascadeServer({ cascade, layaOnly, log = logUsage, cacheMax 
         return;
       }
       const mode = req.headers['x-jev-mode'] === 'laya-only' ? 'laya-only' : 'cascade';
-      const fn = mode === 'laya-only' ? layaOnly : cascade;
-      const key = createHash('sha256').update(mode + JSON.stringify({ state: body.state, questions })).digest('hex');
+      const lane = mode === 'cascade' && cascadeFor ? parseQtypesHeader(req.headers['x-jev-laya-qtypes']) : null;
+      const fn = mode === 'laya-only' ? layaOnly : lane ? cascadeFor(lane) : cascade;
+      const key = createHash('sha256').update(mode + (lane ? lane.join(',') : '') + JSON.stringify({ state: body.state, questions })).digest('hex');
       const hit = cache.get(key);
       if (hit && now() - hit.cachedAt >= cacheTtlMs) cache.delete(key);
       else if (hit) {
@@ -124,7 +135,13 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   let cascade = withRedaction(makeLayaRouter({ local, cloud: zen ? withTeacherCorpus(zen) : null }));
   const layaOnly = withRedaction(makeLayaRouter({ local, cloud: async () => { const e = new Error('laya abstained'); e.code = 'LAYA_ABSTAIN'; throw e; } }));
   if (process.env.JEV_CASCADE_MODE === 'laya-only') cascade = layaOnly;
-  const server = makeCascadeServer({ cascade, layaOnly });
+  const lanes = new Map();
+  const cascadeFor = process.env.JEV_CASCADE_MODE === 'laya-only' ? null : (qtypes) => {
+    const k = qtypes.join(',');
+    if (!lanes.has(k)) lanes.set(k, withRedaction(makeLayaRouter({ local, cloud: zen ? withTeacherCorpus(zen) : null, qtypes })));
+    return lanes.get(k);
+  };
+  const server = makeCascadeServer({ cascade, layaOnly, cascadeFor });
   const port = process.env.JEV_CASCADE_PORT ?? 8793;
   server.listen(port, '127.0.0.1');
 }
