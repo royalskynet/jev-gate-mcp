@@ -2,6 +2,9 @@
 # 在 M2 跑（不是 51mini）：把 opencode TUI 接上 jev-laya plugin。
 # 效果：每個工具輸出先做 L0 剪裁（免費、本機）；剪完仍 ≥16KB 的 bash/read/grep/glob/webfetch
 # 輸出，再交 Jev 依「使用者這次要做的事」判斷 keep/drop。任何失敗都原樣放行，不分模型。
+# 另外：compaction（舊工具輸出交 Jev 判 keep/drop）、推理強度（每則訊息判一次難度，
+# 預設只記 ~/.jevgate/opencode-effort.log，JEV_EFFORT_APPLY=1 才真的降）。
+# Genie repo 在的話一併接上 genie-dedup（零 token 去重，不呼叫 Jev）。
 # 依賴只有 node 內建模組，不用 npm install。
 set -euo pipefail
 
@@ -20,6 +23,18 @@ PLUGIN_DIR="$HOME/.config/opencode/plugins"
 mkdir -p "$PLUGIN_DIR"
 ln -sfn "$REPO/integrations/opencode/jev-laya.js" "$PLUGIN_DIR/jev-laya.js"
 echo "plugin：$(readlink "$PLUGIN_DIR/jev-laya.js")"
+
+GENIE="${GENIE_DIR:-}"
+if [ -z "$GENIE" ]; then
+  for d in "$HOME/genie-harness" "$HOME/dev/genie-harness"; do [ -d "$d/.git" ] && GENIE="$d" && break; done
+fi
+[ -n "$GENIE" ] && git -C "$GENIE" pull --ff-only
+if [ -n "$GENIE" ] && [ -f "$GENIE/opencode/genie-dedup.js" ]; then
+  ln -sfn "$GENIE/opencode/genie-dedup.js" "$PLUGIN_DIR/genie-dedup.js"
+  echo "plugin：$(readlink "$PLUGIN_DIR/genie-dedup.js")"
+else
+  echo "警告：找不到 Genie repo（~/genie-harness 或 ~/dev/genie-harness，可用 GENIE_DIR 指定）→ 沒接去重。" >&2
+fi
 
 if [ -z "${JEV_ENDPOINT:-}" ] && [ ! -f "$HOME/.creds/kv/TYPESAFE_API_KEY.txt" ]; then
   echo "警告：沒有 JEV_ENDPOINT，也沒有 ~/.creds/kv/TYPESAFE_API_KEY.txt → 只有 L0 剪裁，不會呼叫 Jev。" >&2

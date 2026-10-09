@@ -28,6 +28,8 @@ export function defaultJevEnv(env, exists) {
   env.JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
   env.JEV_MODEL = 'jev-latest';
   env.JEV_API_KEY_FILE = keyFile;
+  // The in-process gateway (triage) reads the provider, not the endpoint.
+  env.JEV_PROVIDER ??= 'typesafe';
   return true;
 }
 
@@ -129,4 +131,57 @@ export async function shrink({ tool, text }, { prune, getRequest, jevMinChars = 
   } catch {
     return l0;
   }
+}
+
+/** Thinking budget an easy turn is capped at (Anthropic / Gemini options). */
+export const EASY_THINKING_BUDGET = 4000;
+
+/**
+ * Lower a provider's reasoning options for a turn triage called `cheap`.
+ * Only ever lowers, never raises, and only touches knobs the model already
+ * has set (a model without reasoning options is left alone). Nested objects
+ * are replaced, not mutated: they may be the model config's own.
+ * @returns {boolean} whether anything changed
+ */
+export function lowerEffort(options, tier) {
+  if (tier !== 'cheap' || !options || typeof options !== 'object') return false;
+  let changed = false;
+  if (['medium', 'high', 'xhigh', 'max'].includes(options.reasoningEffort)) {
+    options.reasoningEffort = 'low';
+    changed = true;
+  }
+  const t = options.thinking;
+  if (t && typeof t.budgetTokens === 'number' && t.budgetTokens > EASY_THINKING_BUDGET) {
+    options.thinking = { ...t, budgetTokens: EASY_THINKING_BUDGET };
+    changed = true;
+  }
+  const g = options.thinkingConfig;
+  if (g && typeof g.thinkingBudget === 'number' && g.thinkingBudget > EASY_THINKING_BUDGET) {
+    options.thinkingConfig = { ...g, thinkingBudget: EASY_THINKING_BUDGET };
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * One triage per user message: `tierOf(text)` runs at most once per message
+ * id (opencode calls chat.params once per model step, many per message), and
+ * a slow or failing judgment answers `null` — status quo — after `timeoutMs`.
+ */
+export function effortTiers({ tierOf, timeoutMs = 1500, max = 200 }) {
+  const seen = new Map();
+  return (id, getText) => {
+    if (!id) return Promise.resolve(null);
+    if (!seen.has(id)) {
+      if (seen.size >= max) seen.delete(seen.keys().next().value);
+      const run = (async () => {
+        const text = await getText();
+        return text ? await tierOf(text) : null;
+      })().catch(() => null);
+      let timer;
+      const late = new Promise((r) => { timer = setTimeout(() => r(null), timeoutMs); timer.unref?.(); });
+      seen.set(id, Promise.race([run, late]).finally(() => clearTimeout(timer)));
+    }
+    return seen.get(id);
+  };
 }

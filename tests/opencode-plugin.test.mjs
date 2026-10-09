@@ -178,3 +178,70 @@ test('the transform hook is registered and JEV_COMPACT_ENABLED=0 switches it off
     if (prev === undefined) delete process.env.JEV_COMPACT_ENABLED; else process.env.JEV_COMPACT_ENABLED = prev;
   }
 });
+
+// --- reasoning effort (chat.params) ---
+import { lowerEffort, effortTiers } from '../integrations/opencode/prune-core.js';
+
+test('lowerEffort only lowers, only on cheap, and never mutates shared nested config', () => {
+  const thinking = { type: 'enabled', budgetTokens: 16000 };
+  const o = { reasoningEffort: 'high', thinking, thinkingConfig: { thinkingBudget: 2000 } };
+  assert.equal(lowerEffort(o, 'cheap'), true);
+  assert.equal(o.reasoningEffort, 'low');
+  assert.equal(o.thinking.budgetTokens, 4000);
+  assert.equal(thinking.budgetTokens, 16000); // model config object untouched
+  assert.equal(o.thinkingConfig.thinkingBudget, 2000); // already below: not raised
+  for (const tier of ['medium', 'hard', null]) {
+    const x = { reasoningEffort: 'high' };
+    assert.equal(lowerEffort(x, tier), false);
+    assert.equal(x.reasoningEffort, 'high');
+  }
+  const none = {};
+  assert.equal(lowerEffort(none, 'cheap'), false); // no knob set: left alone
+  assert.deepEqual(none, {});
+  assert.equal(lowerEffort({ reasoningEffort: 'minimal' }, 'cheap'), false);
+});
+
+test('effortTiers judges once per message id and times out to status quo', async () => {
+  let n = 0;
+  const tierFor = effortTiers({ tierOf: async () => { n++; return 'cheap'; } });
+  assert.equal(await tierFor('m1', async () => 'rename a var'), 'cheap');
+  assert.equal(await tierFor('m1', async () => 'rename a var'), 'cheap');
+  assert.equal(n, 1);
+  assert.equal(await tierFor(undefined, async () => 'x'), null);
+  assert.equal(await tierFor('m2', async () => ''), null); // no text, no judgment
+  const slow = effortTiers({ tierOf: () => new Promise((r) => setTimeout(() => r('cheap'), 200)), timeoutMs: 20 });
+  assert.equal(await slow('m3', async () => 'x'), null);
+  const broken = effortTiers({ tierOf: async () => { throw new Error('net'); } });
+  assert.equal(await broken('m4', async () => 'x'), null);
+});
+
+test('chat.params with JEV_EFFORT_ENABLED=0 leaves options alone', async () => {
+  const hook = await JevLaya();
+  const prev = process.env.JEV_EFFORT_ENABLED;
+  process.env.JEV_EFFORT_ENABLED = '0';
+  try {
+    const out = { options: { reasoningEffort: 'high' } };
+    await hook['chat.params']({ message: { id: 'm' }, sessionID: 's' }, out);
+    assert.equal(out.options.reasoningEffort, 'high');
+  } finally {
+    if (prev === undefined) delete process.env.JEV_EFFORT_ENABLED; else process.env.JEV_EFFORT_ENABLED = prev;
+  }
+});
+
+test('effort is log-only by default: options untouched and the turn is not held', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const prev = process.env.JEV_EFFORT_LOG;
+  process.env.JEV_EFFORT_LOG = `${mkdtempSync(`${tmpdir()}/effort-`)}/effort.log`;
+  try {
+    const hook = await JevLaya();
+    assert.equal(typeof hook['chat.message'], 'function'); // text comes from here: chat.params has no parts
+    const out = { options: { reasoningEffort: 'high' } };
+    const t = Date.now();
+    await hook['chat.params']({ message: { id: 'm-log' }, sessionID: 's', model: { id: 'x' } }, out);
+    assert.ok(Date.now() - t < 500, 'log-only must not wait for the judgment');
+    assert.equal(out.options.reasoningEffort, 'high');
+  } finally {
+    if (prev === undefined) delete process.env.JEV_EFFORT_LOG; else process.env.JEV_EFFORT_LOG = prev;
+  }
+});
