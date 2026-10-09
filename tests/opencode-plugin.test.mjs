@@ -248,3 +248,27 @@ test('JEV_EFFORT_APPLY=0 is log-only: options untouched and the turn is not held
     if (prevApply === undefined) delete process.env.JEV_EFFORT_APPLY; else process.env.JEV_EFFORT_APPLY = prevApply;
   }
 });
+
+test('effort is off without a Laya cascade: no judgment, options untouched, turn not held', async () => {
+  const { mkdtempSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(`${tmpdir()}/nolaya-`);
+  const saved = { HOME: process.env.HOME, LOG: process.env.JEV_EFFORT_LOG, EN: process.env.JEV_EFFORT_ENABLED };
+  process.env.HOME = dir; // no ~/.jevgate/cascade-callers.json here
+  process.env.JEV_EFFORT_LOG = `${dir}/effort.log`;
+  delete process.env.JEV_EFFORT_ENABLED;
+  try {
+    const hook = await JevLaya();
+    await hook['chat.message']({ sessionID: 's' }, { message: { id: 'm-nl' }, parts: [{ type: 'text', text: 'rename a var' }] });
+    const out = { options: { reasoningEffort: 'high' } };
+    const t = Date.now();
+    await hook['chat.params']({ message: { id: 'm-nl' }, sessionID: 's', model: { id: 'x' } }, out);
+    assert.ok(Date.now() - t < 500, 'must not wait on a judgment that will never run');
+    assert.equal(out.options.reasoningEffort, 'high');
+    assert.equal(existsSync(`${dir}/effort.log`), false);
+  } finally {
+    for (const [k, v] of [['HOME', saved.HOME], ['JEV_EFFORT_LOG', saved.LOG], ['JEV_EFFORT_ENABLED', saved.EN]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+});

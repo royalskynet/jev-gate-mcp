@@ -3,7 +3,7 @@
 # 效果：每個工具輸出先做 L0 剪裁（免費、本機）；剪完仍 ≥16KB 的 bash/read/grep/glob/webfetch
 # 輸出，再交 Jev 依「使用者這次要做的事」判斷 keep/drop。任何失敗都原樣放行，不分模型。
 # 另外：compaction（舊工具輸出交 Jev 判 keep/drop）、推理強度（每則訊息判一次難度，
-# 預設直接降，記在 ~/.jevgate/opencode-effort.log；JEV_EFFORT_APPLY=0 只記不降）。
+# 有 Laya cascade 才跑，預設直接降，記在 ~/.jevgate/opencode-effort.log；JEV_EFFORT_APPLY=0 只記不降；沒 Laya 自動關閉）。
 # Genie repo 在的話一併接上 genie-dedup（零 token 去重，不呼叫 Jev）。
 # 依賴只有 node 內建模組，不用 npm install。
 set -euo pipefail
@@ -38,6 +38,11 @@ fi
 
 if [ -z "${JEV_ENDPOINT:-}" ] && [ ! -f "$HOME/.creds/kv/TYPESAFE_API_KEY.txt" ]; then
   echo "警告：沒有 JEV_ENDPOINT，也沒有 ~/.creds/kv/TYPESAFE_API_KEY.txt → 只有 L0 剪裁，不會呼叫 Jev。" >&2
+fi
+
+# 推理強度只在有 Laya cascade（cascade-callers.json 設 effort）時才跑；M2 沒裝 Laya → 自動關閉。
+if ! grep -q '"effort"' "$HOME/.jevgate/cascade-callers.json" 2>/dev/null; then
+  echo "提醒：這台沒有 Laya cascade → 推理強度判斷已自動關閉（每則訊息不會多打一筆付費 Jev）。要強制開設 JEV_EFFORT_ENABLED=1。"
 fi
 
 # 煙霧測試：真打一次 Jev（約 2 個 chunk，費用極小），只印結果欄位，不印 key。

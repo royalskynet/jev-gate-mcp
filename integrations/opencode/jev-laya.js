@@ -17,7 +17,10 @@ export const JevLaya = async ({ client } = {}) => {
   const triageCache = new Map();
   // `{"effort": "http://127.0.0.1:8793"}` in cascade-callers.json sends triage
   // to the shared cascade daemon; re-read per turn, so switching needs no
-  // restart. A dead daemon falls back to the in-process gateway.
+  // restart. Without it (M2: no Laya) every judgment would be a paid Jev
+  // call that buys nothing on free-pool models, so effort stays off unless
+  // JEV_EFFORT_ENABLED=1 forces the in-process gateway.
+  const forceEffort = process.env.JEV_EFFORT_ENABLED === '1';
   const callersFile = `${process.env.HOME}/.jevgate/cascade-callers.json`;
   const effortCascade = () => { try { return readFileSync(callersFile, 'utf8'); } catch { return ''; } };
   const live = process.env.JEV_EFFORT_ENABLED === '0' ? null : import('../../agent-glue/src/live.js').catch(() => null);
@@ -26,7 +29,9 @@ export const JevLaya = async ({ client } = {}) => {
   // Built in the background at load unless the daemon serves triage: a cold
   // gateway (with Laya in-process) took 2.3 s, past the per-message deadline.
   const ready = live && Promise.all([import('../../agent-glue/src/triage.js'), live]).catch(() => null);
-  if (live) live.then((m) => { if (!m?.cascadeUrlFor('effort', effortCascade())) inProcessTransport(); });
+  if (live && forceEffort) live.then((m) => { if (!m?.cascadeUrlFor('effort', effortCascade())) inProcessTransport(); });
+  const effortUrl = async () => (await live)?.cascadeUrlFor('effort', effortCascade()) ?? '';
+  const effortOn = async () => Boolean(live) && (forceEffort || Boolean(await effortUrl()));
   // Applied by default; JEV_EFFORT_APPLY=0 is log-only, which never holds the turn.
   const applyEffort = process.env.JEV_EFFORT_APPLY !== '0';
   const tierFor = effortTiers({
@@ -38,9 +43,10 @@ export const JevLaya = async ({ client } = {}) => {
       let d;
       if (url) {
         try { d = await triage({ text }, { transport: m.cascadeTransport(url, { caller: 'effort:opencode' }), cache: triageCache }); } catch { d = null; }
-        if (d?.failOpen) d = null; // daemon down -> in-process below
+        if (d?.failOpen) d = null; // daemon down -> in-process below, only when forced
       }
       if (!d) {
+        if (!forceEffort) return null;
         const transport = await inProcessTransport();
         if (!transport) return null;
         d = await triage({ text }, { transport, cache: triageCache });
@@ -82,7 +88,7 @@ export const JevLaya = async ({ client } = {}) => {
       try {
         const id = output?.message?.id;
         const text = lastUserText([{ info: { role: 'user' }, parts: output?.parts }]);
-        if (!id || !text) return;
+        if (!id || !text || !(await effortOn())) return;
         if (msgText.size >= 200) msgText.delete(msgText.keys().next().value);
         msgText.set(id, text);
         // start judging now, so chat.params usually finds the answer waiting
@@ -96,6 +102,7 @@ export const JevLaya = async ({ client } = {}) => {
     'chat.params': async (input, output) => {
       if (process.env.JEV_EFFORT_ENABLED === '0') return;
       try {
+        if (!(await effortOn())) return;
         const id = input?.message?.id;
         const model = input?.model?.id ?? '?';
         // one line per (message, model): the title model asks first, under the same id
