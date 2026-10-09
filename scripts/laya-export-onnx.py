@@ -48,6 +48,9 @@ def main():
                     help="這些節點前綴留 fp32（決策層，量化會毀掉校準）；空字串=全量化")
     ap.add_argument("--parity-n", type=int, default=32, help="用幾題真實 corpus 比對 torch vs ONNX")
     ap.add_argument("--max-argmax-flips", type=int, default=0, help="容許幾題 argmax 翻掉（預設 0）")
+    # 本機只答 live_gated 那幾題，其餘題（如 jev-route 的 tier/route）一律交雲端。
+    # 拿那些題比 argmax 等於替不會上線的決策把關：10-03、10-05 都因此被 1/32 翻轉擋下導出。
+    ap.add_argument("--parity-qids", default="", help="只拿這些題目（逗號分隔）比對；空字串=全部題")
     args = ap.parse_args()
 
     in_dir, src, out = Path(args.in_dir), Path(args.src_dir), Path(args.out_dir)
@@ -182,9 +185,12 @@ def main():
             except json.JSONDecodeError:
                 continue
 
+    keep_qids = {q for q in args.parity_qids.split(",") if q}
     items = []
     for r in rows:
         for qid, q in (r.get("questions") or {}).items():
+            if keep_qids and qid not in keep_qids:
+                continue
             qq = {"t": q["type"], "ins": q["instructions"], "crit": q.get("criteria")}
             try:
                 seq, markers = build_sequence(tk, r.get("state"), qq, cfg["max_len"], cfg["head_max_len"])
@@ -221,6 +227,7 @@ def main():
         if int(t_logits.argmax()) != int(o_logits.argmax()):
             flips.append(i)
 
+    print(f"parity qids={','.join(sorted(keep_qids)) or '全部'}")
     print(f"parity n={len(items)}  max|Δlogit|={max_gap:.4f}  argmax 翻掉={len(flips)}/{len(items)}")
     if len(flips) > args.max_argmax_flips:
         print(f"parity 失敗：argmax 翻掉 {len(flips)} 題 > 容許 {args.max_argmax_flips}（題號 {flips[:10]}）",

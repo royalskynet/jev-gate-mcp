@@ -103,7 +103,9 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
     hpush "⚠️ Laya 權重已換但不導出：本機 lane 出現現役沒有的題目 ${NEW_QIDS}（從未量測就上線），bundle 維持舊版"
   else
     rm -rf "$CAND" "$CAND.prev" "$CAND.new"
-    JEV_LAYA_EXPORT_DIR="$CAND" "$PY" "$DIR/scripts/laya-export-onnx.py"
+    # parity 只比本機會答的題；其餘題的翻轉不影響線上（使用者 10-09 核准）
+    GATED_QIDS=$(jq -r '.live_gated.qids // [] | join(",")' "$REPORT" 2>/dev/null)
+    JEV_LAYA_EXPORT_DIR="$CAND" "$PY" "$DIR/scripts/laya-export-onnx.py" --parity-qids "$GATED_QIDS"
     ERC=$?
     rm -rf "$CAND.prev" "$CAND.new"  # .new＝導出被中途砍掉時 atexit 來不及清的殘骸
     if [ "$ERC" != 0 ]; then
