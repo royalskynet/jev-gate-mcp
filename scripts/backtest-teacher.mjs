@@ -22,12 +22,14 @@
 // 那邊改閘門要同步改這裡；回測只跑一次，漂移代價是樣本分佈略偏，不值得先抽共用模組。
 // ponytail: dirty_paths 歷史上查不到，一律 []；線上 acting 的比例會被低估一點。
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync, mkdirSync, appendFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync, statSync, mkdirSync, appendFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { evidenceFromLines } from '../plugin/lib/transcript.js';
 import { isDangerous, DEFAULT_TRIAGE } from '../agent-glue/src/triage.js';
+import { redact } from '../gateway/src/redact.js';
 
 const HOME = homedir();
 const sha = (s) => createHash('sha256').update(s).digest('hex');
@@ -127,6 +129,25 @@ export function latestQuestions(rows, qid) {
 export const sampleKey = (questions, state) =>
   sha(sha(JSON.stringify(questions)) + JSON.stringify(state));
 
+// redact.js 只認已知前綴；逐字稿的工具輸出裡有它認不出的憑證形狀（10-10 實測：generic-secret、
+// env 賦值）。所以遮罩後再交本機 sensitive-canary（只開 secret 類，PII 依使用者放行）掃一次，
+// 命中整筆不送不存。hook 掛了 status 非 0 → 當命中（fail closed）。
+export function makeSecretCheck(hook = process.env.BACKTEST_CANARY_HOOK ?? join(HOME, '.claude', 'hooks', 'canary-allowlist.mjs')) {
+  const dir = mkdtempSync(join(tmpdir(), 'backtest-canary-'));
+  const f = join(dir, 'sample.json');
+  const check = (state) => {
+    writeFileSync(f, JSON.stringify(state), { mode: 0o600 });
+    const r = spawnSync('node', [hook], {
+      input: JSON.stringify({ tool_name: 'Read', tool_input: { file_path: f } }),
+      env: { ...process.env, SENSITIVE_CANARY_CATEGORIES: 'secret' },
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+    return r.status !== 0;
+  };
+  check.close = () => rmSync(dir, { recursive: true, force: true });
+  return check;
+}
+
 function readJsonl(file) {
   try {
     return readFileSync(file, 'utf8').split('\n').filter(Boolean)
@@ -176,7 +197,9 @@ async function main() {
     try { lines = readFileSync(p, 'utf8').split('\n'); } catch { continue; }
     const s = samplesFromLines(lines, { since });
     for (const kind of ['route', 'claim']) {
-      for (const state of s[kind]) {
+      for (const raw of s[kind]) {
+        // 先遮罩再去重：語料裡存的是遮罩後的 state，鍵要對得上。
+        const state = redact(raw);
         const key = sampleKey(groups[kind], state);
         if (seen.has(key)) continue;
         seen.add(key);
@@ -184,22 +207,27 @@ async function main() {
       }
     }
   }
-  const todo = jobs.slice(0, limit);
+  let todo = jobs.slice(0, limit);
   const count = (k) => todo.filter((j) => j.kind === k).length;
   const estTokens = todo.reduce((n, j) => n + JSON.stringify(j.state).length / 2.5 + 1200, 0);
   note(`samples route=${count('route')} claim=${count('claim')} est_usd=${(estTokens * USD_PER_TOKEN).toFixed(3)} max_usd=${maxUsd}${dry ? ' DRY' : ''}`);
   if (dry || !todo.length) return;
 
+  const secretIn = makeSecretCheck();
+  const before = todo.length;
+  try { todo = todo.filter((j) => !secretIn(j.state)); } finally { secretIn.close(); }
+  note(`secret-check dropped=${before - todo.length} kept=${todo.length}`);
+
   process.env.JEV_USAGE_CALLER ??= 'backtest:teacher';
   const { DEFAULTS } = await import('../gateway/src/config.js');
   const { makeOpenrouterAdapter } = await import('../gateway/src/adapters.js');
   const { withPaymentStop } = await import('../gateway/src/budget.js');
-  const { withRedaction } = await import('../gateway/src/redact.js');
   const { recordTeacherSample } = await import('../gateway/src/teacher-corpus.js');
   let key = null;
   try { key = readFileSync(DEFAULTS.zenBackupKeyFile, 'utf8').trim() || null; } catch { /* 下面報錯 */ }
   if (!key) throw new Error('OpenRouter key 檔讀不到（DEFAULTS.zenBackupKeyFile）');
-  const judge = withRedaction(withPaymentStop(makeOpenrouterAdapter({ apiKey: key })));
+  // state 在收樣本時就遮罩過了；送出與寫入的是同一份。
+  const judge = withPaymentStop(makeOpenrouterAdapter({ apiKey: key }));
 
   let spent = 0, ok = 0, fail = 0, stop = false, i = 0;
   const extra = { label_source: 'backtest:transcripts', split: 'unassigned' };

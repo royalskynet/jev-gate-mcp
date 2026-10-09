@@ -1,6 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { samplesFromLines, routeGrey, sampleKey } from '../scripts/backtest-teacher.mjs';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { samplesFromLines, routeGrey, sampleKey, makeSecretCheck } from '../scripts/backtest-teacher.mjs';
+
+// 10-10 首跑把遮罩前的 state 寫進語料、遮罩漏網的憑證形狀也送了出去。這道閘必須真的會擋。
+const HOOK = join(homedir(), '.claude', 'hooks', 'canary-allowlist.mjs');
+test('secret check drops a token-shaped value and keeps plain text', { skip: !existsSync(HOOK) && 'no canary hook on this host' }, () => {
+  const check = makeSecretCheck(HOOK);
+  try {
+    const fake = `${'1'.repeat(10)}:AA${'x9'.repeat(16)}Z`;
+    assert.equal(check({ user_request: `bot token ${fake}` }), true);
+    assert.equal(check({ user_request: '把 shadow 開關改掉然後跑測試' }), false);
+  } finally { check.close(); }
+});
 
 const L = (o) => JSON.stringify(o);
 const prompt = (t, ts = '2026-10-09T00:00:00Z') => L({ type: 'user', timestamp: ts, message: { content: t } });

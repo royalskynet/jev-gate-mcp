@@ -17,11 +17,13 @@ cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak-20261010d
 sed -i '' '/51mini->m2/s/^from="100\.96\.184\.1",/from="100.96.184.1,127.0.0.1,::1",/' ~/.ssh/authorized_keys
 grep -c '51mini->m2' ~/.ssh/authorized_keys
 grep '51mini->m2' ~/.ssh/authorized_keys | grep -c '^from="100.96.184.1,127.0.0.1,::1",'
+stat -f '%Sp %Su %N' ~ ~/.ssh ~/.ssh/authorized_keys   # StrictModes：三者都不能 group/other 可寫
 ```
 
 ## 驗收
 
 - 兩個 `grep -c` 都要是 `1`。
+- `stat` 三行第 6、9 個字元（group／other 的 w）都要是 `-`，擁有者都是 `m2`。不是的話 sshd 會靜默拒收金鑰，回報即可，不要自己改權限。
 - 51mini 端會跑 `m2ssh 'hostname; sysctl -n hw.model'` 驗證（要看到 `Mac14,2`），M2 不用做。
 - 還原：`cp ~/.ssh/authorized_keys.bak-20261010d ~/.ssh/authorized_keys`。
 
