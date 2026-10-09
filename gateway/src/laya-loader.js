@@ -85,7 +85,10 @@ export async function shadowDirFor(src) {
     // $TMPDIR files untouched for 3 days and leaves the dirs and symlinks, so
     // tokenizer.json vanished and every later rename hit ENOTEMPTY — Laya
     // failed to load on every call from 10-01 on. Clear it and take its place.
-    if (!(await hasAliases(dir))) await rm(dir, { recursive: true, force: true });
+    // Only clear a dir that exists: a stale "absent" read must not rm the
+    // complete shadow a concurrent loader renamed in meanwhile (#30).
+    const exists = await stat(dir).then(() => true, () => false);
+    if (exists && !(await hasAliases(dir))) await rm(dir, { recursive: true, force: true });
     await rename(tmp, dir);
   } catch (err) {
     await rm(tmp, { recursive: true, force: true });
