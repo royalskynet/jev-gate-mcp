@@ -21,7 +21,9 @@ import { createHash, randomUUID } from 'node:crypto';
 const REAL_TEACHER_CORPUS = join(homedir(), '.jevgate', 'teacher-corpus.jsonl');
 export const TEACHER_CORPUS_FILE = process.env.JEV_TEACHER_CORPUS ?? REAL_TEACHER_CORPUS;
 
-export function recordTeacherSample({ state, questions, result }, file = TEACHER_CORPUS_FILE) {
+// `extra` overrides the trailing bookkeeping fields (label_source, split, …);
+// scripts/backtest-teacher.mjs tags its replayed rows with it.
+export function recordTeacherSample({ state, questions, result }, file = TEACHER_CORPUS_FILE, extra = {}) {
   if (!file || file === 'off') return false;
   // Fakes exist to make tests deterministic; training on them teaches nothing.
   if (/^(fake|mock)(\/|$)/.test(result?.model ?? '')) return false;
@@ -51,6 +53,7 @@ export function recordTeacherSample({ state, questions, result }, file = TEACHER
       label_source: null,
       split: 'unassigned',
       training_eligible: false,
+      ...extra,
     }) + '\n', { mode: 0o600 });
     return true;
   } catch {

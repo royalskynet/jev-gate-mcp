@@ -27,6 +27,15 @@ export function readEvidence(transcriptPath, maxChars = 8000, { allRounds = fals
   } catch {
     return '';
   }
+  return evidenceFromLines(lines, maxChars, { allRounds });
+}
+
+/**
+ * Same walk over lines already in memory. scripts/backtest-teacher.mjs replays
+ * every past round of a transcript, so it hands in the lines up to that round's
+ * end instead of re-reading a file per round.
+ */
+export function evidenceFromLines(lines, maxChars = 8000, { allRounds = false } = {}) {
   const parts = [];
   let total = 0;
   for (let i = lines.length - 1; i >= 0 && total < maxChars; i--) {
