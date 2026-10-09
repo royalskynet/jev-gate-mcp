@@ -5,7 +5,7 @@ import { MIN_CHARS, shrink, lastUserText, defaultJevEnv, compactParts, lowerEffo
 export const JevLaya = async ({ client } = {}) => {
   defaultJevEnv(process.env, existsSync);
   // Read by usage-ledger at import time, so it must be set before the import.
-  process.env.JEV_USAGE_CALLER ??= 'prune:opencode';
+  process.env.JEV_USAGE_CALLER ??= 'opencode';
   const glue = () => import('../../agent-glue/src/prune.js').catch(() => null);
   let mod;
   const decisions = new Map(); // callID -> 'keep' | 'drop', for the life of the TUI

@@ -35,7 +35,7 @@ try {
     respondNothing();
   } else {
     defaultJevEnv(process.env, existsSync);
-    process.env.JEV_USAGE_CALLER ??= 'prune:codex';
+    process.env.JEV_USAGE_CALLER ??= 'codex';
     const { pruneCommand } = await import('../src/prune.js');
     const getRequest = async () => {
       const f = promptFile(event?.session_id);

@@ -4,9 +4,16 @@ import { JevLaya } from '../integrations/opencode/jev-laya.js';
 import * as plugin from '../integrations/opencode/jev-laya.js';
 import { MIN_CHARS, shrink, lastUserText, defaultJevEnv, compactParts } from '../integrations/opencode/prune-core.js';
 import { judgeSegments } from '../agent-glue/src/prune.js';
+import { callerName } from '../agent-glue/src/usage-ledger.js';
 
 test('plugin module exports nothing but the plugin (opencode calls every export)', () => {
   assert.deepEqual(Object.keys(plugin), ['JevLaya']);
+});
+
+test('usage ledger labels plugin calls prune:opencode (ledger adds the prune: base itself)', async () => {
+  delete process.env.JEV_USAGE_CALLER;
+  await JevLaya();
+  assert.equal(callerName('prune'), 'prune:opencode');
 });
 
 test('prunes long output with repeated lines', async () => {

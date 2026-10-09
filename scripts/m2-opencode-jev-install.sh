@@ -63,7 +63,7 @@ JEV_CLI_LEDGER=/dev/null node --input-type=module -e "
 import { existsSync } from 'node:fs';
 import { defaultJevEnv } from './integrations/opencode/prune-core.js';
 defaultJevEnv(process.env, existsSync);
-process.env.JEV_USAGE_CALLER ??= 'prune:opencode-smoke';
+process.env.JEV_USAGE_CALLER ??= 'opencode-smoke';
 const { pruneCommand } = await import('./agent-glue/src/prune.js');
 const noise = Array.from({ length: 1500 }, (_, i) => 'heartbeat ok tick ' + i).join('\n');
 const text = noise + '\nERROR: database connection refused on port 5432\n' + noise;
