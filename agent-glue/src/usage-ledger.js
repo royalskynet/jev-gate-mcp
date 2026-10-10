@@ -30,6 +30,36 @@ export function logUsage(rec, file = usageFile()) {
   }
 }
 
+/** `~/.jevgate/laya-handoff.jsonl` (override: JEV_HANDOFF_LOG, `off` disables). */
+export function handoffFile(env = process.env) {
+  return env.JEV_HANDOFF_LOG ?? join(homedir(), '.jevgate', 'laya-handoff.jsonl');
+}
+
+/**
+ * One line per request that went through the Laya router: how many questions
+ * Laya kept and why the rest went to Jev. usage.jsonl cannot answer "what share
+ * did Laya take over" — on the gateway path it only sees outbound fetches, so a
+ * request Laya answered entirely leaves no trace there. Counts only, never content.
+ * Never throws; returns whether it wrote.
+ */
+export function logHandoff(rec, file = handoffFile()) {
+  const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+  try {
+    if (!file || file === 'off') return false;
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    appendFileSync(file, JSON.stringify({
+      ts: new Date().toISOString(),
+      caller: String(rec.caller ?? 'unknown').slice(0, 80),
+      q_total: n(rec.q_total), q_local: n(rec.q_local), q_cloud: n(rec.q_cloud),
+      by_state_filter: n(rec.by_state_filter), by_low_conf: n(rec.by_low_conf),
+      by_invalid: n(rec.by_invalid), by_no_match: n(rec.by_no_match),
+    }) + '\n', { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * `base:<who>` where <who> is JEV_USAGE_CALLER (set by the parent, e.g. the
  * Hermes plugins) or, when `fromArgv`, the running script's name — which is

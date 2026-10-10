@@ -223,3 +223,22 @@ test('the profile lane keeps its own fallback and is not put behind the threshol
   assert.equal(samples[0].fallback_reason, null);
   assert.ok(samples[0].local_confidence < 0.7, 'fixture must be below the threshold to prove the point');
 });
+
+// laya-handoff.jsonl 是「Laya 接手多少 Jev 工作」的唯一來源：gateway 路徑上全本地請求
+// 在 usage.jsonl 不留痕跡。這裡釘住每次請求記一行、計數正確、原因拆對、不帶內容。
+test('every routed request leaves one handoff line with counts and reasons, no content', async () => {
+  const lines = [];
+  const local = async (s, q) => reply('local', q);
+  const cloud = async (s, q) => reply('cloud', q);
+  const run = makeLayaRouter({ local, cloud, record: () => {}, handoff: r => lines.push(r) });
+  const risk = { type: 'choice', instructions: 'Is this safe?', criteria: { safe: 'safe', risky: 'risky' } };
+  await run({ user_request: '請翻譯這句英文', char_bucket: 's' }, { kind: TASK_KIND }, { caller: 'cascade:t' });
+  await run({ claims: ['x'], evidence: 'SECRET-EVIDENCE' }, { kind: TASK_KIND, risk }, { caller: 'cascade:t' });
+  assert.equal(lines.length, 2);
+  assert.deepEqual(lines[0], { caller: 'cascade:t', q_total: 1, q_local: 1, q_cloud: 0,
+    by_state_filter: 0, by_low_conf: 0, by_invalid: 0, by_no_match: 0 });
+  // 長 state 被 state 過濾器整筆送雲端：兩題都記在 by_state_filter，不是低信心
+  assert.equal(lines[1].q_cloud, 2);
+  assert.equal(lines[1].by_state_filter, 2);
+  assert.ok(!JSON.stringify(lines).includes('SECRET'), 'handoff line must not carry content');
+});

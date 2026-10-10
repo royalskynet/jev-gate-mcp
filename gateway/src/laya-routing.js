@@ -13,6 +13,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { answerToSignal } from './adapters.js';
 import { ERR, LIMITS } from './core.js';
 import { recordRoutingSample } from './routing-corpus.js';
+import { logHandoff, callerName } from '../../agent-glue/src/usage-ledger.js';
 import { TASK_KIND, MESSAGE_TOPIC } from './classification-profiles.js';
 export { TASK_KIND, MESSAGE_TOPIC } from './classification-profiles.js';
 
@@ -68,7 +69,7 @@ function shortStandaloneState(state) {
 // `qtypes` narrows the question-type lane per caller. The MCP keeps the env
 // default; agent-glue's triage passes ['score'] so its costly_mistake (noul)
 // always goes to the cloud (agent-glue/src/live.js).
-export function makeLayaRouter({ local, cloud, record = recordRoutingSample, onRoute = () => {}, qtypes = QTYPE_PILOT }) {
+export function makeLayaRouter({ local, cloud, record = recordRoutingSample, onRoute = () => {}, qtypes = QTYPE_PILOT, handoff = logHandoff }) {
   const pilot = new Set(qtypes);
   return async (state, questions, opts = {}) => {
     const deadlineAtMs = opts.deadlineAtMs ?? Date.now() + LIMITS.deadlineMs;
@@ -131,6 +132,12 @@ export function makeLayaRouter({ local, cloud, record = recordRoutingSample, onR
       }
       try { onRoute({ local: Object.keys(localQs).length, cloud: Object.keys(cloudQs).length,
         fallback: samples.filter(s => s.fallback_reason).length }); } catch { /* telemetry only */ }
+      const why = (r) => samples.filter(s => s.fallback_reason === r).length;
+      const qTotal = Object.keys(questions).length, qCloud = Object.keys(cloudQs).length;
+      handoff({ caller: opts.caller ?? callerName('gateway', { fromArgv: true }),
+        q_total: qTotal, q_local: qTotal - qCloud, q_cloud: qCloud,
+        by_state_filter: qTotal - Object.keys(localQs).length,
+        by_low_conf: why('low-confidence'), by_invalid: why('local-error-or-invalid'), by_no_match: why('no-match') });
     }
     const usedLocal = Object.keys(localQs).some(id => !Object.hasOwn(cloudQs, id));
     const model = usedLocal && remote ? `hybrid:${localResult.model}+${remote.model}`

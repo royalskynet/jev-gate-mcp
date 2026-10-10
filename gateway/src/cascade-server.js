@@ -140,7 +140,7 @@ export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsag
         return;
       }
       try {
-        const r = await fn(body.state, body.questions, {});
+        const r = await fn(body.state, body.questions, { caller });
         const payload = {
           model: r.model ?? 'jev-cascade',
           answers: r.answers,

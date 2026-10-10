@@ -101,7 +101,8 @@ describe('cascade-server', () => {
     await start({ cascadeImpl: async (s, q, o) => { receivedOpts = o; return { model: 'm', answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }; } });
     const body = { state: { user_request: 'test' }, questions: { q1: { type: 'noul' } }, model: 'evil-model' };
     await post(body);
-    assert.deepEqual(receivedOpts, {});
+    // 只帶伺服器自己標的 caller（給 laya-handoff.jsonl），呼叫端給的 model 不得進來
+    assert.deepEqual(receivedOpts, { caller: 'cascade:unknown' });
   });
 
   test('log receives caller cascade:test', async () => {
