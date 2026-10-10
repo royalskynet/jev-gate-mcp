@@ -154,7 +154,9 @@ export async function pruneCommand(payload = {}, deps = {}) {
     // no-key / error all land here, so no exit path is silent. Runs inside
     // `out()`, which every return path constructs through, so it executes
     // before the function returns (never after a return).
-    writeCliLedger(ledger, payload.tool ?? 'Bash', reason);
+    // before → after on every outcome line, so savings can be summed from the
+    // ledger alone (#31: the `judged` line carried no sizes).
+    writeCliLedger(ledger, payload.tool ?? 'Bash', `${reason} ${text.length} → ${kept.length} chars`);
     return {
       text: kept,
       dropped_lines: dropped,

@@ -52,4 +52,6 @@ test('cli prune reaches the judge through its default host (clock included)', as
   const r = await pruneCommand({ tool: 'terminal', request: 'fix the readme', text }, { key: 'k', ledger });
   assert.ok(calls > 0, 'the judge must actually be called');
   assert.ok(r.dropped_lines > 0, `expected drops, got ${JSON.stringify({ ...r, text: undefined })}`);
+  // #31: the judged line carries before → after, so savings come from the ledger alone.
+  assert.match(fs.readFileSync(ledger, 'utf8'), new RegExp(`judged ${text.length} → ${r.text.length} chars`));
 });

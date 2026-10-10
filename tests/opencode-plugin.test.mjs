@@ -128,6 +128,8 @@ test('compaction drops only judged tool outputs, keeps text and pinned tail verb
   const judge = async ({ request, segments }) => { asked.push({ request, n: segments.length }); return segments.map((s) => (s.includes('tool: bash\nargs: {"command":"ls"}') ? 'drop' : 'keep')); };
   const r = await compactParts(msgs, { judge, decisions: new Map() });
   assert.equal(r.dropped, 50000);
+  // before covers the kept 40000 too, so before - dropped is what the model still sees (#31 ledger)
+  assert.ok(r.before - r.dropped >= 40000, `before=${r.before}`);
   assert.deepEqual(asked, [{ request: 'go on', n: 2 }]); // 'tiny' under minPartChars, 'recent' pinned
   assert.match(msgs[1].parts[1].state.output, /^\[jev-compact: dropped 50000 chars/);
   assert.equal(msgs[1].parts[0].text, 'looking');
@@ -150,7 +152,7 @@ test('each output is judged once; a drop is replayed on later turns without aski
 test('below the history threshold nothing is judged or dropped', async () => {
   const msgs = history();
   const r = await compactParts(msgs, { judge: async () => { throw new Error('must not run'); }, decisions: new Map(), opts: { atChars: 10 ** 6 } });
-  assert.deepEqual(r, { dropped: 0, judged: 0 });
+  assert.deepEqual(r, { dropped: 0, judged: 0, before: 90005 });
 });
 
 test('a failed or malformed judgment keeps everything and is retried next turn', async () => {

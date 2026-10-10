@@ -79,7 +79,7 @@ function completedTool(part) {
  */
 export async function compactParts(messages, { judge, decisions, opts = {} }) {
   const o = { ...COMPACT_DEFAULTS, ...opts };
-  if (!Array.isArray(messages) || !decisions) return { dropped: 0, judged: 0 };
+  if (!Array.isArray(messages) || !decisions) return { dropped: 0, judged: 0, before: 0 };
   const editable = messages.slice(0, Math.max(0, messages.length - o.pinLast));
   const sites = [];
   let total = 0;
@@ -111,7 +111,8 @@ export async function compactParts(messages, { judge, decisions, opts = {} }) {
     m.parts[i] = { ...p, state: { ...p.state, output: `[jev-compact: dropped ${n} chars; rerun the tool if it is needed again]` } };
     dropped += n;
   }
-  return { dropped, judged };
+  // `before` = tool-output chars in the editable span, for the savings ledger.
+  return { dropped, judged, before: total };
 }
 
 /**

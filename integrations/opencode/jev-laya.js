@@ -60,6 +60,7 @@ export const JevLaya = async ({ client } = {}) => {
   const textOf = (id, sessionID) => () => msgText.get(id) ?? requestOf(sessionID);
   const logged = new Set(); // message ids already written to the effort log
   const effortLog = process.env.JEV_EFFORT_LOG ?? `${process.env.HOME}/.jevgate/opencode-effort.log`;
+  const compactLog = process.env.JEV_OPENCODE_COMPACT_LOG ?? `${process.env.HOME}/.jevgate/opencode-compact.log`;
   return {
     'tool.execute.after': async (input, output) => {
       try {
@@ -78,7 +79,13 @@ export const JevLaya = async ({ client } = {}) => {
       try {
         mod ??= glue();
         const judgeSegments = (await mod)?.judgeSegments;
-        await compactParts(output?.messages, { judge: judgeSegments, decisions });
+        const r = await compactParts(output?.messages, { judge: judgeSegments, decisions });
+        // One line per judging pass (not per turn: drops are re-applied every turn).
+        if (r?.judged) {
+          try {
+            appendFileSync(compactLog, `${new Date().toISOString()}\tjev-compact(opencode): ${r.before} → ${r.before - r.dropped} chars, ${r.judged} judged\n`);
+          } catch { /* observation only */ }
+        }
       } catch {
         // fail-open: the model sees the history verbatim
       }
