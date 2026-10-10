@@ -62,6 +62,15 @@ const normalizeIp = (ip) => (ip ?? '').replace(/^::ffff:/, '');
 // allowFrom: source IPs allowed to call (null = no check, loopback-only use).
 // mode 'laya-only': the server ignores x-jev-mode and never reaches the paid
 // cloud judge, so a remote caller cannot spend money whatever it sends.
+// A tailnet bind fails closed: it needs resolved peers, and it may reach the
+// cloud judge only on explicit opt-in. Without cloud, a request mixing a
+// Laya-answerable question with a cloud-only one (triage's costly_mistake) is
+// refused whole, so the peer gets nothing (fix 10321).
+export function tailnetBindAllowed({ allowCount, mode, cloudOptIn }) {
+  if (!(allowCount > 0)) return false;
+  return mode === 'laya-only' || cloudOptIn === '1';
+}
+
 export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsage, cacheMax = 2000, cacheTtlMs = 86400000, now = Date.now, allowFrom = null, mode: forcedMode = null }) {
   const cache = new Map();
   const allowed = allowFrom ? new Set(allowFrom.map(normalizeIp)) : null;
@@ -180,13 +189,15 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       status = JSON.parse(execFileSync(process.env.TAILSCALE_BIN ?? 'tailscale', ['status', '--json'], { encoding: 'utf8', timeout: 10000 }));
     } catch {}
     allowFrom = resolveTailnetIps(status, names);
-    if (allowFrom.length === 0 || process.env.JEV_CASCADE_MODE !== 'laya-only') {
-      console.error(`refusing to bind ${host}: need JEV_CASCADE_MODE=laya-only and tailnet peers for JEV_CASCADE_ALLOW_NODES (got ${allowFrom.length} IPs)`);
+    if (!tailnetBindAllowed({ allowCount: allowFrom.length, mode: process.env.JEV_CASCADE_MODE, cloudOptIn: process.env.JEV_CASCADE_TAILNET_CLOUD })) {
+      console.error(`refusing to bind ${host}: need tailnet peers for JEV_CASCADE_ALLOW_NODES (got ${allowFrom.length} IPs) and JEV_CASCADE_MODE=laya-only or JEV_CASCADE_TAILNET_CLOUD=1`);
       process.exit(78);
     }
   }
-  // ponytail: no bearer token; tailnet node keys + source IP + laya-only make a
-  // leaked URL worthless. Add one if this ever binds beyond the tailnet.
+  // ponytail: no bearer token; tailnet node keys + source IP allow list are the
+  // gate. With JEV_CASCADE_TAILNET_CLOUD=1 an allowed peer can spend cloud calls
+  // (capped by withDailyBudget/withPaymentStop). Add a token if this ever binds
+  // beyond the tailnet.
   const server = makeCascadeServer({ cascade, layaOnly, cascadeFor, allowFrom, mode: process.env.JEV_CASCADE_MODE ?? null });
   const port = process.env.JEV_CASCADE_PORT ?? 8793;
   server.listen(port, host);

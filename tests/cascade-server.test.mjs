@@ -1,6 +1,6 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeCascadeServer, resolveTailnetIps } from '../gateway/src/cascade-server.js';
+import { makeCascadeServer, resolveTailnetIps, tailnetBindAllowed } from '../gateway/src/cascade-server.js';
 
 describe('cascade-server', () => {
   let server;
@@ -179,5 +179,22 @@ describe('cascade-server', () => {
     await start({ serverOpts: { cascadeFor: () => { throw new Error('must not be called'); } } });
     const r = await post({ questions: { q1: { type: 'score' } } }, { 'x-jev-mode': 'laya-only', 'x-jev-laya-qtypes': 'score' });
     assert.equal((await r.json()).model, 'fake/laya');
+  });
+});
+
+// A tailnet bind may reach the cloud only on explicit opt-in: without it a
+// leaked tailnet URL could spend money, and with laya-only alone a triage
+// request (costly_mistake is cloud-only) is refused whole — fix 10321.
+describe('tailnetBindAllowed', () => {
+  test('no resolved peers -> refuse, whatever the mode', () => {
+    assert.equal(tailnetBindAllowed({ allowCount: 0, mode: 'laya-only', cloudOptIn: '1' }), false);
+  });
+  test('laya-only with peers -> allowed', () => {
+    assert.equal(tailnetBindAllowed({ allowCount: 1, mode: 'laya-only' }), true);
+  });
+  test('cascade (cloud) needs JEV_CASCADE_TAILNET_CLOUD=1', () => {
+    assert.equal(tailnetBindAllowed({ allowCount: 1, mode: undefined }), false);
+    assert.equal(tailnetBindAllowed({ allowCount: 1, mode: undefined, cloudOptIn: 'true' }), false);
+    assert.equal(tailnetBindAllowed({ allowCount: 1, mode: undefined, cloudOptIn: '1' }), true);
   });
 });
