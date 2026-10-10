@@ -422,6 +422,29 @@ def fit_cache_budget(units, hidden, budget_bytes, seed=SEED):
     return kept, len(units) - len(kept)
 
 
+MAX_PER_QID = int(os.environ.get("JEV_LAYA_MAX_PER_QID", "300"))
+
+
+def cap_per_qid(units, cap, seed=SEED):
+    """10-10 語料 17152 units，tier/route/ambiguous/wrong_reading_costly 各 2500+，訓練跑 2h40m
+    沒跑完被砍。快取預算在 tokenize 之後才抽、且是全體均勻抽，大題照樣佔大半。這裡在 tokenize
+    前逐題封頂：小題（state 探針、claim_0 以外的長尾）全留，大題以固定 seed 抽 cap 筆。
+    外部題不算在內（只進訓練側、數量固定）。保留原順序。回 (保留的 units, 丟掉幾個)。cap<=0 關閉。
+    ponytail: 均勻抽；要偏重新近樣本時改成按 rec 新舊加權。"""
+    if cap <= 0:
+        return units, 0
+    by_qid = {}
+    for i, u in enumerate(units):
+        if not u["external"]:
+            by_qid.setdefault(u["qid"], []).append(i)
+    rng = random.Random(seed)
+    drop = set()
+    for idx in by_qid.values():
+        if len(idx) > cap:
+            drop.update(set(idx) - set(rng.sample(idx, cap)))
+    return [u for i, u in enumerate(units) if i not in drop], len(drop)
+
+
 def is_trainable(name, trainable_names, lora):
     """頂層模組在名單裡，或（--lora 時）是 encoder 裡的 LoRA 參數。encoder 原權重永遠凍結。"""
     return name.split(".")[0] in trainable_names or (lora and "lora_" in name)
@@ -578,6 +601,17 @@ def selftest():
     assert {u["qid"] for u in _k} == {"a", "b"}, "均勻抽樣不該整題抽光"
     assert fit_cache_budget(_cu, 4, 200_000)[0] == _k, "同 seed 要抽到同一批"
 
+    # 逐題封頂：大題砍到 cap、小題與外部題全留、可重現、0 關閉
+    _pu = ([{"qid": "big", "external": False, "n": i} for i in range(50)]
+           + [{"qid": "small", "external": False, "n": i} for i in range(5)]
+           + [{"qid": "big", "external": True, "n": i} for i in range(7)])
+    _k, _d = cap_per_qid(_pu, 10)
+    assert _d == 40 and len(_k) == 22, (_d, len(_k))
+    assert sum(1 for u in _k if u["qid"] == "small") == 5, "小題不該被抽"
+    assert sum(1 for u in _k if u["external"]) == 7, "外部題不算在封頂內"
+    assert cap_per_qid(_pu, 10)[0] == _k, "同 seed 要抽到同一批"
+    assert cap_per_qid(_pu, 0) == (_pu, 0), "cap 0 要關閉"
+
     print("selftest PASS")
 
 
@@ -679,6 +713,9 @@ def main():
             src = rows[u["rec"]].get("label_source")
             ext_by_source[src] = ext_by_source.get(src, 0) + 1
     print(f"corpus={n_own} units={len(units)} records={n_rec} skipped={skipped} by_type={by_type}")
+    units, capped = cap_per_qid(units, MAX_PER_QID)
+    if capped:
+        print(f"每題上限 {MAX_PER_QID}：保留 {len(units)} units，丟 {capped}")
     if ext_by_source:
         print(f"external（只進訓練 fold，weight={EXTERNAL_WEIGHT}）: {ext_by_source}")
 
@@ -861,6 +898,7 @@ def main():
                 tot += float(loss.detach())
                 nb += 1
             last = tot / max(nb, 1)
+            print(f"    fold {f} epoch {ep + 1}/{args.epochs} loss={last:.4f} ({time.time() - t0:.0f}s)")
         model.eval()
         with torch.no_grad():
             for s in range(0, len(va), args.batch):

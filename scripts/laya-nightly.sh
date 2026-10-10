@@ -47,8 +47,13 @@ if [ ! -x "$PY" ]; then
 fi
 # time -l 量峰值 footprint（ram_guard 用同一個量法）。exec 讓量到的是 python 本身；
 # python 的 stderr 經 fd3 照舊進 err.log，只有 time 的統計進 TIMEF。
+# 硬時限：10-10 語料暴增，訓練 2h40m 沒跑完才被手動砍（10-08/09 也都沒跑完）。
+# timeout 在 time 外層，逾時送 TERM 給整個行程群組，rc=124、peak 量不到（印 ?）。
+# PYTHONUNBUFFERED：stdout 進檔案會被緩衝，被砍時 log 一行進度都不剩。
+TRAIN_TIMEOUT="${JEV_LAYA_TRAIN_TIMEOUT_SEC:-5400}"
 TIMEF=$(mktemp)
-/usr/bin/time -l sh -c 'exec "$@" 2>&3' sh "$PY" "$DIR/scripts/laya-train.py" --promote 3>&2 2>"$TIMEF"
+PYTHONUNBUFFERED=1 timeout -s TERM "$TRAIN_TIMEOUT" \
+  /usr/bin/time -l sh -c 'exec "$@" 2>&3' sh "$PY" "$DIR/scripts/laya-train.py" --promote 3>&2 2>"$TIMEF"
 RC=$?
 PEAK_MB=$(awk '/peak memory footprint/{print int($1/1048576)}' "$TIMEF")
 rm -f "$TIMEF"
@@ -60,6 +65,7 @@ if [ "${PEAK_MB:-0}" -ge "$PEAK_WARN_MB" ]; then
 fi
 if [ "$RC" != 0 ]; then
   HINT=""
+  [ "$RC" = 124 ] && HINT="（訓練超過 ${TRAIN_TIMEOUT}s 硬時限，看 log 停在哪個 fold/epoch；調 JEV_LAYA_MAX_PER_QID）"
   [ "$RC" = 143 ] && HINT="（SIGTERM，多半是 ram_guard 砍：grep 'kill rule' ~/.omlx/logs/ram_guard.log）"
   hpush "⚠️ Laya 夜間訓練失敗 rc=${RC}${HINT}，看 ~/.jevgate/laya-nightly.log"
   exit "$RC"
