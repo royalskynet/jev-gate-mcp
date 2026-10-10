@@ -92,6 +92,13 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
   GATE_ACC=$(jq -r '.live_gated.accuracy // 0' "$REPORT" 2>/dev/null)
   GATE_N=$(jq -r '.live_gated.n // 0' "$REPORT" 2>/dev/null)
   SPEC=$(jq -r '.live_gated.conf_min // ""' "$REPORT" 2>/dev/null)
+  # 地板 = min(FLOOR, Jev 對同題重問的自身一致率)：老師自己都會變卦的題，學生到不了 FLOOR。
+  # 只放寬不變嚴（使用者 10-10 核准）；重問次數 < SELF_MIN_N 量不準，維持 FLOOR。
+  SELF_MIN_N="${JEV_LAYA_SELF_MIN_N:-30}"
+  FLOOR=$(jq -r --argjson f "$FLOOR" --argjson m "$SELF_MIN_N" '
+    .teacher_self as $t
+    | if ($t.agreement != null and ($t.n // 0) >= $m and $t.agreement < $f) then $t.agreement else $f end
+  ' "$REPORT" 2>/dev/null || echo "$FLOOR")
   # 現役沒有 qids（舊檔）就無從比對，這一輪只靠地板擋，並說出來。
   NEW_QIDS=$(jq -r --slurpfile c "$CHAMP" '
     ($c[0].qids // null) as $k

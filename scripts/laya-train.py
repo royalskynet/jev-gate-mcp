@@ -355,6 +355,32 @@ def live_gated(rows, pilot=QTYPE_PILOT, conf_min_spec=CONF_MIN_SPEC):
             "accuracy": sum(1 for r in live if r["correct"]) / len(live), **meta}
 
 
+def teacher_self_agreement(rows, qids):
+    """Jev 對同一份 (state, questions) 再答一次，跟上一次答案相同的比例（只算 qids）。
+
+    老師自己會變卦的題，學生對老師的一致率天花板就是這個數，nightly 的地板取
+    min(地板, 這個數)，只會放寬不會變嚴（使用者 10-10 核准）。判準同 pred_matches：
+    choice／score 比硬答案、noul 差 < 0.2。重複來源多半是同一段重放，n 小時 nightly 不採用。
+    """
+    want, last, n, agree = set(qids), {}, 0, 0
+    for r in rows:
+        if is_external(r):
+            continue
+        qs, ans = r.get("questions") or {}, r.get("teacher_answer") or {}
+        key = json.dumps([r.get("state"), qs], sort_keys=True, ensure_ascii=False)
+        for qid in want & qs.keys():
+            a = ans.get(qid)
+            t = teacher_hard(qs[qid], a) if isinstance(a, dict) else None
+            if t is None:
+                continue
+            prev = last.get((key, qid))
+            if prev is not None:
+                n += 1
+                agree += (abs(t - prev) < 0.2) if qs[qid].get("type") == "noul" else (t == prev)
+            last[(key, qid)] = t
+    return {"n": n, "agreement": agree / n if n else None, "qids": sorted(want)}
+
+
 def coverage_curve(conf, correct, thresholds=None):
     """信心閾值 → 覆蓋率 / 準確率。這是整支腳本的產物。"""
     thresholds = thresholds or [0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95]
@@ -520,6 +546,21 @@ def selftest():
     # 線上列的 fold 分配不因接上外部列而改變（rec 索引不變）
     _base = [[u["rec"] for u in va] for _, va in cv_splits(build_units(_rows[:10])[0], 5)]
     assert _base == [[u["rec"] for u in va] for _, va in cv_splits(_u, 5)]
+
+    # teacher_self：只數「同 state 同題再問」的那一次；第一次出現不算，外部語料不算
+    _q = {"k": {"type": "choice", "criteria": {"a": "", "b": ""}},
+          "p": {"type": "noul", "criteria": {"true": "", "false": ""}}}
+    _a = lambda c, p: {"k": {"type": "choice", "choice": c}, "p": {"type": "noul", "noul": p}}
+    _ts = [{"state": {"u": 1}, "questions": _q, "teacher_answer": _a("a", 0.9)},
+           {"state": {"u": 1}, "questions": _q, "teacher_answer": _a("a", 0.8)},   # 同：k 同、p 差 0.1
+           {"state": {"u": 1}, "questions": _q, "teacher_answer": _a("b", 0.3)},   # 變卦：k 換、p 差 0.5
+           {"state": {"u": 2}, "questions": _q, "teacher_answer": _a("b", 0.1)},   # 新 state，不算
+           {"state": {"u": 2}, "questions": _q, "teacher_answer": _a("a", 0.1),
+            "label_source": "external:t"}]
+    assert teacher_self_agreement(_ts, ["k"]) == {"n": 2, "agreement": 0.5, "qids": ["k"]}
+    assert teacher_self_agreement(_ts, ["k", "p"])["n"] == 4
+    assert teacher_self_agreement(_ts, ["k", "p"])["agreement"] == 0.5
+    assert teacher_self_agreement(_ts, [])["agreement"] is None, "沒有 gated 題就不該給數字"
 
     # --lora：只放行 LoRA 參數，encoder 原權重不能被一起解凍（那就成了全量微調）
     _tn = ["type_emb", "scorer", "act_head", "head"]
@@ -898,6 +939,7 @@ def main():
         "brier": brier(probs, targets),
         "coverage_curve": curve,
         "live_gated": live_gated(oof_rows),
+        "teacher_self": teacher_self_agreement(rows, live_gated(oof_rows)["qids"]),
         "oof_rows": oof_rows,
     }
     Path(args.report).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")

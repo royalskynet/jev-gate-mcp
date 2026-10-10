@@ -187,6 +187,34 @@ test('a better model that lost its calibration at the gate is not served', () =>
   assert.match(pushes().join('\n'), /不導出：線上 lane 準確率 0\.88（n=300）< 地板 0\.95/);
 });
 
+// The floor is min(0.95, Jev's own re-ask agreement): a teacher that changes its
+// mind 10% of the time caps any student near 90%, so holding it to 95% would
+// freeze those questions forever. It may only loosen, never tighten.
+const withSelf = (live, self) => JSON.stringify({ ...JSON.parse(REPORT(true, live)), teacher_self: self });
+
+test('a teacher that disagrees with itself lowers the floor to its own agreement', () => {
+  const { at, run, pushes } = sandbox();
+  fs.writeFileSync(at('next-report.json'), withSelf({ n: 300, accuracy: 0.92 }, { n: 50, agreement: 0.9, qids: QIDS }));
+  run();
+  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran', '92% clears a 90% teacher ceiling');
+  assert.doesNotMatch(pushes().join('\n'), /地板/);
+});
+
+test('a near-perfect teacher does not raise the floor above 0.95', () => {
+  const { at, run } = sandbox();
+  fs.writeFileSync(at('next-report.json'), withSelf({ n: 300, accuracy: 0.96 }, { n: 3363, agreement: 0.995, qids: QIDS }));
+  run();
+  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran', 'min(), not max(): 96% must still ship');
+});
+
+test('too few re-asks to measure the teacher keeps the 0.95 floor', () => {
+  const { at, run, pushes } = sandbox();
+  fs.writeFileSync(at('next-report.json'), withSelf({ n: 300, accuracy: 0.92 }, { n: 5, agreement: 0.6, qids: QIDS }));
+  run();
+  assert.equal(fs.existsSync(at('exported.txt')), false, '5 re-asks cannot justify loosening the floor');
+  assert.match(pushes().join('\n'), /< 地板 0\.95/);
+});
+
 test('a model that beats stock int8 but answers significantly more wrong on the same paper is not served', () => {
   const { at, run, pushes } = sandbox();
   // The trainer's upgrade gate compares against frozen int8, so this model got
