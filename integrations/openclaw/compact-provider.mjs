@@ -24,7 +24,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { compactMessages } from '../../agent-glue/src/compact.js';
-import { CONFIG, apiKey, judgePair, userRequestOf } from '../../agent-glue/claude/compact-hook.mjs';
+import { CONFIG, apiKey, judgePairs, refreshConfig, userRequestOf } from '../../agent-glue/claude/compact-hook.mjs';
+import { followsZen, zenCooling } from '../../agent-glue/claude/env.mjs';
+import { ZEN_STATUS_FILE, recordZenStatus } from '../../gateway/src/zen-status.js';
 import { meteredFetch } from '../../agent-glue/src/usage-ledger.js';
 
 const usageFetch = meteredFetch('openclaw-compact');
@@ -128,23 +130,51 @@ export function makeProvider(opts = {}, deps = {}) {
       // toCompactShape does not read, which would otherwise look like "nothing
       // worth eliding" rather than like a blind adapter.
       const span = `span ${messages.length} msgs [${[...new Set(messages.map((m) => m?.role))].join(',')}] raw ${JSON.stringify(messages).length}`;
-      const key = deps.key !== undefined ? deps.key : await apiKey(node$, { keyFile: opts.keyFile });
+      const $ = deps.$ ?? node$;
+      // Zen free in its quota cooldown: ask the backup until it lapses, as
+      // compact-live does (#28).
+      let onBackup = false;
+      if (deps.key === undefined && followsZen()) {
+        onBackup = zenCooling(await readFile(ZEN_STATUS_FILE, 'utf8').catch(() => ''), Date.now());
+        refreshConfig(onBackup);
+      }
+      const key = deps.key !== undefined ? deps.key : await apiKey($, { keyFile: opts.keyFile });
       if (!key && !deps.judge) {
         await log('jev-compact: no provider key, built-in compaction runs');
         throw new Error('jev-compact: no provider key');
       }
       const request = userRequestOf(shaped);
-      const out = await compactMessages({
+      const cOpts = {
         messages: shaped,
         // openclaw already keeps the recent tail out of the span it hands us.
         pinFirst: 0,
         pinLast: 0,
         minReductionChars: opts.minReductionChars ?? CONFIG.minReductionChars,
         judgeHeadChars: CONFIG.askChars,
-        judge: deps.judge ?? ((pair) => judgePair(node$, key, request, pair)),
-      });
+      };
+      let judge = deps.judge;
+      let failed = null;
+      if (!judge) {
+        // Batched, not one request per pair: per-pair judging turned one
+        // 196-pair span into 196 Zen 429s on 2026-10-05, each swallowed as keep
+        // (#31). Pass 1 collects the pairs, pass 2 replays verdicts in order.
+        const pairs = [];
+        await compactMessages({ ...cOpts, judge: async (pair) => { pairs.push(pair); return 'keep'; } });
+        let { choices, failed: f } = await judgePairs($, key, request, pairs);
+        if (f === 429 && followsZen() && !onBackup && deps.key === undefined) {
+          recordZenStatus(false, { error: 'HTTP 429 (openclaw compact)', error_class: 'quota', cooldown_until: Date.now() + 60 * 60_000 });
+          refreshConfig(true);
+          const backupKey = await apiKey($, { keyFile: opts.keyFile });
+          if (backupKey) ({ choices, failed: f } = await judgePairs($, backupKey, request, pairs));
+        }
+        failed = f;
+        let i = 0;
+        judge = async () => choices[i++] ?? 'keep';
+      }
+      const out = await compactMessages({ ...cOpts, judge });
       if (!out.compacted) {
-        await log(`jev-compact: fell back to built-in (${out.reason ?? 'below floor'}, reducedBy ${out.reducedBy ?? 0} of ${before} chars, ${span})`);
+        const why = failed !== null ? `judge-http-${failed}` : out.reason ?? 'below floor';
+        await log(`jev-compact: fell back to built-in (${why}, reducedBy ${out.reducedBy ?? 0} of ${before} chars, ${span})`);
         throw new Error('jev-compact: nothing worth eliding');
       }
       const summary = render(out.messages, previousSummary);

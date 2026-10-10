@@ -212,6 +212,23 @@ test('openclaw compaction: keep, no key, or too little relief all hand back to b
   await assert.rejects(makeProvider({ maxKeepRatio: 0.0001 }, { key: 'k', judge: async () => 'drop', log }).summarize({ messages: ocSpan(20000) }));
 });
 
+// #31: one 196-pair span sent 196 Zen requests, all 429, each swallowed as keep.
+// Batched judging must keep a quota-exhausted span to a handful of requests,
+// and the ledger must say it was the judge's HTTP status, not "below floor".
+test('openclaw compaction: a 429 costs one request per batch, not one per pair', async () => {
+  const span = [{ role: 'user', content: [{ type: 'text', text: 'fix the flaky test' }] }];
+  for (let i = 0; i < 196; i++) {
+    span.push({ role: 'assistant', content: [{ type: 'toolCall', id: `c${i}`, name: 'exec', arguments: { command: `ls ${i}` } }] });
+    span.push({ role: 'toolResult', toolCallId: `c${i}`, toolName: 'exec', content: [{ type: 'text', text: 'f'.repeat(500) }] });
+  }
+  let calls = 0;
+  const $ = { fs: { read: async () => '' }, http: { fetch: async () => { calls += 1; return { ok: false, status: 429, text: '' }; } } };
+  const lines = [];
+  await assert.rejects(makeProvider({}, { key: 'k', $, log: async (l) => lines.push(l) }).summarize({ messages: span }));
+  assert.equal(calls, Math.ceil(196 / 40));
+  assert.match(lines[0], /judge-http-429/);
+});
+
 /** A transport that answers whatever tier the test wants, in Jev's answer shape. */
 function fakeTransport(tier) {
   // The real scale: difficulty is a 1..3 `score` (simple < 1.5, hard >= 2.0)
