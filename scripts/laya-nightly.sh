@@ -36,6 +36,10 @@ if [ "$RC" != 0 ]; then
   fi
 fi
 
+# 標註有時間預算（JEV_LAYA_LABEL_BUDGET_SEC），用完就把剩下的留給明晚，否則寬樣本
+# 積壓會把訓練推到白天。積壓必須看得見：沒有這一行，語料會無聲地永遠標不完。
+DEFERRED=$(jq -r '.deferred // 0' "${JEV_LAYA_LABEL_DONE:-$HOME/.jevgate/laya-label.done}" 2>/dev/null || echo 0)
+
 if [ ! -x "$PY" ]; then
   hpush "⚠️ Laya 訓練跳過：找不到 $PY"
   echo "$(date -u +%FT%TZ) end rc=0 train=skipped"
@@ -163,8 +167,9 @@ jq -r '
        "線上 lane n=\(.live_gated.n) 準確 \(.live_gated.accuracy | pct)%"
      else "線上 lane 無樣本" end),
     (if .promoted then "已換權重" else "未達標" end),
-    (if $paired != "" then $paired else empty end)
-  ] | join("，")' --arg paired "$PAIRED" "$REPORT" 2>/dev/null |
+    (if $paired != "" then $paired else empty end),
+    (if ($deferred | tonumber) > 0 then "標註尚餘 \($deferred) 筆（預算用完，留給明晚）" else empty end)
+  ] | join("，")' --arg paired "$PAIRED" --arg deferred "${DEFERRED:-0}" "$REPORT" 2>/dev/null |
 while read -r line; do
   [ -n "$line" ] && hpush "🎓 Laya 夜訓：${line}"
 done

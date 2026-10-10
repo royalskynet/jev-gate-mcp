@@ -377,6 +377,25 @@ def coverage_curve(conf, correct, thresholds=None):
     return out
 
 
+CACHE_BUDGET_GB = float(os.environ.get("JEV_LAYA_CACHE_BUDGET_GB", "4"))
+
+
+def fit_cache_budget(units, hidden, budget_bytes, seed=SEED):
+    """encoder 凍結時每個 unit 的 h 以 fp16 留在 CPU（len×hidden×2 bytes），語料一長就爆。
+    10-06 是 1552 units，峰值 8.2GB；10-10 長到 15994 units／801 萬 token＝快取 11.5GiB，
+    加上模型與 MPS 會被 ram_guard 砍。超過預算就逐 unit 以固定 seed 均勻抽樣：
+    每題保留的比例期望相同，題目分布不變，只是每晚看到的子集少一點。
+    回 (保留的 units, 丟掉幾個)。budget_bytes<=0 關閉。
+    ponytail: 均勻抽樣；某題資料太少、抽完不夠校準時，改成按 qid 分層並保底。"""
+    total = sum(len(u["ids"]) for u in units) * hidden * 2
+    if budget_bytes <= 0 or total <= budget_bytes:
+        return units, 0
+    keep = budget_bytes / total
+    rng = random.Random(seed)
+    kept = [u for u in units if rng.random() < keep]
+    return kept, len(units) - len(kept)
+
+
 def is_trainable(name, trainable_names, lora):
     """頂層模組在名單裡，或（--lora 時）是 encoder 裡的 LoRA 參數。encoder 原權重永遠凍結。"""
     return name.split(".")[0] in trainable_names or (lora and "lora_" in name)
@@ -508,6 +527,15 @@ def selftest():
     assert not is_trainable("encoder.layers.0.attn.Wqkv.base_layer.weight", _tn, True)
     assert not is_trainable("encoder.layers.0.attn.Wqkv.lora_A.default.weight", _tn, False)
     assert is_trainable("head.layers.0.linear1.weight", _tn, False)
+
+    # 快取預算：沒超過原樣返回；超過時抽到預算附近、可重現、每題都還在
+    _cu = [{"ids": [0] * 100, "qid": q} for q in ("a", "b") for _ in range(500)]  # 1000×100×4×2=800KB
+    assert fit_cache_budget(_cu, 4, 10**6) == (_cu, 0)
+    assert fit_cache_budget(_cu, 4, 0) == (_cu, 0), "預算 0 要關閉"
+    _k, _d = fit_cache_budget(_cu, 4, 200_000)  # 預算是 1/4
+    assert 180 <= len(_k) <= 320 and _d == 1000 - len(_k), len(_k)
+    assert {u["qid"] for u in _k} == {"a", "b"}, "均勻抽樣不該整題抽光"
+    assert fit_cache_budget(_cu, 4, 200_000)[0] == _k, "同 seed 要抽到同一批"
 
     print("selftest PASS")
 
@@ -665,6 +693,11 @@ def main():
         kept.append(u)
     units = kept
     print(f"tokenized units={len(units)} ({time.time() - t0:.1f}s)")
+    if not args.lora:  # --lora 不快取 encoder，預算管不到它
+        hidden = model.encoder.config.hidden_size
+        units, dropped = fit_cache_budget(units, hidden, int(CACHE_BUDGET_GB * 2**30))
+        if dropped:
+            print(f"cache budget {CACHE_BUDGET_GB}GiB：抽樣保留 {len(units)} units，丟 {dropped}")
     if len(units) < args.folds * 2:
         print("可用 units 太少", file=sys.stderr)
         return 1

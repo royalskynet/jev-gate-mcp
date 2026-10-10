@@ -35,8 +35,12 @@ function sandbox() {
   fs.mkdirSync(path.join(home, '.jevgate'));
   const at = (f) => path.join(home, f);
   fs.writeFileSync(at('bin/hpush'), `#!/bin/sh\necho "$*" >> ${at('pushes.txt')}\n`, { mode: 0o755 });
-  // Shadow node so the labelling step records the bundle it was pointed at.
-  fs.writeFileSync(at('bin/node'), `#!/bin/sh\necho "$JEV_LAYA_MODEL_DIR" > ${at('labelled-with.txt')}\n`, { mode: 0o755 });
+  // Shadow node so the labelling step records the bundle it was pointed at, and
+  // leaves the label.done the summary reads its deferred count from.
+  fs.writeFileSync(at('bin/node'), `#!/bin/sh
+echo "$JEV_LAYA_MODEL_DIR" > ${at('labelled-with.txt')}
+echo "{\\"deferred\\": \${FAKE_DEFERRED:-0}}" > "$JEV_LAYA_LABEL_DONE"
+`, { mode: 0o755 });
   // Stand in for the train venv: write the report, and mark that export ran.
   // Export lands in the candidate dir it is pointed at; eval writes the gate dump
   // for whichever bundle it was given (fixtures dump-champ / dump-cand); the
@@ -61,6 +65,7 @@ exit 0
   const run = (extraEnv = {}) => execFileSync('bash', [path.join(ROOT, 'scripts/laya-nightly.sh')], {
     env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`,
       JEV_LAYA_TRAIN_REPORT: at('report.json'), JEV_LAYA_PYTHON: at('bin/fakepy'),
+      JEV_LAYA_LABEL_DONE: at('label.done'),
       JEV_LAYA_BASELINE_DIR: '/sentinel/int8', JEV_LAYA_MODEL_DIR: '/sentinel/trained-must-not-be-used',
       ...extraEnv },
     encoding: 'utf8',
@@ -239,6 +244,24 @@ test('a failed paired evaluation keeps the serving bundle', () => {
   run();
   assert.equal(serving(at), 'champ');
   assert.match(pushes().join('\n'), /同卷配對評估失敗/);
+});
+
+test('a labelling backlog is named in the summary, not left to rot silently', () => {
+  const { at, run, pushes } = sandbox();
+  // Labelling stops at its time budget so training still runs before morning
+  // (10-09: a 186-question row walked the labeller to 31GB, ram_guard killed it
+  // at rc=143, and training never started). The leftover rows then stay pending
+  // for the next night — invisible unless the summary says how many.
+  fs.writeFileSync(at('next-report.json'), REPORT(true));
+  run({ FAKE_DEFERRED: '37' });
+  assert.match(pushes().at(-1), /標註尚餘 37 筆/);
+});
+
+test('no backlog says nothing about one', () => {
+  const { at, run, pushes } = sandbox();
+  fs.writeFileSync(at('next-report.json'), REPORT(true));
+  run();
+  assert.doesNotMatch(pushes().at(-1), /標註尚餘/);
 });
 
 test('a missing train venv is reported, not silently skipped', () => {
