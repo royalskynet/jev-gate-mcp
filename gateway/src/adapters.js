@@ -164,6 +164,27 @@ export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', mo
 // contract `(state, questions, opts) => result` applies here unchanged — opts
 // is ignored (no model override on local weights).
 export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load, sessionOptions } = {}) {
+  // Upstream laya-serve (official PyTorch runtime, fp32 on MPS) speaks the
+  // same /v1/systemone contract, so with JEV_LAYA_SERVE_URL set (e.g.
+  // http://127.0.0.1:8019) the local lane is an HTTP client instead of the
+  // in-process ONNX bundle. Plain fetch, not usageFetch: a loopback call is
+  // not a metered Jev attempt. The action head is quarantined like rl_agent
+  // below. ponytail: 並存只為 int8 ONNX vs 上游 fp32 的 A/B 重量，量完擇一收斂成單一路徑
+  const serveUrl = process.env.JEV_LAYA_SERVE_URL;
+  if (serveUrl && !load) {
+    const m = new JevDecisionModel({ apiKey: 'local', baseUrl: serveUrl, model: 'multilingual', timeoutMs, maxRetries: 0, fetch: globalThis.fetch });
+    const serveAdapter = async (state, questions, _opts) => {
+      const result = await m.evaluate({ state, questions });
+      const answers = Object.fromEntries(Object.entries(result.answers ?? {}).map(([id, answer]) => {
+        if (!answer || typeof answer !== 'object') return [id, answer];
+        const { action, rl_agent, ...typed } = answer;
+        return [id, typed];
+      }));
+      return { model: result.model, answers, usage: result.usage ?? { input_tokens: 0, output_tokens: 0 }, latency_ms: result.latency_ms ?? null };
+    };
+    serveAdapter.release = async () => {};
+    return serveAdapter;
+  }
   let sessionPromise = null;
   let idleTimer = null;
   // Idle unload: release the ONNX session after JEV_LAYA_IDLE_MS (default
