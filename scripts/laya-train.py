@@ -428,15 +428,17 @@ MAX_PER_QID = int(os.environ.get("JEV_LAYA_MAX_PER_QID", "300"))
 def cap_per_qid(units, cap, seed=SEED):
     """10-10 語料 17152 units，tier/route/ambiguous/wrong_reading_costly 各 2500+，訓練跑 2h40m
     沒跑完被砍。快取預算在 tokenize 之後才抽、且是全體均勻抽，大題照樣佔大半。這裡在 tokenize
-    前逐題封頂：小題（state 探針、claim_0 以外的長尾）全留，大題以固定 seed 抽 cap 筆。
+    前逐題封頂：小題全留，大題以固定 seed 抽 cap 筆。尾碼數字只是序號的題併成一族一起封頂
+    （call_t1..call_t66、result_t*、claim_* 共 259 題、4397 units，逐題封頂碰不到），
+    否則 cap 調到 50 也還剩 5597 units；併族後 cap=300 是 2341。
     外部題不算在內（只進訓練側、數量固定）。保留原順序。回 (保留的 units, 丟掉幾個)。cap<=0 關閉。
-    ponytail: 均勻抽；要偏重新近樣本時改成按 rec 新舊加權。"""
+    ponytail: 族內均勻抽，罕見序號可能整個抽掉；要保底時改成族內再按 qid 分層。"""
     if cap <= 0:
         return units, 0
     by_qid = {}
     for i, u in enumerate(units):
         if not u["external"]:
-            by_qid.setdefault(u["qid"], []).append(i)
+            by_qid.setdefault(re.sub(r"\d+$", "#", u["qid"]), []).append(i)
     rng = random.Random(seed)
     drop = set()
     for idx in by_qid.values():
@@ -611,6 +613,8 @@ def selftest():
     assert sum(1 for u in _k if u["external"]) == 7, "外部題不算在封頂內"
     assert cap_per_qid(_pu, 10)[0] == _k, "同 seed 要抽到同一批"
     assert cap_per_qid(_pu, 0) == (_pu, 0), "cap 0 要關閉"
+    _fu = [{"qid": f"call_t{i % 20}", "external": False} for i in range(40)]  # 20 題各 2 筆＝同一族
+    assert len(cap_per_qid(_fu, 10)[0]) == 10, "尾碼序號要併族封頂"
 
     print("selftest PASS")
 
