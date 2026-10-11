@@ -1,0 +1,44 @@
+{
+  "intent-routing": {
+    "versions": [
+      {
+        "version": 1,
+        "mode": "shadow",
+        "model": "typesafe/jev-1.13-20260917",
+        "evaluation_dataset_version": "synthetic-harness-intent-v1",
+        "calibration_status": "uncalibrated",
+        "consequence": "advisory",
+        "coverage": "complete",
+        "state_projection": ["task", "available_handlers", "context"],
+        "state_schema": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 2048 },
+            {
+              "type": "object",
+              "minProperties": 1,
+              "properties": { "task": {}, "available_handlers": {}, "context": {} },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "activation": { "allow_outcomes": ["review", "escalate", "deny"], "rollout_percent": 0, "salt": "intent-routing-v1" },
+        "thresholds": { "auto": 0.85, "review": 0.6 },
+        "mapping": {
+          "target": { "main": "accept", "deep": "accept", "review": "review", "no_match": "escalate" }
+        },
+        "questions": {
+          "target": {
+            "type": "choice",
+            "instructions": "Select the best-known handler/tool/skill tier for the supplied task, or no_match if none fits.",
+            "criteria": {
+              "main": "Routine coding: refactor, fix, test, document.",
+              "deep": "Long or multi-step research, cross-cutting audit, or background jobs.",
+              "review": "Security-, auth-, or safety-relevant change needing human review.",
+              "no_match": "None of the above is a good fit (escalate to human)."
+            }
+          }
+        }
+      }
+    ]
+  }
+}

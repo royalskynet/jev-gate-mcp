@@ -1,0 +1,12 @@
+name: jev-compact
+version: 0.1.0
+description: "Compact tool payloads with Jev (System One) before Hermes falls back to its lossy middle-window summary, then hand the built-in compressor only what Jev could not reclaim."
+author: "royalskynet"
+manifest_version: 2
+# No `provides_hooks`: this plugin registers a context engine through
+# `ctx.register_context_engine`, which is not one of VALID_HOOKS
+# (hermes_cli/plugins.py vs hermes_cli/middleware.py). Declaring a hook name that is
+# not valid makes `hermes plugins doctor` fail.
+#
+# Activation is `context.engine: "jev-compact"` in config.yaml — a context engine is
+# never auto-activated, and needs no `plugins.enabled` entry.

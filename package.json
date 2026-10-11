@@ -1,0 +1,35 @@
+{
+  "name": "jev-gate-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^22 || ^24"
+  },
+  "scripts": {
+    "test": "npm run -s validate:hooks && JEV_ROUTING_LOG=/dev/null JEV_TEACHER_CORPUS=/dev/null JEV_USAGE_LOG=off JEV_HANDOFF_LOG=off JEV_CLI_LEDGER=/dev/null node --test",
+    "build": "node gateway/scripts/build-check.mjs",
+    "gateway:acceptance": "node gateway/scripts/acceptance.mjs",
+    "gateway:replay": "node gateway/scripts/replay.mjs gateway/fixtures/replay-baseline.json",
+    "gateway:stdio": "node gateway/src/stdio.js",
+    "agents:acceptance": "node scripts/agents-acceptance.mjs",
+    "probe:ledger": "node scripts/ledger-probe.mjs",
+    "probe:ledger:check": "node scripts/ledger-probe.mjs check",
+    "probe:ledger:e2e": "node scripts/ledger-probe.mjs e2e",
+    "validate:hooks": "claude plugin validate .claude-plugin/plugin.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@prometheus-io/client": "^0.16.1",
+    "@receptron/laya": "^0.1.2",
+    "ajv": "^8.20.0",
+    "jevwire": "github:Brainwires/jevwire#main",
+    "opossum": "^9.0.0",
+    "pino": "^10.3.1",
+    "simple-statistics": "^7.12.0",
+    "tinybench": "^6.2.0",
+    "zod": "^4.6.5"
+  }
+}

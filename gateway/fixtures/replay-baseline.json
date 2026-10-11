@@ -1,0 +1,18 @@
+[
+  {
+    "id": "completion-supported",
+    "policy": "completion-claims",
+    "version": 1,
+    "answers": { "supported": { "type": "noul", "noul": 1 } },
+    "expected_outcome": "review",
+    "expected_policy_digest": "sha256:cd1880baa3cff67783b3dbdcc59ce85d1c791005405895452bf133379666102a"
+  },
+  {
+    "id": "completion-unsupported-red-line",
+    "policy": "completion-claims",
+    "version": 1,
+    "answers": { "supported": { "type": "noul", "noul": 0 } },
+    "expected_outcome": "deny",
+    "expected_policy_digest": "sha256:cd1880baa3cff67783b3dbdcc59ce85d1c791005405895452bf133379666102a"
+  }
+]

@@ -1,0 +1,35 @@
+{
+  "id": "jev-gate",
+  "name": "Jev Gate",
+  "description": "Route an openclaw turn onto the cheapest model a Jev triage says it can take, and provide Jev verbatim compaction (provider id jev-compact).",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "cheapProvider": {
+        "type": "string"
+      },
+      "cheapModel": {
+        "type": "string"
+      },
+      "minChars": {
+        "type": "number"
+      },
+      "triage": {
+        "type": "boolean"
+      },
+      "keyFile": {
+        "type": "string"
+      },
+      "maxKeepRatio": {
+        "type": "number"
+      },
+      "minReductionChars": {
+        "type": "number"
+      }
+    }
+  }
+}
