@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync, promises as fsP } from 'node:fs';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { makeStopGate, makeNextGate, logAsync } from '../lib/gate.js';
 import { readEvidence } from '../lib/transcript.js';
@@ -7,6 +8,39 @@ import { unsupportedIds, idBlock } from '../lib/idcheck.js';
 import { DEFAULT_CONFIG } from '../lib/judge.js';
 
 const cfg = DEFAULT_CONFIG;
+
+/**
+ * Shadow-period capture for a later old-vs-new evidence replay. Git state is
+ * live: read back days later it describes today's tree, not the round's (42% of
+ * 517 rounds read "nothing changed" in the 10-11 dry run), so it can only be
+ * recorded at Stop time. The transcript is append-only, so its byte length here
+ * is enough to rebuild the claim and the tool evidence exactly. Kept out of
+ * gateLog: that ledger stays stats-only; this file holds paths and status codes,
+ * never file content. Local only, never committed (AGENTS.md).
+ * ponytail: unbounded append, ~74 rounds/day x ~1KB; rotate when the replay is done.
+ */
+export async function captureState(c, payload, state) {
+  if (!c.stateCaptureLog || !state?.text) return;
+  try {
+    const tp = payload?.transcript_path;
+    let transcriptBytes = null;
+    try {
+      if (tp) transcriptBytes = statSync(tp).size;
+    } catch { /* replay can still use the latest round */ }
+    const rec = {
+      ts: new Date().toISOString(),
+      session_id: payload?.session_id ?? null,
+      transcript_path: tp ?? null,
+      transcript_bytes: transcriptBytes,
+      stats: state.stats,
+      state: state.text,
+    };
+    await fsP.mkdir(dirname(c.stateCaptureLog), { recursive: true });
+    await fsP.appendFile(c.stateCaptureLog, `${JSON.stringify(rec)}\n`);
+  } catch {
+    // Fail open: observing must never cost a turn.
+  }
+}
 
 /**
  * Stop hook. Judges the completion claim against the tool output of this
@@ -46,6 +80,7 @@ export async function handleStop(payload, c = cfg) {
       gate: 'stop',
       ...state.stats,
     });
+    if (c.stateShadow !== false) await captureState(c, payload, state);
   }
   const evidence = composeEvidence(toolOutput, state.text, c.stateShadow !== false);
   // A turn that ran no tools has nothing to verify against; let it end.

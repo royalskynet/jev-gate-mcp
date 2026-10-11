@@ -2437,3 +2437,42 @@ UNCHANGED**，也就是「證據與宣稱矛盾」那一側。一旦離開 shado
 
 這個重放會真打 Jev，也就是會花錢，所以要先得到授權再跑。在那之前不要把
 `stateShadow` 改成 `false`。
+
+---
+
+## 2026-10-11 Stop gate：state 證據改成往前收集，取代歷史重放
+
+### 為什麼不重放歷史
+
+上一節寫「拿歷史 Stop 記錄重放」。估價時（dry run，不打 Jev）先把今天的 git 狀態套回
+過去 7 天改過檔的 517 輪：1103 個路徑裡 418 個讀成 unchanged、186 個 missing，
+**219 輪（42%）state 說「這輪什麼都沒變」**。那些檔當時確實改過，後來被 commit、
+被刪或 scratch 被清掉。git 狀態是活的，事後讀到的是今天的樹，不是那一輪的。拿它重放
+會量出假的 `contradicted` 暴增，錢花了（約 $0.16）數字還是錯的。
+
+transcript 是 append-only，事後重讀和當時一字不差；git 狀態只能在 Stop 當下抓。
+
+### 改了什麼
+
+- `plugin/hooks/gate.js` 新增 `captureState()`：shadow 期間，每個有改檔的 Stop 把
+  state 文字（路徑＋porcelain 狀態碼，**沒有檔案內容**）、`stats`、`session_id`、
+  `transcript_path` 和當下的 `transcript_bytes` 追加寫到 `stateCaptureLog`。
+  transcript 只會往後長，所以「路徑＋位元組長度」就能精確還原那一輪的宣稱與工具證據。
+- 不寫進 `gate.log`：那份 ledger 維持只記統計。capture 檔只在本機，不進 repo。
+- fail-open：寫檔任何錯都吞掉，觀察不能害一輪失敗。`stateCaptureLog` 設空字串即關閉。
+- config：`"stateCaptureLog": "${HOME}/.jev-gate/state-capture.jsonl"`。
+
+### 驗證
+
+- 全套：433 tests / 431 pass / 0 fail / 2 skipped（改動前 432 / 0 fail）。
+- 新測試 `tests/gate-state-capture.test.mjs`：記錄欄位完整、`transcript_bytes` 等於寫入
+  當下的位元組數、連寫兩筆是兩行、`stateCaptureLog` 空時不建檔。
+- 真 transcript 探針：寫出 1 筆，stats `2 changed / 0 unchanged / 0 missing`，state 文字
+  正確列出本輪改的 `config.default.json` 與 `gate.js`。
+- hook 入口 `{"stop_hook_active":true}` → rc=0。
+
+### 下一步從哪接
+
+每天約 74 輪改檔（7 天 517 輪推算），收滿 100 輪約 1.5 天。之後兩臂重放（同模型同時段，
+舊證據 vs 舊證據＋state）100×2 次，照 `backtest-teacher.mjs` 單價約 $0.03，仍要先授權。
+`stateShadow` 在那之前維持 `true`。capture 檔沒有輪替，重放做完後再處理（`ponytail:` 已標）。
