@@ -2372,3 +2372,68 @@ issue #12 的 shadow 期（09-30～10-02）共記 5 筆 `idcheck_observe`。逐�
 狀態：拆題確實比原 `tier` 好（兩批都 +9），但 73% 還不夠上線。三類錯都可以靠改寫題目解決，改完後要用第三批沒看過的請求再驗一次，不能拿這批來調。`jev-route.mjs` 未改。
 
 重放腳本：`replay-holdout.mjs`（scratchpad，未入 repo）。
+
+---
+
+## 37. Stop gate 改餵工作區狀態，不只餵逐字稿（2026-10-11）
+
+### 為什麼
+
+Stop gate 判「宣稱有沒有被證據支持」時，證據來源是 transcript 裡的 `tool_result`
+文字。那是 agent 自己這一輪的輸出的副本——同一個主體既寫宣稱也寫證據。
+
+外部參考（agentic evals 的 Level 4）量過這件事：judge 只讀逐字稿時，與程式評分器的
+kappa 是 **−0.24**（比丟硬幣差）；補上資料庫前後差異後，假警報從 11 降到 2。
+
+對 coding agent 來說，「資料庫」就是工作區。所以這一節加的是第二個證據來源：
+**這一輪宣稱改過的那些路徑，git 現在怎麼說**。
+
+### 設計三個決定
+
+1. **只送檔名與狀態碼，不送 diff 內容。** 回答「哪些檔真的變了」不需要內容，而內容
+   送出去就是把工作區檔案餵給外部 LLM。所以 state 區塊只有：repo root、HEAD short
+   sha、每個路徑的 porcelain 狀態碼、是否出現在 HEAD commit、是否不存在於磁碟。
+2. **證據組裝抽成純函式** `composeEvidence(toolOutput, stateText, shadow)`。上一次這道
+   閘換證據來源的教訓是：組裝邏輯埋在 hook 裡，shadow 期看不出證據是空的，一上線
+   就每輪都擋，而這是無頭機。純函式才測得到。
+3. **新來源預設 shadow**（`stateShadow: true`）。shadow 時 state 照算、只把統計寫
+   ledger，**不進 judge 的 payload**，所以判決行為零變化。要觀察的是「這個來源會不會
+   是空的或垃圾」——那正是上次出事的點。
+
+### 實測撞出來的三個 bug
+
+兩個是測試抓的，一個是真 transcript 探針抓的。三個都指向同一個方向：**誤報成
+UNCHANGED**，也就是「證據與宣稱矛盾」那一側。一旦離開 shadow，那是會擋人的方向。
+
+1. **同一筆 assistant 記錄裡的多個 edit 被反序。** 原本往回走 transcript 並 `unshift`，
+   記錄內部卻正向迭代。改成先往回找到回合邊界、再從邊界正向走，順序自然是時間序。
+2. **macOS 的 `/var` 是 symlink 到 `/private/var`。** `git rev-parse --show-toplevel` 回
+   解析後的路徑，輸入路徑沒解析，前綴比對失敗 → rel 留著絕對路徑 → 查表全不中 →
+   **每個檔案都報 UNCHANGED**。修法：對 dirname 取 realpath 再組 rel。
+3. **`git()` 統一 `.trim()` 吃掉 porcelain 第一行的前導空格。** 已追蹤、未 staged 的修改
+   輸出是 `" M path"`，trim 掉頭後 `slice(3)` 從路徑的第二個字母開始，對不上。
+   只有**第一行**會中，而且只中**最常見的那一種**（未 staged 修改）；`"?? path"` 不受
+   影響，所以測試 fixture 剛好全是 `??` 和 clean 的話完全看不到。
+
+   這是真資料探針抓到的：拿本 session 的 transcript 跑，`gate.js` 報 UNCHANGED，但
+   `git` 明明顯示它被改了（HEAD 沒有 `composeEvidence`，工作區有）。
+
+### 驗收
+
+- 新測試 `tests/gate-state-evidence.test.mjs`：回合邊界、記錄內順序、symlink 前綴、
+  porcelain 第一行、三個計數器互斥。
+- **突變驗證**：把 `.trim()` 加回 `git()`，新測試必須變紅 → 實測 1 fail、訊息指名
+  `aa-modified.txt` 沒被認出。還原後 0 fail。這條回歸測試不是空包彈。
+- 全套 `231` 條：433 pass / 0 fail / 2 skipped。
+- **真 transcript**：3 個路徑全抓到、3 changed / 0 unchanged / 0 missing、約 60ms。
+- `stats` 三個計數器改成互斥（缺檔不再同時算進 changed），並把
+  `missing + changed + unchanged == paths` 釘成斷言。
+
+### 下一步從哪接
+
+`stateShadow` 還是 `true`，judge payload 沒變。要離開 shadow 必須先做一件事：
+**拿歷史 Stop 記錄重放，比較舊證據與新證據下 `contradicted` 的比率變化**。不看日期、
+看樣本數——`judged` 筆數夠才有意義。
+
+這個重放會真打 Jev，也就是會花錢，所以要先得到授權再跑。在那之前不要把
+`stateShadow` 改成 `false`。

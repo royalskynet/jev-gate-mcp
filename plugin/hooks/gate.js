@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { makeStopGate, makeNextGate, logAsync } from '../lib/gate.js';
 import { readEvidence } from '../lib/transcript.js';
+import { stateEvidence } from '../lib/state.js';
 import { unsupportedIds, idBlock } from '../lib/idcheck.js';
 import { DEFAULT_CONFIG } from '../lib/judge.js';
 
@@ -23,9 +24,32 @@ export async function handleStop(payload, c = cfg) {
   // fi-reminder.sh's guard: one block per turn-chain, never a loop.
   if (payload?.stop_hook_active) return undefined;
   const claim = String(payload?.last_assistant_message ?? '').slice(0, 4000);
-  const evidence = payload?.tool_response?.output ?? readEvidence(payload?.transcript_path);
+  // Nothing claimed, nothing to check — and no reason to ask git about it.
+  if (!claim.trim()) return undefined;
+  const toolOutput = payload?.tool_response?.output ?? readEvidence(payload?.transcript_path);
+  // The store, not the agent's account of it. Shadow by default: computed and
+  // counted, withheld from the judge, because the last time this gate changed
+  // where evidence comes from the new source turned out to be empty, and the
+  // shadow period was the only reason that was a dull ledger instead of a
+  // headless machine blocking every turn (fixindex 0325 §12).
+  let state = { text: '', stats: null };
+  try {
+    state = stateEvidence(payload?.transcript_path);
+  } catch {
+    // Fail open, like every other guard in this hook.
+  }
+  if (state.stats?.paths) {
+    // Stats only, never the paths themselves: observing a source must not turn
+    // the ledger into a second copy of the content (AGENTS.md).
+    await logAsync(c, {
+      event: c.stateShadow === false ? 'state_evidence' : 'state_observe',
+      gate: 'stop',
+      ...state.stats,
+    });
+  }
+  const evidence = composeEvidence(toolOutput, state.text, c.stateShadow !== false);
   // A turn that ran no tools has nothing to verify against; let it end.
-  if (!claim.trim() || !evidence.trim()) return undefined;
+  if (!evidence.trim()) return undefined;
   // Deterministic first: an invented id reads as `not_addressed` to the judge,
   // which is advisory, so the clearest case would otherwise pass. Widened to
   // the whole transcript because quoting a hash from an earlier round is honest.
@@ -53,6 +77,20 @@ export async function handleStop(payload, c = cfg) {
   const result = await makeStopGate(c)({ claim, evidence });
   if (result.shadow) return undefined;
   return blockDecision(result.decided?.claims?.[0]);
+}
+
+/**
+ * What the judge is shown, kept separate so the composition is testable without
+ * git or the network.
+ *
+ * State goes first: it is the shorter and harder witness, and a window that
+ * overflows should keep it. While `shadow` is on the state block is dropped
+ * here, so turning the source on is one config flag and no code path change.
+ */
+export function composeEvidence(toolOutput, stateText, shadow = true) {
+  const tools = String(toolOutput ?? '');
+  if (shadow || !stateText) return tools;
+  return tools.trim() ? `${stateText}\n\n=== this round's tool output ===\n${tools}` : stateText;
 }
 
 /**
