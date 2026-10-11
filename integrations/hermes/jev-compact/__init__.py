@@ -310,7 +310,11 @@ class JevCompactCompressor(ContextCompressor):
                 memory_context=memory_context, bypass_cooldown=bypass_cooldown,
             )
         after = _payload_chars(compacted)
-        if self._under_threshold(after):
+        # The host's count carries the system prompt and tool schemas the payload estimate
+        # cannot see (~33k chars on coco). Without it a Jev result "under" by chars was still
+        # over by the host's count, so the next turn's preflight re-forked the judge and the
+        # summary only ran a pass later — every pass a judge call against the free quota.
+        if self._under_threshold(after, self._overhead_tokens(before, current_tokens)):
             self._record(before, after, "jev", reason)
             return compacted
         # Jev did shrink the transcript, just not enough on its own: hand its result down
@@ -321,17 +325,27 @@ class JevCompactCompressor(ContextCompressor):
             memory_context=memory_context, bypass_cooldown=bypass_cooldown,
         )
 
-    def _under_threshold(self, chars: int) -> bool:
-        """Whether *chars* of transcript is small enough to skip the summary entirely.
+    def _under_threshold(self, chars: int, overhead_tokens: int = 0) -> bool:
+        """Whether *chars* of transcript, plus *overhead_tokens* of prompt outside it, is
+        small enough to skip the summary entirely.
 
         Fails closed: an unreadable threshold means Jev alone has not proven it can carry
         the window, so the built-in summary still runs. Over-compressing is the one error
         this engine cannot make.
         """
         try:
-            return (chars / _CHARS_PER_TOKEN) < int(self.threshold_tokens)
+            return (chars / _CHARS_PER_TOKEN) + overhead_tokens < int(self.threshold_tokens)
         except Exception:
             return False
+
+    @staticmethod
+    def _overhead_tokens(before_chars: int, current_tokens: Optional[int]) -> int:
+        """Tokens the host counted beyond the message payload (system prompt, tool schemas);
+        0 when the host passed no count."""
+        try:
+            return max(0, int(current_tokens) - before_chars // _CHARS_PER_TOKEN) if current_tokens else 0
+        except Exception:
+            return 0
 
     def _over_by_tokens(self, current_tokens: Optional[int]) -> bool:
         """The host's own count, when it passed one, beats the chars/4 estimate: it sees the

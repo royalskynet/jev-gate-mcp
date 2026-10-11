@@ -186,6 +186,21 @@ def main() -> None:
     assert calls[0]["messages"] == huge, "the built-in must receive the compacted messages"
     assert calls[0]["messages"] is not before, "not the original transcript"
 
+    # 3a. Small by chars, but the host's count says the prompt outside the messages
+    #     (system prompt, tool schemas) keeps it over: the built-in still runs this pass,
+    #     on Jev's result. 2026-10-12 coco: Jev "compacted" to ~33k est. while the host
+    #     saw ~73k vs a 64k threshold, so every next turn re-forked the judge.
+    overhead = 5_000  # host count = payload estimate + this
+    with _spy_super() as calls:
+        out = engine(lambda _p: _Proc(_verdict(small)), threshold=5_000).compress(
+            before, current_tokens=before_chars // 4 + overhead)
+    assert out == "SUPER" and len(calls) == 1, "overhead pushes a chars-small result over"
+    assert calls[0]["messages"] == small, "the built-in must receive the compacted messages"
+    with _spy_super() as calls:
+        out = engine(lambda _p: _Proc(_verdict(small)), threshold=5_000).compress(
+            before, current_tokens=before_chars // 4 + 1_000)
+    assert out == small and calls == [], "with room left after overhead, Jev's result stands"
+
     # 3b. Same, for every other way the judge can let us down: absent node, timeout,
     #     unreadable JSON, a shape we do not understand, and an honest "not compacted".
     def raiser(exc):

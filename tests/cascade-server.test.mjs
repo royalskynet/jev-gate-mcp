@@ -134,7 +134,7 @@ describe('cascade-server', () => {
   // Shared instance for another tailnet node: anyone else who reaches the port
   // (other tailnet devices, a leaked URL) must be turned away before any judge runs.
   test('allowFrom rejects other source IPs with 403 and never calls a judge', async () => {
-    await start({ serverOpts: { allowFrom: ['100.64.0.3'] } });
+    await start({ serverOpts: { allowFrom: ['100.64.0.1'] } });
     const res = await post({ questions: { q1: { type: 'noul' } } });
     assert.equal(res.status, 403);
     assert.equal(cascadeCalls + layaOnlyCalls, 0);
@@ -168,10 +168,10 @@ describe('cascade-server', () => {
 
   test('resolveTailnetIps matches HostName or DNS label only', () => {
     const status = { Peer: {
-      a: { HostName: 'm2-userspace', DNSName: 'm2-userspace.tail.ts.net.', TailscaleIPs: ['100.64.0.3', 'fd7a::1'] },
+      a: { HostName: 'm2-userspace', DNSName: 'm2-userspace.tail.ts.net.', TailscaleIPs: ['100.64.0.1', 'fd7a::1'] },
       b: { HostName: 'phone', DNSName: 'phone.tail.ts.net.', TailscaleIPs: ['100.1.1.1'] },
     } };
-    assert.deepEqual(resolveTailnetIps(status, ['m2-userspace']), ['100.64.0.3', 'fd7a::1']);
+    assert.deepEqual(resolveTailnetIps(status, ['m2-userspace']), ['100.64.0.1', 'fd7a::1']);
     assert.deepEqual(resolveTailnetIps(status, []), []);
     assert.deepEqual(resolveTailnetIps(null, ['m2-userspace']), []);
   });

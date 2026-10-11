@@ -162,7 +162,7 @@ export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fet
   };
 }
 
-// Loopback, or a tailnet peer (100.64.0.1/10 or a MagicDNS *.ts.net name): the
+// Loopback, or a tailnet peer (100.64.0.3/10 or a MagicDNS *.ts.net name): the
 // shared daemon on another node (laya-only, source-IP allow list).
 const CASCADE_URL = /^http:\/\/(127\.0\.0\.1|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|[a-z0-9-]+\.[a-z0-9-]+\.ts\.net):\d+\/?$/;
 
