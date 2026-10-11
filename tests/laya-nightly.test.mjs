@@ -3,8 +3,9 @@
 // trained weights (which turns the "vs int8" baseline into self-comparison),
 // a promotion could land without the ONNX export that makes it reachable, and
 // the summary line is jq string-building that has been wrong before. The gate
-// itself reads report.live_gated (the online lanes' own accuracy) and refuses
-// both an absolute floor breach and a regression against the serving model.
+// itself is relative only (10-11): same-paper McNemar against the serving
+// model plus the unmeasured-question check. Absolute accuracy belongs to the
+// takeover gate (per-question confMin + CP error budget), not to shipping.
 import test from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -132,10 +133,10 @@ test('a question that stopped appearing does not block the night', () => {
   assert.doesNotMatch(pushes().join('\n'), /沒有的題目/);
 });
 
-test('a champion with no question list falls back to the floor instead of waving everything through', () => {
+test('a champion with no question list falls back to the paired gate instead of reading "no list" as "no new questions"', () => {
   const { at, run, pushes } = sandbox();
   // An old champion file predates the field. There is nothing to compare, so the
-  // night proceeds on the floor alone — but it must not read "no list" as "no new
+  // night proceeds on the paired gate alone — but it must not read "no list" as "no new
   // questions" for a champion that does have one.
   fs.writeFileSync(at('.jevgate/laya-champion.json'),
     JSON.stringify({ accuracy: 0.98, n: 170, conf_min: 0.7 }));
@@ -160,59 +161,26 @@ test('an unpromoted night neither exports nor claims a gain it did not get', () 
   assert.match(summary, /未達標/);
 });
 
-test('too few online-lane rows to measure anything: nothing ships, and it says why', () => {
+// 10-11: the absolute floor and MIN_N used to sit here. With them, local
+// answers never got a teacher label so n never grew, and 10-07's OOF 0.637
+// model never reached serving. Shipping now asks one relative question: is it
+// worse than what is serving, on the same paper. These two tests turn red if
+// either old precondition comes back.
+test('few online-lane rows no longer block shipping when the paired gate passes', () => {
   const { at, run, pushes } = sandbox();
-  // 10-06: removing test probes left ~5 rows per lane. 5/5 correct clears the
-  // floor and no McNemar test can find a regression on 5 rows, so without this
-  // gate any candidate would ship unmeasured.
   fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 5, accuracy: 1.0 }));
   run();
-  assert.equal(fs.existsSync(at('exported.txt')), false, 'shipped a model measured on 5 rows');
-  assert.equal(serving(at), 'champ');
-  assert.match(pushes().join('\n'), /不導出：線上 lane 只有 n=5 題 < 最少 30/);
-  // 10-07: the lane's own local answers never get a teacher label, so n stays
-  // tiny for weeks and a separate ⚠️ fired every night next to a summary saying
-  // 已換權重. One push, the reason inside the summary, nothing to alarm on.
-  assert.equal(pushes().length, 1, pushes().join('\n'));
-  assert.match(pushes()[0], /已換權重，不導出：線上 lane 只有 n=5 題/);
+  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran');
+  assert.equal(serving(at), 'cand');
+  assert.doesNotMatch(pushes().join('\n'), /不導出|最少/);
 });
 
-test('a better model that lost its calibration at the gate is not served', () => {
+test('an online-lane accuracy below 0.95 does not block shipping when not worse than serving', () => {
   const { at, run, pushes } = sandbox();
-  // Overall gain clears the upgrade gate, but the online lanes are worse than
-  // the floor, which is the only number live traffic actually experiences.
   fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 300, accuracy: 0.88 }));
   run();
-  assert.equal(fs.existsSync(at('exported.txt')), false, 'served a bundle that failed the gate floor');
-  assert.match(pushes().join('\n'), /不導出：線上 lane 準確率 0\.88（n=300）< 地板 0\.95/);
-});
-
-// The floor is min(0.95, Jev's own re-ask agreement): a teacher that changes its
-// mind 10% of the time caps any student near 90%, so holding it to 95% would
-// freeze those questions forever. It may only loosen, never tighten.
-const withSelf = (live, self) => JSON.stringify({ ...JSON.parse(REPORT(true, live)), teacher_self: self });
-
-test('a teacher that disagrees with itself lowers the floor to its own agreement', () => {
-  const { at, run, pushes } = sandbox();
-  fs.writeFileSync(at('next-report.json'), withSelf({ n: 300, accuracy: 0.92 }, { n: 50, agreement: 0.9, qids: QIDS }));
-  run();
-  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran', '92% clears a 90% teacher ceiling');
-  assert.doesNotMatch(pushes().join('\n'), /地板/);
-});
-
-test('a near-perfect teacher does not raise the floor above 0.95', () => {
-  const { at, run } = sandbox();
-  fs.writeFileSync(at('next-report.json'), withSelf({ n: 300, accuracy: 0.96 }, { n: 3363, agreement: 0.995, qids: QIDS }));
-  run();
-  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran', 'min(), not max(): 96% must still ship');
-});
-
-test('too few re-asks to measure the teacher keeps the 0.95 floor', () => {
-  const { at, run, pushes } = sandbox();
-  fs.writeFileSync(at('next-report.json'), withSelf({ n: 300, accuracy: 0.92 }, { n: 5, agreement: 0.6, qids: QIDS }));
-  run();
-  assert.equal(fs.existsSync(at('exported.txt')), false, '5 re-asks cannot justify loosening the floor');
-  assert.match(pushes().join('\n'), /< 地板 0\.95/);
+  assert.equal(serving(at), 'cand');
+  assert.doesNotMatch(pushes().join('\n'), /地板|不導出/);
 });
 
 test('a model that beats stock int8 but answers significantly more wrong on the same paper is not served', () => {
@@ -257,7 +225,7 @@ test('a stale champion number cannot block: same paper 98.8% vs 98.2% on 338 shi
   assert.match(pushes().at(-1), /已換權重，同卷 n=338 新版 98\.2%.*McNemar p=0\.6875/);
 });
 
-test('no serving bundle: nothing to pair, the floor alone decides', () => {
+test('no serving bundle: nothing to pair, the candidate ships', () => {
   const { at, run } = sandbox();
   fs.rmSync(at('.jevgate/laya-trained-onnx'), { recursive: true });
   fs.writeFileSync(at('next-report.json'), REPORT(true, { n: 175, accuracy: 0.99 }));

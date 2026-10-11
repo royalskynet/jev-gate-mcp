@@ -74,49 +74,29 @@ fi
 # 換了權重就立刻導出 ONNX。訓練產物是 safetensors，推論端只讀 ONNX bundle，
 # 不導出就等於沒生效——這兩步綁死在一起，不留「訓好了但沒人讀」的縫。
 #
-# 導出才是上線，所以閘掛在這裡。三道，前兩道看 report.live_gated（線上兩條 lane
-# 實際會留在本機那些題、OOF 口徑），第三道是同卷配對：
-#   FLOOR            絕對地板（OOF，泛化的唯一保證——配對那道對新版是 in-sample）
+# 導出才是上線，所以閘掛在這裡。這是「換版本閘」：只回答新版有沒有比現役差。
 #   人口閘（qids）   兩條 lane 都不看題目身分（信心閘看 qtype、state 閘看 state 的
 #                    key 形狀），所以 caller 改自己的 state 或新 caller 接進來，都會
-#                    讓從未量測過的題目無聲進入本機 lane。準確率是整批平均，新題只佔
-#                    少數時擋不住。名單裡出現現役沒有的題目就不導出。
+#                    讓從未量測過的題目無聲進入本機 lane。名單裡出現現役沒有的題目就不導出。
 #   同卷配對         新版先導到候選目錄（不上線），現役與候選用 laya-eval-onnx.py
 #                    --gate-dump 在同一份 corpus 上各跑一次，laya_paired_gate.py 做
-#                    McNemar 精確檢定，只有新版本機答錯的題顯著較多才擋。先前拿當晚
-#                    數字比 champion 檔裡 10-02 在 186 題上的舊數字，不同母體，
-#                    從那天起每晚都誤判退步（理由與上限見 laya_paired_gate.py）。
-#   最少題數         線上 lane 題數 < MIN_N 時地板與配對都量不出東西（10-06 語料去掉
-#                    測試探針後兩條 lane 只剩約 5 題），一律不導出。
-FLOOR="${JEV_LAYA_ACC_FLOOR:-0.95}"
-MIN_N="${JEV_LAYA_MIN_N:-30}"
+#                    McNemar 精確檢定，只有新版本機答錯的題顯著較多才擋。
+# 10-11 拿掉絕對地板（FLOOR 0.95）與最少題數（MIN_N 30）（使用者核准）：兩者是「接手閘」
+# 的判準卻擋在換版本閘，n 長不大加上地板，10-07 OOF 0.637 的訓練成果一直上不了線
+# （Google Rules of ML #24/#39、champion/challenger 共識：換版本只比現役，相對）。
+# 接手安全由服務端每題 confMin＋CP 錯誤預算（只算 Laya 接手題）負責。
 CHAMP="${JEV_LAYA_CHAMPION:-$HOME/.jevgate/laya-champion.json}"
 LIVE="${JEV_LAYA_EXPORT_DIR:-$HOME/.jevgate/laya-trained-onnx}"
 CAND="${JEV_LAYA_CANDIDATE_DIR:-$HOME/.jevgate/laya-candidate-onnx}"
 PAIRED=""
 if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
-  GATE_ACC=$(jq -r '.live_gated.accuracy // 0' "$REPORT" 2>/dev/null)
-  GATE_N=$(jq -r '.live_gated.n // 0' "$REPORT" 2>/dev/null)
   SPEC=$(jq -r '.live_gated.conf_min // ""' "$REPORT" 2>/dev/null)
-  # 地板 = min(FLOOR, Jev 對同題重問的自身一致率)：老師自己都會變卦的題，學生到不了 FLOOR。
-  # 只放寬不變嚴（使用者 10-10 核准）；重問次數 < SELF_MIN_N 量不準，維持 FLOOR。
-  SELF_MIN_N="${JEV_LAYA_SELF_MIN_N:-30}"
-  FLOOR=$(jq -r --argjson f "$FLOOR" --argjson m "$SELF_MIN_N" '
-    .teacher_self as $t
-    | if ($t.agreement != null and ($t.n // 0) >= $m and $t.agreement < $f) then $t.agreement else $f end
-  ' "$REPORT" 2>/dev/null || echo "$FLOOR")
-  # 現役沒有 qids（舊檔）就無從比對，這一輪只靠地板擋，並說出來。
+  # 現役沒有 qids（舊檔）就無從比對，這一輪只靠同卷配對擋。
   NEW_QIDS=$(jq -r --slurpfile c "$CHAMP" '
     ($c[0].qids // null) as $k
     | if $k == null then "" else [.live_gated.qids[] | select(. as $q | $k | index($q) | not)] | join(",") end
   ' "$REPORT" 2>/dev/null)
-  if [ "${GATE_N:-0}" -lt "$MIN_N" ]; then
-    # 不另發 ⚠️：本機 lane 自己答掉的題拿不到老師答案，n 只能慢慢長，這個狀態會連續好幾週，
-    # 每晚一則警告沒有可行動的資訊。原因併進下面那行摘要，跟「已換權重」放在一起才不像矛盾。
-    PAIRED="不導出：線上 lane 只有 n=${GATE_N} 題 < 最少 ${MIN_N}，量不出好壞，bundle 維持舊版"
-  elif [ "$(jq -n --argjson a "${GATE_ACC:-0}" --argjson f "$FLOOR" '$a >= $f')" != true ]; then
-    hpush "⚠️ Laya 權重已換但不導出：線上 lane 準確率 ${GATE_ACC}（n=${GATE_N}）< 地板 ${FLOOR}，bundle 維持舊版"
-  elif [ -n "$NEW_QIDS" ]; then
+  if [ -n "$NEW_QIDS" ]; then
     hpush "⚠️ Laya 權重已換但不導出：本機 lane 出現現役沒有的題目 ${NEW_QIDS}（從未量測就上線），bundle 維持舊版"
   else
     rm -rf "$CAND" "$CAND.prev" "$CAND.new"
