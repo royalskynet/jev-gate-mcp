@@ -50,16 +50,34 @@ fi
 # 硬時限：10-10 語料暴增，訓練 2h40m 沒跑完才被手動砍（10-08/09 也都沒跑完）。
 # timeout 在 time 外層，逾時送 TERM 給整個行程群組，rc=124、peak 量不到（印 ?）。
 # PYTHONUNBUFFERED：stdout 進檔案會被緩衝，被砍時 log 一行進度都不剩。
-TRAIN_TIMEOUT="${JEV_LAYA_TRAIN_TIMEOUT_SEC:-5400}"
+TRAIN_TIMEOUT="${JEV_LAYA_TRAIN_TIMEOUT_SEC:-14400}"
+# 不跟 Hindsight 搶：記憶體可用比例（kern.memorystatus_level，0–100）低於門檻今晚就不訓，明晚再來。
+# 10-11 晚 llama-server＋Hindsight＋手動標註疊在一起把 24GB 壓到 free 6%，守衛自己都被餓死（fix 10398）。
+MEM_MIN="${JEV_LAYA_MEM_LEVEL_MIN:-40}"
+MEM_LEVEL=$(sysctl -n kern.memorystatus_level 2>/dev/null || echo 0)
+if [ "$MEM_LEVEL" -lt "$MEM_MIN" ]; then
+  hpush "⏸️ Laya 夜訓今晚跳過：記憶體可用 ${MEM_LEVEL}% < ${MEM_MIN}%（不跟 Hindsight 搶）"
+  echo "$(date -u +%FT%TZ) end rc=0 train=skipped mem_level=${MEM_LEVEL}"
+  exit 0
+fi
+# 低強度：h 快取放磁碟 memmap、encoder 快取完就卸（10-11 實測 200 units 峰值 4.7GB 只在編碼 40s，
+# 訓練段 2.9–3.9GB），head 走 MPS（CPU 每筆每 epoch 0.8s、MPS 0.17s）。每題封頂 150：
+# 去重後 1263 units，與 10-06 上線那版的 1552 同量級，5 fold×8 epoch 約 2h。
+# taskpolicy -b＝背景 QoS（CPU 讓給前景與 Hindsight、IO 節流）。去重模型離線載入，快取沒有就失敗不略過。
+HCACHE="${JEV_LAYA_HCACHE_DIR:-$HOME/.jevgate/laya-hcache}"
+rm -rf "$HCACHE"; mkdir -p "$HCACHE"
 TIMEF=$(mktemp)
-PYTHONUNBUFFERED=1 timeout -s TERM "$TRAIN_TIMEOUT" \
-  /usr/bin/time -l sh -c 'exec "$@" 2>&3' sh "$PY" "$DIR/scripts/laya-train.py" --promote 3>&2 2>"$TIMEF"
+PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 JEV_LAYA_MAX_PER_QID="${JEV_LAYA_MAX_PER_QID:-150}" \
+  timeout -s TERM "$TRAIN_TIMEOUT" \
+  /usr/bin/time -l taskpolicy -b sh -c 'exec "$@" 2>&3' sh "$PY" "$DIR/scripts/laya-train.py" --promote \
+    --device "${JEV_LAYA_DEVICE:-mps}" --cache-dir "$HCACHE" 3>&2 2>"$TIMEF"
 RC=$?
+rm -rf "$HCACHE"  # 1263 units 約 1.3GB，每晚整份重算，不留
 PEAK_MB=$(awk '/peak memory footprint/{print int($1/1048576)}' "$TIMEF")
 rm -f "$TIMEF"
 echo "$(date -u +%FT%TZ) train peak_fp=${PEAK_MB:-?}MB rc=${RC}"
 # 10-08/09 MPS 快取囤到 15GB 被 ram_guard 砍（fix 10256），修後實測 8.2GB。超過門檻就是回歸。
-PEAK_WARN_MB="${JEV_LAYA_PEAK_WARN_MB:-10240}"
+PEAK_WARN_MB="${JEV_LAYA_PEAK_WARN_MB:-6144}"  # 10-11 低強度模式實測 4.7GB
 if [ "${PEAK_MB:-0}" -ge "$PEAK_WARN_MB" ]; then
   hpush "⚠️ Laya 訓練記憶體峰值 ${PEAK_MB}MB ≥ ${PEAK_WARN_MB}MB，MPS 快取可能又在囤（fix 10256）"
 fi

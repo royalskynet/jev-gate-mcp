@@ -422,6 +422,19 @@ def fit_cache_budget(units, hidden, budget_bytes, seed=SEED):
     return kept, len(units) - len(kept)
 
 
+def open_disk_cache(path, lengths, hidden):
+    """--cache-dir 用：把整份 h 快取放進磁碟上的單一 fp16 .npy（numpy open_memmap），
+    unit i 的列是 rows[offs[i]:offs[i+1]]。RAM 只留 OS 頁快取，不再受 CACHE_BUDGET_GB 抽樣，
+    10-10 那種 11.5GiB 的量也不用丟資料。回 (memmap, offs)。
+    ponytail: 每晚整份重算；要省 encoder 時間再改成按 digest 增量。"""
+    import numpy as np
+    offs = [0]
+    for n in lengths:
+        offs.append(offs[-1] + n)
+    mm = np.lib.format.open_memmap(str(path), mode="w+", dtype=np.float16, shape=(max(offs[-1], 1), hidden))
+    return mm, offs
+
+
 MAX_PER_QID = int(os.environ.get("JEV_LAYA_MAX_PER_QID", "300"))
 
 
@@ -444,6 +457,93 @@ def cap_per_qid(units, cap, seed=SEED):
     for idx in by_qid.values():
         if len(idx) > cap:
             drop.update(set(idx) - set(rng.sample(idx, cap)))
+    return [u for i, u in enumerate(units) if i not in drop], len(drop)
+
+
+DEDUP_COS = float(os.environ.get("JEV_LAYA_DEDUP_COS", "0.95"))
+DEDUP_MODEL = os.environ.get("JEV_LAYA_DEDUP_MODEL", "minishlab/potion-multilingual-128M")
+
+
+def _same_answer(a, b):
+    """兩筆老師答案算不算同一個。判準照 pred_matches：noul 差 < 0.2，其餘要相等。
+    不用量化分格：0.29／0.31 會被切在格線兩側。"""
+    if a["truth"] is None or b["truth"] is None:
+        return a["truth"] is b["truth"]
+    if a["qtype"] == "noul":
+        return abs(a["truth"] - b["truth"]) < 0.2
+    return a["truth"] == b["truth"]
+
+
+def dedup_exact(units):
+    """同題、同 state、同題目的 units 只留一筆。老師答案不一致＝矛盾標註：多數決留多數那筆，
+    平票整組丟（拿互相矛盾的目標訓練比少一筆更糟）。10-11 實測 24215 → 20991，矛盾 453 組、平票 332。
+    多數決對每一筆數「跟它同答案的有幾筆」，最多的那筆勝出。外部題不動。回 (保留的 units, 統計)。"""
+    groups = {}
+    for i, u in enumerate(units):
+        if not u["external"]:
+            key = (u["qid"], json.dumps([u["state"], u["question"]], sort_keys=True, ensure_ascii=False))
+            groups.setdefault(key, []).append(i)
+    drop, conflicts, ties = set(), 0, 0
+    for idx in groups.values():
+        if len(idx) == 1:
+            continue
+        support = {i: sum(_same_answer(units[i], units[j]) for j in idx) for i in idx}
+        best = max(support.values())
+        if best < len(idx):
+            conflicts += 1
+            winners = [i for i in idx if support[i] == best]
+            # 平票＝最高票的那幾筆彼此不是同一個答案
+            if any(not _same_answer(units[winners[0]], units[w]) for w in winners[1:]):
+                ties += 1
+                drop.update(idx)
+                continue
+        keep = next(i for i in idx if support[i] == best)
+        drop.update(set(idx) - {keep})
+    kept = [u for i, u in enumerate(units) if i not in drop]
+    return kept, {"dropped": len(drop), "conflict_groups": conflicts, "tie_groups": ties}
+
+
+def m2v_embed(texts):
+    """model2vec 靜態向量（CPU、無 torch）。載入約 2.0GB、batch 64 編碼不再長；用完即丟。
+    HF_HUB_OFFLINE=1 時模型必須已在快取，否則直接失敗（夜訓每晚都要經過去重，不靜默略過）。"""
+    from model2vec import StaticModel
+    m = StaticModel.from_pretrained(DEDUP_MODEL)
+    try:
+        return m.encode(texts, batch_size=64, max_length=256)
+    finally:
+        del m
+        import gc
+        gc.collect()
+
+
+def dedup_near(units, threshold, embed=m2v_embed):
+    """同一題內 state 的 cosine ≥ threshold，**而且老師答案相同**才併（星狀，先到先留）。
+    只比 state：題目說明在同一題每筆都一樣，整段一起嵌入會讓不同請求也算出 0.99（10-11 實測誤刪 82%）。
+    答案不同不併：只比 state 時被併掉的有 15% 老師答案不同（例如只差 phase），那是訊號不是重複。
+    按 qid 不按族分組：同一筆 record 的 call_t1／call_t2 共用 state，按族會互相吃掉。
+    外部題不動。threshold<=0 關閉。回 (保留的 units, 丟掉幾個)。"""
+    if threshold <= 0:
+        return units, 0
+    import numpy as np
+    own = [i for i, u in enumerate(units) if not u["external"]]
+    keys = [json.dumps(units[i]["state"], sort_keys=True, ensure_ascii=False) for i in own]
+    uniq = list(dict.fromkeys(keys))
+    row = {k: j for j, k in enumerate(uniq)}
+    emb = np.asarray(embed(uniq), dtype=np.float32)
+    emb /= np.maximum(np.linalg.norm(emb, axis=1, keepdims=True), 1e-9)
+    by_qid = {}
+    for i, k in zip(own, keys):
+        by_qid.setdefault(units[i]["qid"], []).append((i, row[k]))
+    drop = set()
+    for members in by_qid.values():
+        reps = []  # (unit 索引, 向量列)
+        for i, r in members:
+            if reps:
+                sims = emb[[rr for _, rr in reps]] @ emb[r]
+                if any(_same_answer(units[reps[j][0]], units[i]) for j in np.nonzero(sims >= threshold)[0]):
+                    drop.add(i)
+                    continue
+            reps.append((i, r))
     return [u for i, u in enumerate(units) if i not in drop], len(drop)
 
 
@@ -616,6 +716,58 @@ def selftest():
     _fu = [{"qid": f"call_t{i % 20}", "external": False} for i in range(40)]  # 20 題各 2 筆＝同一族
     assert len(cap_per_qid(_fu, 10)[0]) == 10, "尾碼序號要併族封頂"
 
+    # 完全重複：同答案留一筆；2:1 矛盾留多數那筆；平票整組丟；外部題不動
+    def _du(qid, s, truth, ext=False, qtype="choice"):
+        return {"qid": qid, "state": {"s": s}, "question": {"q": qid}, "truth": truth,
+                "qtype": qtype, "external": ext}
+    _eu = ([_du("a", 1, 0)] * 3 + [_du("b", 1, 0), _du("b", 1, 1), _du("b", 1, 1)]
+           + [_du("c", 1, 0), _du("c", 1, 1)] + [_du("a", 1, 0, ext=True)] * 2
+           + [_du("n", 1, 0.31, qtype="noul"), _du("n", 1, 0.29, qtype="noul")])
+    _k, _s = dedup_exact(_eu)
+    assert sum(1 for u in _k if u["qid"] == "a" and not u["external"]) == 1, "同答案只留一筆"
+    assert [u["truth"] for u in _k if u["qid"] == "b"] == [1], "矛盾要留多數答案"
+    assert not any(u["qid"] == "c" for u in _k), "平票要整組丟"
+    assert sum(1 for u in _k if u["external"]) == 2, "外部題不去重"
+    assert sum(1 for u in _k if u["qid"] == "n") == 1, "noul 差 < 0.2 算同答案"
+    assert _s == {"dropped": 7, "conflict_groups": 2, "tie_groups": 1}, _s
+
+    # 近似重複：向量相同＋答案相同才併；答案不同、不同題、外部題、門檻 0 都不併
+    try:
+        import numpy as np  # noqa: F401
+    except ImportError:
+        print("  (無 numpy，略過近似重複檢查)")
+    else:
+        _vec = {'{"s": 1}': [1.0, 0.0], '{"s": 2}': [0.999, 0.04], '{"s": 3}': [0.0, 1.0]}
+        _emb = lambda texts: [_vec[t] for t in texts]
+        _nu = [_du("a", 1, 0), _du("a", 2, 0), _du("a", 2, 1), _du("a", 3, 0),
+               _du("b", 1, 0), _du("a", 2, 0, ext=True)]
+        _k, _d = dedup_near(_nu, 0.95, _emb)
+        assert _d == 1 and _nu[1] not in _k, "近似且同答案要併"
+        assert _nu[2] in _k, "近似但答案不同是訊號，不能併"
+        assert _nu[3] in _k and _nu[4] in _k and _nu[5] in _k, "不相似／不同題／外部題都留"
+        assert dedup_near(_nu, 0, _emb) == (_nu, 0), "門檻 0 要關閉"
+
+    # 磁碟快取：寫進去的每個 unit 讀回來要是同一段列，偏移錯一格就是拿別題的 h 訓練
+    try:
+        import numpy as np
+    except ImportError:
+        print("  (無 numpy，略過磁碟快取檢查)")
+    else:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "h.npy"
+            mm, offs = open_disk_cache(p, [2, 3, 1], 4)
+            for i in range(3):
+                mm[offs[i]:offs[i + 1]] = i + 1
+            mm.flush()
+            del mm
+            back = np.load(p, mmap_mode="r")
+            assert offs == [0, 2, 5, 6], offs
+            for i in range(3):
+                seg = back[offs[i]:offs[i + 1]]
+                assert seg.shape == ([2, 3, 1][i], 4) and (seg == i + 1).all(), (i, seg)
+            del back
+
     print("selftest PASS")
 
 
@@ -691,6 +843,8 @@ def main():
     ap.add_argument("--base-dir", default=str(BASE_DIR))
     ap.add_argument("--out-dir", default=str(OUT_DIR))
     ap.add_argument("--report", default=str(REPORT))
+    ap.add_argument("--cache-dir", help="h 快取寫到這個目錄的 memmap，快取完卸掉 encoder（低記憶體模式）")
+    ap.add_argument("--limit", type=int, default=0, help="只取 N 個 units（固定 seed 抽樣），量峰值用")
     args = ap.parse_args()
 
     if args.selftest:
@@ -698,6 +852,9 @@ def main():
         return 0
     if args.lora and args.promote:
         print("--lora 不支援 --promote（見檔頭 ponytail）", file=sys.stderr)
+        return 2
+    if args.lora and args.cache_dir:
+        print("--lora 要反傳過 encoder，不能配 --cache-dir", file=sys.stderr)
         return 2
 
     if not CORPUS.exists():
@@ -717,9 +874,20 @@ def main():
             src = rows[u["rec"]].get("label_source")
             ext_by_source[src] = ext_by_source.get(src, 0) + 1
     print(f"corpus={n_own} units={len(units)} records={n_rec} skipped={skipped} by_type={by_type}")
+    # 去重在封頂前：封頂只是抽樣，先把重複與矛盾拿掉，抽到的 300 筆才彼此不同。
+    units, dedup_stats = dedup_exact(units)
+    t0 = time.time()
+    units, dedup_stats["near_dropped"] = dedup_near(units, DEDUP_COS)
+    dedup_stats["cos"] = DEDUP_COS
+    print(f"去重：完全重複丟 {dedup_stats['dropped']}（矛盾 {dedup_stats['conflict_groups']} 組、"
+          f"平票整組丟 {dedup_stats['tie_groups']}），cosine≥{DEDUP_COS} 同答案丟 "
+          f"{dedup_stats['near_dropped']}（{time.time() - t0:.0f}s），剩 {len(units)} units")
     units, capped = cap_per_qid(units, MAX_PER_QID)
     if capped:
         print(f"每題上限 {MAX_PER_QID}：保留 {len(units)} units，丟 {capped}")
+    if args.limit and len(units) > args.limit:
+        units = random.Random(SEED).sample(units, args.limit)
+        print(f"--limit {args.limit}：抽樣保留 {len(units)} units")
     if ext_by_source:
         print(f"external（只進訓練 fold，weight={EXTERNAL_WEIGHT}）: {ext_by_source}")
 
@@ -755,6 +923,7 @@ def main():
     model = build_model(cfg, encoder_dir=str(base / "encoder"))
     state_dict = load_file(str(base / "model.safetensors"))
     model.load_state_dict(state_dict, strict=True)
+    del state_dict  # 不放掉的話 1.2GB 的出廠權重整趟陪跑
     model.to(device).eval()
 
     # ---- tokenize + 一次性 encoder 前向（凍結 → 可快取）
@@ -775,7 +944,7 @@ def main():
         kept.append(u)
     units = kept
     print(f"tokenized units={len(units)} ({time.time() - t0:.1f}s)")
-    if not args.lora:  # --lora 不快取 encoder，預算管不到它
+    if not args.lora and not args.cache_dir:  # --lora 不快取；--cache-dir 在磁碟，不用 RAM 預算
         hidden = model.encoder.config.hidden_size
         units, dropped = fit_cache_budget(units, hidden, int(CACHE_BUDGET_GB * 2**30))
         if dropped:
@@ -838,6 +1007,31 @@ def main():
         model.to(device)
         h_cache = None
         print(f"lora r={args.lora_r} on encoder Wqkv/Wo/Wi；不快取 encoder")
+    elif args.cache_dir:
+        import numpy as np
+        t0 = time.time()
+        Path(args.cache_dir).mkdir(parents=True, exist_ok=True)
+        disk, offs = open_disk_cache(Path(args.cache_dir) / "h.npy", [len(u["ids"]) for u in units],
+                                     model.encoder.config.hidden_size)
+        with torch.no_grad():
+            for s in range(0, len(units), args.batch):
+                batch = units[s:s + args.batch]
+                ids, am, mp, mm, qt, _ = collate(batch)
+                h = model.encoder(input_ids=ids.to(device), attention_mask=am.to(device)).last_hidden_state
+                for i, b in enumerate(batch):
+                    disk[offs[b["_i"]]:offs[b["_i"] + 1]] = h[i, : len(b["ids"])].to("cpu", torch.float16).numpy()
+                del h
+                if device.type == "mps":
+                    torch.mps.empty_cache()
+        disk.flush()
+
+        class DiskCache:
+            def __getitem__(self, i):
+                return torch.from_numpy(np.array(disk[offs[i]:offs[i + 1]]))
+
+        h_cache = DiskCache()
+        print(f"encoder cached {len(units)} units → {args.cache_dir}/h.npy "
+              f"({offs[-1]} tokens, {time.time() - t0:.1f}s)")
     else:
         t0 = time.time()
         h_cache = []
@@ -863,8 +1057,18 @@ def main():
             print("parity 失敗：快取路徑與完整 forward 不一致", file=sys.stderr)
             return 1
 
+    if args.cache_dir:
+        # 之後只吃磁碟上的 h；encoder 卸掉，pristine 也就不再複製它（又省一份 1.2GB）。
+        # promote 存檔時再從出廠檔補回 encoder 權重（凍結，必與出廠相同）。
+        import gc
+        model.encoder = None
+        gc.collect()
+        if device.type == "mps":
+            torch.mps.empty_cache()
+        print("encoder 已卸載（--cache-dir）")
+
     trainable_names = ["type_emb", "scorer", "act_head"] + (["head"] if args.train_head else [])
-    pristine = {k: v.clone() for k, v in model.state_dict().items()}
+    pristine ={k: v.clone() for k, v in model.state_dict().items()}
     n_train = sum(p.numel() for n, p in model.named_parameters()
                   if is_trainable(n, trainable_names, args.lora))
     print(f"trainable={'+'.join(trainable_names)} ({n_train / 1e6:.2f}M params, {len(units)} units)")
@@ -959,6 +1163,7 @@ def main():
         "corpus": n_own,
         # units 只算線上語料，跟歷史報告與 champion 同口徑；外部另列
         "units": sum(1 for u in units if not u["external"]),
+        "dedup": dedup_stats,
         "external_units": {src: sum(1 for u in units if u["external"] and rows[u["rec"]].get("label_source") == src)
                            for src in ext_by_source},
         "external_weight": EXTERNAL_WEIGHT if ext_by_source else None,
@@ -1044,8 +1249,11 @@ def main():
                     if device.type == "mps":
                         torch.mps.empty_cache()  # 每批 L 不同，MPS 替每種長度囤快取；不清的話 driver 一路長到 15GB
             model.eval()
-            save_file({k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()},
-                      str(out / "model.safetensors"))
+            sd = {k: v.detach().cpu().contiguous() for k, v in model.state_dict().items()}
+            if model.encoder is None:
+                sd.update({k: v for k, v in load_file(str(base / "model.safetensors")).items()
+                           if k.startswith("encoder.")})
+            save_file(sd, str(out / "model.safetensors"))
             new_cfg = dict(cfg)
             new_cfg["temperature"] = [temps.get("choice", 1.0), temps.get("score", 1.0),
                                       temps.get("noul", 1.0)]
