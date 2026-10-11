@@ -78,6 +78,10 @@ def main():
     if args.gate_dump:
         # 與 live_gated 同口徑：外部語料只進訓練，不算線上 lane 的題。
         units = [u for u in units if not u["external"]]
+        # state 不過 short_standalone_state 的題線上永遠送雲端（routed 必為 False），
+        # 配對閘只數 routed 題的錯，跑了也不影響判決。10-11 語料 2.2 萬題只有 75 題過，
+        # 不先濾掉整輪跑 >5400s 被 timeout 砍，配對閘每晚都評估失敗。
+        units = [u for u in units if T.short_standalone_state(u["state"])]
     if args.limit:
         units = units[:args.limit]
     lane_floor = T.parse_conf_min(T.CONF_MIN_SPEC)
