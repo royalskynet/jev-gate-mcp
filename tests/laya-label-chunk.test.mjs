@@ -10,7 +10,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const SCRIPT = path.join(ROOT, 'scripts/laya-label-corpus.mjs');
@@ -57,7 +57,22 @@ export function makeLayaAdapter() {
     ? fs.readFileSync(at('widths.txt'), 'utf8').trim().split('\n').map(Number) : []);
   const done = () => JSON.parse(fs.readFileSync(at('label.done'), 'utf8'));
   const corpus = () => fs.readFileSync(at('corpus.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  return { at, run, widths, done, corpus };
+  // Same env as `run`, but detached so the test can kill it mid-pass.
+  const start = (corpusRows, env = {}) => {
+    fs.writeFileSync(at('corpus.jsonl'), corpusRows.join('\n') + '\n');
+    return spawn('node', [SCRIPT], {
+      env: {
+        ...process.env,
+        JEV_TEACHER_CORPUS: at('corpus.jsonl'),
+        JEV_LAYA_ADAPTER_MODULE: at('adapter.mjs'),
+        JEV_LAYA_REPORT: at('agreement.json'),
+        JEV_LAYA_LABEL_DONE: at('label.done'),
+        ...env,
+      },
+      stdio: 'ignore',
+    });
+  };
+  return { at, run, start, widths, done, corpus };
 }
 
 test('a 186-question record is answered in bounded batches, and every question gets an answer', () => {
@@ -93,6 +108,54 @@ test('the time budget defers the rest instead of failing the night', () => {
   assert.match(out, /budget 0\.2s spent — \d+ records left/);
   // What was scored must be persisted, or the deferred rows are re-done forever.
   assert.equal(corpus().filter((r) => r.local_answer).length, d.scored);
+});
+
+test('answers are on disk before the pass ends, so a kill costs one slice', async () => {
+  const { start, corpus } = sandbox({ delayMs: 60 });
+  // ram_guard (rc=143) and the 5400s timeout both kill mid-pass. With a single
+  // write at the end, the 10-09/10 backlog survived every night untouched.
+  const rows = Array.from({ length: 20 }, (_, i) => record(`r${i}`, 1));
+  const child = start(rows, { JEV_LAYA_LABEL_BUDGET_SEC: '0', JEV_LAYA_LABEL_FLUSH_EVERY: '4' });
+  await new Promise((r) => setTimeout(r, 900));
+  child.kill('SIGTERM');
+  await new Promise((r) => child.on('exit', r));
+  const labelled = corpus().filter((r) => r.local_answer).length;
+  assert.ok(labelled >= 4, `nothing persisted before the kill (got ${labelled})`);
+  assert.ok(labelled < 20, `the pass finished before the kill — test is not measuring a kill (${labelled})`);
+  assert.equal(labelled % 4, 0, `persisted a partial slice: ${labelled}`);
+});
+
+test('the default flushes mid-pass without being told to', () => {
+  const { run } = sandbox();
+  // laya-nightly.sh passes no flush env, so the default is what protects the
+  // backlog. A default of 0 would quietly restore the all-or-nothing write.
+  const out = run(Array.from({ length: 110 }, (_, i) => record(`r${i}`, 1)),
+    { JEV_LAYA_LABEL_BUDGET_SEC: '0' });
+  assert.match(out, /flushed at 100\/110/);
+});
+
+test('a flush folds in rows the gateway appended while labelling', () => {
+  const { at, run, corpus } = sandbox();
+  // The corpus is append-only and the gateway keeps writing during the pass;
+  // rewriting the whole file from a stale snapshot would drop those rows.
+  fs.writeFileSync(at('adapter.mjs'), `
+import { appendFileSync } from 'node:fs';
+let n = 0;
+export function makeLayaAdapter() {
+  return async function laya(state, questions) {
+    const ids = Object.keys(questions);
+    if (n++ === 0) appendFileSync(${JSON.stringify(at('corpus.jsonl'))},
+      JSON.stringify({ id: 'live', state: { s: 'x' }, questions: {}, teacher_answer: {}, question_digest: 'dlive' }) + '\\n');
+    return { model: 'stub', answers: Object.fromEntries(ids.map((k) => [k, { choice: 'a' }])) };
+  };
+}
+`);
+  run([record('a', 1), record('b', 1), record('c', 1)],
+    { JEV_LAYA_LABEL_FLUSH_EVERY: '1', JEV_LAYA_LABEL_BUDGET_SEC: '0' });
+  const ids = corpus().map((r) => r.id);
+  assert.deepEqual(ids.slice(0, 3), ['a', 'b', 'c']);
+  assert.ok(ids.includes('live'), `a row appended mid-pass was overwritten: ${ids.join(',')}`);
+  assert.equal(ids.length, 4, `duplicated rows: ${ids.join(',')}`);
 });
 
 test('budget 0 disables the budget', () => {

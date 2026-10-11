@@ -65,6 +65,32 @@ const records = parse(initial.toString('utf8'));
 const pending = records.filter((r) => !r.local_answer).slice(0, LIMIT);
 process.stdout.write(`corpus=${records.length} pending=${pending.length} model_dir=${MODEL_DIR}\n`);
 
+// How many answers may be in flight before they are on disk. The whole pass
+// used to persist once at the very end, so a kill at any point (ram_guard at
+// rc=143, the 5400s timeout, a reboot) threw away every answer and the next
+// night started from the same backlog. Flushing every FLUSH_EVERY records
+// bounds that loss to one slice. 0 keeps the old single write.
+const FLUSH_EVERY = Math.max(0, Number(process.env.JEV_LAYA_LABEL_FLUSH_EVERY ?? 100));
+
+// Everything in `records` up to this byte offset is already on disk; whatever
+// the gateway appended past it gets folded in on the next flush instead of
+// being overwritten.
+let writtenLen = initial.length;
+const flush = () => {
+  if (dryRun) return;
+  // ponytail: append-during-rename window is the few ms between this re-read and
+  // renameSync; a row written in it is lost. Add a lock shared with
+  // recordTeacherSample if the corpus ever gets concurrent writers at 03:10.
+  const appended = parse(readFileSync(FILE).subarray(writtenLen).toString('utf8'));
+  if (appended.length) records.push(...appended);
+  const body = records.map((r) => JSON.stringify(r)).join('\n') + '\n';
+  const tmp = `${FILE}.tmp-${process.pid}`;
+  writeFileSync(tmp, body, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, FILE);
+  writtenLen = Buffer.byteLength(body);
+};
+
 let scored = 0, agreed = 0, failed = 0, deferred = 0;
 if (pending.length) {
   // Lazy: a report-only run (nothing pending) never loads the 540MB graph.
@@ -91,19 +117,14 @@ if (pending.length) {
       failed++;
       process.stdout.write(`  skip ${record.id}: ${e?.message ?? e}\n`);
     }
+    if (FLUSH_EVERY && (scored + failed) % FLUSH_EVERY === 0) {
+      flush();
+      process.stdout.write(`  flushed at ${scored + failed}/${pending.length}\n`);
+    }
   }
   await laya.release?.();
 }
-if (!dryRun && scored) {
-  // ponytail: append-during-rename window is the few ms between this re-read and
-  // renameSync; a row written in it is lost. Add a lock shared with
-  // recordTeacherSample if the corpus ever gets concurrent writers at 03:10.
-  const appended = readFileSync(FILE).subarray(initial.length).toString('utf8');
-  const tmp = `${FILE}.tmp-${process.pid}`;
-  writeFileSync(tmp, records.map((r) => JSON.stringify(r)).join('\n') + '\n' + appended, { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, FILE);
-}
+if (scored) flush();
 const rate = scored ? (agreed / scored) : 0;
 process.stdout.write(`${dryRun ? '[dry-run] ' : ''}scored=${scored} agree=${agreed} (${(rate * 100).toFixed(1)}%) failed=${failed} deferred=${deferred}\n`);
 
