@@ -31,22 +31,51 @@ export function readEvidence(transcriptPath, maxChars = 8000, { allRounds = fals
 }
 
 /**
- * Same walk over lines already in memory. scripts/backtest-teacher.mjs replays
- * every past round of a transcript, so it hands in the lines up to that round's
- * end instead of re-reading a file per round.
+ * Parsed records with compaction replays dropped.
+ *
+ * A compaction appends a `compact_boundary` and then re-appends the session's
+ * older messages under new uuids but their ORIGINAL timestamps. A backwards
+ * walk then meets a replayed copy of some old prompt before it reaches this
+ * round's real one, and calls a round that edited four files empty — a Stop
+ * after a mid-turn compact saw no tool output and no edits at all. Anything
+ * stamped earlier than the boundary before it is such a copy; the original
+ * sits earlier in the file and is kept.
  */
-export function evidenceFromLines(lines, maxChars = 8000, { allRounds = false } = {}) {
-  const parts = [];
-  let total = 0;
-  for (let i = lines.length - 1; i >= 0 && total < maxChars; i--) {
-    const line = lines[i].trim();
+export function liveRecords(lines) {
+  const recs = [];
+  let boundaryTs = '';
+  for (const raw of lines) {
+    const line = raw.trim();
     if (!line) continue;
     let rec;
     try {
       rec = JSON.parse(line);
     } catch {
+      // A truncated or half-written line says nothing.
       continue;
     }
+    if (rec.type === 'system' && rec.subtype === 'compact_boundary') {
+      boundaryTs = rec.timestamp ?? boundaryTs;
+      continue;
+    }
+    // ISO-8601 UTC strings order lexically, so no Date parsing is needed.
+    if (boundaryTs && typeof rec.timestamp === 'string' && rec.timestamp < boundaryTs) continue;
+    recs.push(rec);
+  }
+  return recs;
+}
+
+/**
+ * Same walk over lines already in memory. scripts/backtest-teacher.mjs replays
+ * every past round of a transcript, so it hands in the lines up to that round's
+ * end instead of re-reading a file per round.
+ */
+export function evidenceFromLines(lines, maxChars = 8000, { allRounds = false } = {}) {
+  const recs = liveRecords(lines);
+  const parts = [];
+  let total = 0;
+  for (let i = recs.length - 1; i >= 0 && total < maxChars; i--) {
+    const rec = recs[i];
     // Hook context (recent-sessions, latest-fixes) is something the model reads
     // and may quote, e.g. a session id prefix — issue #12's 5th false positive.
     if (allRounds && rec.type === 'attachment' && rec.attachment?.type === 'hook_additional_context') {

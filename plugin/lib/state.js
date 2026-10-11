@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { liveRecords } from './transcript.js';
 
 /**
  * State evidence for the Stop gate: what the working tree says, not what the
@@ -29,16 +30,9 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
  * message, or a structured one carrying no tool_result, is a prompt.
  */
 export function touchedPathsFromLines(lines, max = 25) {
-  const recs = [];
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
-    try {
-      recs.push(JSON.parse(line));
-    } catch {
-      // A truncated or half-written line says nothing about what was edited.
-    }
-  }
+  // Compaction replays dropped first, or a replayed old prompt reads as this
+  // round's boundary and every edit before the compact falls outside it.
+  const recs = liveRecords(lines);
   // Find the round boundary walking backwards, then read forwards from it, so
   // several edits inside one assistant turn stay in the order they happened.
   let start = 0;
