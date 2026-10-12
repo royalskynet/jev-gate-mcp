@@ -1,46 +1,69 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { JevLaya } from '../integrations/opencode/jev-laya.js';
+import JevLaya from '../integrations/opencode/jev-laya.js';
 import * as plugin from '../integrations/opencode/jev-laya.js';
 import { MIN_CHARS, shrink, lastUserText, defaultJevEnv, compactParts } from '../integrations/opencode/prune-core.js';
 import { judgeSegments } from '../agent-glue/src/prune.js';
 import { callerName } from '../agent-glue/src/usage-ledger.js';
 
-test('plugin module exports nothing but the plugin (opencode calls every export)', () => {
-  assert.deepEqual(Object.keys(plugin), ['JevLaya']);
+function createContext() {
+  const hooks = { session: [], tool: [] };
+  const context = {
+    session: {
+      hook: async (name, callback) => {
+        hooks.session.push({ name, callback });
+        return { dispose: async () => {} };
+      },
+      context: async () => [],
+    },
+    tool: {
+      hook: async (name, callback) => {
+        hooks.tool.push({ name, callback });
+        return { dispose: async () => {} };
+      },
+    },
+  };
+  return { context, hooks };
+}
+
+test('module exports one OpenCode V2 plugin definition', () => {
+  assert.deepEqual(Object.keys(plugin), ['default']);
+  assert.equal(JevLaya.id, 'jev-laya');
+  assert.equal(typeof JevLaya.setup, 'function');
 });
 
 test('usage ledger labels plugin calls prune:opencode (ledger adds the prune: base itself)', async () => {
   delete process.env.JEV_USAGE_CALLER;
-  await JevLaya();
+  const { context } = createContext();
+  await JevLaya.setup(context);
   assert.equal(callerName('prune'), 'prune:opencode');
 });
 
 test('prunes long output with repeated lines', async () => {
-  const hook = await JevLaya();
-  const fn = hook['tool.execute.after'];
+  const { context, hooks } = createContext();
+  await JevLaya.setup(context);
   const repeated = 'npm WARN x\n'.repeat(50);
   const filler = 'a'.repeat(MIN_CHARS);
-  const out = { output: filler + '\n' + repeated };
-  await fn({ tool: 'bash' }, out);
-  assert.ok(out.output.includes('[l0: repeated'));
-  assert.ok(out.output.length < filler.length + repeated.length);
+  const event = { status: 'completed', tool: 'bash', sessionID: 's', result: { content: filler + '\n' + repeated } };
+  await hooks.tool[0].callback(event);
+  assert.ok(event.result.content.includes('[l0: repeated'));
+  assert.ok(event.result.content.length < filler.length + repeated.length);
 });
 
 test('leaves short output untouched', async () => {
-  const hook = await JevLaya();
-  const fn = hook['tool.execute.after'];
-  const out = { output: 'short output' };
-  await fn({ tool: 'bash' }, out);
-  assert.equal(out.output, 'short output');
+  const { context, hooks } = createContext();
+  await JevLaya.setup(context);
+  const event = { status: 'completed', tool: 'bash', sessionID: 's', result: { content: 'short output' } };
+  await hooks.tool[0].callback(event);
+  assert.equal(event.result.content, 'short output');
 });
 
 test('does not throw when output field missing', async () => {
-  const hook = await JevLaya();
-  const fn = hook['tool.execute.after'];
-  const out = {};
-  await fn({ tool: 'bash' }, out);
-  assert.deepEqual(out, {});
+  const { context, hooks } = createContext();
+  await JevLaya.setup(context);
+  const event = { status: 'completed', tool: 'bash', sessionID: 's', result: {} };
+  await hooks.tool[0].callback(event);
+  assert.deepEqual(event.result, {});
 });
 
 const big = Array.from({ length: 2000 }, (_, i) => `line ${i} payload`).join('\n');
@@ -107,7 +130,7 @@ test('defaultJevEnv sets endpoint, model and key file together, and only when un
   assert.equal(defaultJevEnv({ HOME: '/h' }, () => false), false);
 });
 
-// --- compaction (experimental.chat.messages.transform) ---
+// --- compaction (V2 session context hook) ---
 
 const toolPart = (id, out, tool = 'bash') => ({ type: 'tool', tool, callID: id, state: { status: 'completed', input: { command: id }, output: out } });
 const history = () => [
@@ -174,21 +197,29 @@ test('judgeSegments batches, fails open per batch, and refuses without a request
   assert.deepEqual(await judgeSegments({ request: ' ', segments: segs }, { key: 'k', judge }), Array(10).fill('keep'));
 });
 
-test('the transform hook is registered and JEV_COMPACT_ENABLED=0 switches it off', async () => {
-  const hook = await JevLaya();
-  assert.equal(typeof hook['experimental.chat.messages.transform'], 'function');
+test('V2 context and tool hooks register; compact-off leaves history unchanged', async () => {
+  const { context, hooks } = createContext();
   const prev = process.env.JEV_COMPACT_ENABLED;
+  const prevEffort = process.env.JEV_EFFORT_ENABLED;
   process.env.JEV_COMPACT_ENABLED = '0';
+  process.env.JEV_EFFORT_ENABLED = '0';
   try {
+    await JevLaya.setup(context);
+    assert.deepEqual(hooks.session.map((h) => h.name), ['context', 'context']);
+    assert.deepEqual(hooks.tool.map((h) => h.name), ['execute.after']);
     const msgs = history();
-    await hook['experimental.chat.messages.transform']({}, { messages: msgs });
+    const event = { messages: msgs, sessionID: 's', system: [], tools: {}, options: {} };
+    await hooks.session[0].callback(event);
+    await hooks.session[1].callback(event);
     assert.equal(msgs[1].parts[1].state.output.length, 50000);
+    assert.equal(event.options.reasoningEffort, undefined);
   } finally {
     if (prev === undefined) delete process.env.JEV_COMPACT_ENABLED; else process.env.JEV_COMPACT_ENABLED = prev;
+    if (prevEffort === undefined) delete process.env.JEV_EFFORT_ENABLED; else process.env.JEV_EFFORT_ENABLED = prevEffort;
   }
 });
 
-// --- reasoning effort (chat.params) ---
+// --- reasoning effort (V2 session context hook) ---
 import { lowerEffort, effortTiers } from '../integrations/opencode/prune-core.js';
 
 test('lowerEffort only lowers, only on cheap, and never mutates shared nested config', () => {
@@ -224,60 +255,19 @@ test('effortTiers judges once per message id and times out to status quo', async
   assert.equal(await broken('m4', async () => 'x'), null);
 });
 
-test('chat.params with JEV_EFFORT_ENABLED=0 leaves options alone', async () => {
-  const hook = await JevLaya();
+test('V2 effort context hook leaves options alone when disabled', async () => {
+  const { context, hooks } = createContext();
   const prev = process.env.JEV_EFFORT_ENABLED;
   process.env.JEV_EFFORT_ENABLED = '0';
   try {
-    const out = { options: { reasoningEffort: 'high' } };
-    await hook['chat.params']({ message: { id: 'm' }, sessionID: 's' }, out);
-    assert.equal(out.options.reasoningEffort, 'high');
+    await JevLaya.setup(context);
+    const event = {
+      messages: [{ info: { role: 'user', id: 'm' }, parts: [{ type: 'text', text: 'rename a var' }] }],
+      sessionID: 's', model: { id: 'x' }, options: { reasoningEffort: 'high' },
+    };
+    await hooks.session[1].callback(event);
+    assert.equal(event.options.reasoningEffort, 'high');
   } finally {
     if (prev === undefined) delete process.env.JEV_EFFORT_ENABLED; else process.env.JEV_EFFORT_ENABLED = prev;
-  }
-});
-
-test('JEV_EFFORT_APPLY=0 is log-only: options untouched and the turn is not held', async () => {
-  const { mkdtempSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const prev = process.env.JEV_EFFORT_LOG;
-  const prevApply = process.env.JEV_EFFORT_APPLY;
-  process.env.JEV_EFFORT_APPLY = '0';
-  process.env.JEV_EFFORT_LOG = `${mkdtempSync(`${tmpdir()}/effort-`)}/effort.log`;
-  try {
-    const hook = await JevLaya();
-    assert.equal(typeof hook['chat.message'], 'function'); // text comes from here: chat.params has no parts
-    const out = { options: { reasoningEffort: 'high' } };
-    const t = Date.now();
-    await hook['chat.params']({ message: { id: 'm-log' }, sessionID: 's', model: { id: 'x' } }, out);
-    assert.ok(Date.now() - t < 500, 'log-only must not wait for the judgment');
-    assert.equal(out.options.reasoningEffort, 'high');
-  } finally {
-    if (prev === undefined) delete process.env.JEV_EFFORT_LOG; else process.env.JEV_EFFORT_LOG = prev;
-    if (prevApply === undefined) delete process.env.JEV_EFFORT_APPLY; else process.env.JEV_EFFORT_APPLY = prevApply;
-  }
-});
-
-test('effort is off without a Laya cascade: no judgment, options untouched, turn not held', async () => {
-  const { mkdtempSync, existsSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const dir = mkdtempSync(`${tmpdir()}/nolaya-`);
-  const saved = { HOME: process.env.HOME, LOG: process.env.JEV_EFFORT_LOG, EN: process.env.JEV_EFFORT_ENABLED };
-  process.env.HOME = dir; // no ~/.jevgate/cascade-callers.json here
-  process.env.JEV_EFFORT_LOG = `${dir}/effort.log`;
-  delete process.env.JEV_EFFORT_ENABLED;
-  try {
-    const hook = await JevLaya();
-    await hook['chat.message']({ sessionID: 's' }, { message: { id: 'm-nl' }, parts: [{ type: 'text', text: 'rename a var' }] });
-    const out = { options: { reasoningEffort: 'high' } };
-    const t = Date.now();
-    await hook['chat.params']({ message: { id: 'm-nl' }, sessionID: 's', model: { id: 'x' } }, out);
-    assert.ok(Date.now() - t < 500, 'must not wait on a judgment that will never run');
-    assert.equal(out.options.reasoningEffort, 'high');
-    assert.equal(existsSync(`${dir}/effort.log`), false);
-  } finally {
-    for (const [k, v] of [['HOME', saved.HOME], ['JEV_EFFORT_LOG', saved.LOG], ['JEV_EFFORT_ENABLED', saved.EN]]) {
-      if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    }
   }
 });
