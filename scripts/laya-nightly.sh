@@ -54,7 +54,14 @@ TRAIN_TIMEOUT="${JEV_LAYA_TRAIN_TIMEOUT_SEC:-14400}"
 # 不跟 Hindsight 搶：記憶體可用比例（kern.memorystatus_level，0–100）低於門檻今晚就不訓，明晚再來。
 # 10-11 晚 llama-server＋Hindsight＋手動標註疊在一起把 24GB 壓到 free 6%，守衛自己都被餓死（fix 10398）。
 MEM_MIN="${JEV_LAYA_MEM_LEVEL_MIN:-40}"
-MEM_LEVEL=$(sysctl -n kern.memorystatus_level 2>/dev/null || echo 0)
+# 絕對路徑：launchd PATH 沒有 /usr/sbin，找不到 sysctl 會落到預設值，被誤判成「記憶體 0%」天天跳過（10-12）。
+MEM_LEVEL=$(/usr/sbin/sysctl -n kern.memorystatus_level 2>/dev/null)
+case "$MEM_LEVEL" in
+  ''|*[!0-9]*)
+    hpush "⚠️ Laya 夜訓跳過：讀不到記憶體可用比例（/usr/sbin/sysctl kern.memorystatus_level 失敗）"
+    echo "$(date -u +%FT%TZ) end rc=0 train=skipped mem_level=unreadable"
+    exit 0 ;;
+esac
 if [ "$MEM_LEVEL" -lt "$MEM_MIN" ]; then
   hpush "⏸️ Laya 夜訓今晚跳過：記憶體可用 ${MEM_LEVEL}% < ${MEM_MIN}%（不跟 Hindsight 搶）"
   echo "$(date -u +%FT%TZ) end rc=0 train=skipped mem_level=${MEM_LEVEL}"
