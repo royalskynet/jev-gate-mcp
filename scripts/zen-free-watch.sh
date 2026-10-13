@@ -14,8 +14,9 @@ if [ "$RC" != "$PREV" ]; then
   echo "$RC" > "$STATE"
   UNTIL=$(printf '%s\n' "$OUT" | grep -o 'cooldown_until=[^ ]*' | cut -d= -f2)
   case "$RC" in
-    0) hpush "✅ Jev zen free 恢復主用（jev-1.13-free）" ;;
-    2) hpush "🔁 Jev zen free 額度用盡，至 ${UNTIL:-?} 前由 OpenRouter 備援；到期自動切回 Zen" ;;
+    # rc 0/2 已併入 daily_brief.py 的重點日報（模型段），不再單獨推播
+    0) : ;;
+    2) : ;;
     *) hpush "⚠️ Jev zen free 失效且無 OpenRouter 備援：Jev 判斷已停。看 ~/.jevgate/zen-free-status.json" ;;
   esac
 fi

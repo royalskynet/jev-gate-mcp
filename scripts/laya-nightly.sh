@@ -12,6 +12,9 @@
 # 換權重的閘在 laya-train.py 裡（--min-gain + bootstrap CI 下界須離開 0，對出廠 int8）；
 # 導出上線的閘在下面（地板／人口／同卷配對，對現役）。
 set -u
+# launchd plist PATH 沒有 /usr/sbin：sysctl（10-12, fix 10447）、taskpolicy（10-13 rc=127，
+# 訓練一行都沒跑）先後踩到。逐一補絕對路徑會漏下一個，在這裡一次補齊。
+PATH="$PATH:/usr/sbin:/sbin"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPORT="${JEV_LAYA_TRAIN_REPORT:-$HOME/.jevgate/laya-train-report.json}"
 PY="${JEV_LAYA_PYTHON:-$HOME/.jevgate/train-venv/bin/python}"
@@ -51,6 +54,19 @@ fi
 # timeout 在 time 外層，逾時送 TERM 給整個行程群組，rc=124、peak 量不到（印 ?）。
 # PYTHONUNBUFFERED：stdout 進檔案會被緩衝，被砍時 log 一行進度都不剩。
 TRAIN_TIMEOUT="${JEV_LAYA_TRAIN_TIMEOUT_SEC:-14400}"
+# 收工時刻：10-13 起 Hindsight 夜巡已停，開跑改 02:00；收工 08:30 是為了趕 09:00 專案日報、上班前讓出記憶體。
+# 標註吃掉多少時間不固定（10-13 用了 1.5h），所以時限取「硬上限」與「距收工剩餘」的小者；
+# 剩不到 JEV_LAYA_TRAIN_MIN_SEC 就今晚不訓。手動白天重跑設 JEV_LAYA_TRAIN_DEADLINE=none。
+DEADLINE="${JEV_LAYA_TRAIN_DEADLINE:-08:30}"
+if [ "$DEADLINE" != none ]; then
+  LEFT=$(( $(date -j -f '%Y-%m-%d %H:%M' "$(date +%F) $DEADLINE" +%s) - $(date +%s) ))
+  if [ "$LEFT" -lt "${JEV_LAYA_TRAIN_MIN_SEC:-1800}" ]; then
+    hpush "⏸️ Laya 夜訓今晚跳過：距 ${DEADLINE} 收工只剩 $((LEFT / 60)) 分（標註太久）"
+    echo "$(date -u +%FT%TZ) end rc=0 train=skipped deadline_left=${LEFT}s"
+    exit 0
+  fi
+  [ "$LEFT" -lt "$TRAIN_TIMEOUT" ] && TRAIN_TIMEOUT=$LEFT
+fi
 # 不跟 Hindsight 搶：記憶體可用比例（kern.memorystatus_level，0–100）低於門檻今晚就不訓，明晚再來。
 # 10-11 晚 llama-server＋Hindsight＋手動標註疊在一起把 24GB 壓到 free 6%，守衛自己都被餓死（fix 10398）。
 MEM_MIN="${JEV_LAYA_MEM_LEVEL_MIN:-40}"
@@ -68,15 +84,18 @@ if [ "$MEM_LEVEL" -lt "$MEM_MIN" ]; then
   exit 0
 fi
 # 低強度：h 快取放磁碟 memmap、encoder 快取完就卸（10-11 實測 200 units 峰值 4.7GB 只在編碼 40s，
-# 訓練段 2.9–3.9GB），head 走 MPS（CPU 每筆每 epoch 0.8s、MPS 0.17s）。每題封頂 150：
-# 去重後 1263 units，與 10-06 上線那版的 1552 同量級，5 fold×8 epoch 約 2h。
+# 訓練段 2.9–3.9GB），head 走 MPS（CPU 每筆每 epoch 0.8s、MPS 0.17s）。
+# 10-13 改版：教師可信題過濾＋答錯加權＋總量 600 units、3 fold×4 epoch，從現役 champion
+# 熱啟動（增量，不從頭訓）。改版前是 1263 units、5 fold×8 epoch，實測 1.6h。
 # taskpolicy -b＝背景 QoS（CPU 讓給前景與 Hindsight、IO 節流）。去重模型離線載入，快取沒有就失敗不略過。
 HCACHE="${JEV_LAYA_HCACHE_DIR:-$HOME/.jevgate/laya-hcache}"
 rm -rf "$HCACHE"; mkdir -p "$HCACHE"
 TIMEF=$(mktemp)
 PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 JEV_LAYA_MAX_PER_QID="${JEV_LAYA_MAX_PER_QID:-150}" \
+  JEV_LAYA_MAX_UNITS="${JEV_LAYA_MAX_UNITS:-600}" \
   timeout -s TERM "$TRAIN_TIMEOUT" \
   /usr/bin/time -l taskpolicy -b sh -c 'exec "$@" 2>&3' sh "$PY" "$DIR/scripts/laya-train.py" --promote \
+    --folds "${JEV_LAYA_FOLDS:-3}" --epochs "${JEV_LAYA_EPOCHS:-4}" \
     --device "${JEV_LAYA_DEVICE:-mps}" --cache-dir "$HCACHE" 3>&2 2>"$TIMEF"
 RC=$?
 rm -rf "$HCACHE"  # 1263 units 約 1.3GB，每晚整份重算，不留
@@ -175,10 +194,27 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
   fi
 fi
 
+# 接手白名單：用 shadow 樣本（上線流量旁跑的本機答案＋老師答案）逐 (caller, 題族) 重校門檻。
+# 零 token、秒級；router 只在 JEV_LAYA_WHITELIST=live 時讀，預設只產檔供人看。
+WL_SUM=""
+if "$PY" "$DIR/scripts/laya-calibrate.py" > /tmp/laya-calibrate.$$ 2>&1; then
+  WL_SUM=$(jq -r '"白名單 \(.entries | length) 族／未過 \(.rejected | length) 族"' \
+    "${JEV_LAYA_WHITELIST_FILE:-$HOME/.jevgate/laya-whitelist.json}" 2>/dev/null)
+else
+  hpush "⚠️ Laya 白名單校準失敗：$(tail -1 /tmp/laya-calibrate.$$)"
+fi
+cat /tmp/laya-calibrate.$$; rm -f /tmp/laya-calibrate.$$
+
 # 推播一行摘要：增益、是否換權重、以及 97% 準確率下能接走多少比例。
+# hard_n／trusted_drop_n／train_seconds 必須在摘要裡：低強度增量跑成空轉（難題 0 題、
+# 教師全被濾掉）時，只看 OOF 與 units 分不出來（10-13 改版）。
 jq -r '
   def pct: . * 1000 | round / 10;
   [ "units=\(.units)",
+    (if .hard_n != null then "難題 \(.hard_n)／防遺忘 \(.easy_n)" else empty end),
+    (if .trusted_drop_n != null then "教師不可信丟 \(.trusted_drop_n)" else empty end),
+    (if (.qids | type) == "array" then "題族 \(.qids | length)" else empty end),
+    (if .train_seconds != null then "耗時 \(.train_seconds / 60 | round) 分" else empty end),
     "OOF=\(.oof_accuracy | pct)%",
     (if .paired_delta then "vs int8 \(.paired_delta * 1000 | round / 10)pp" else "vs int8 n/a" end),
     (if .live_gated.accuracy then
@@ -186,9 +222,11 @@ jq -r '
      else "線上 lane 無樣本" end),
     (if .promoted then "已換權重" else "未達標" end),
     (if $paired != "" then $paired else empty end),
+    (if $wl != "" then $wl else empty end),
     (if ($deferred | tonumber) > 0 then "標註尚餘 \($deferred) 筆（預算用完，留給明晚）" else empty end)
-  ] | join("，")' --arg paired "$PAIRED" --arg deferred "${DEFERRED:-0}" "$REPORT" 2>/dev/null |
+  ] | join("，")' --arg paired "$PAIRED" --arg wl "$WL_SUM" --arg deferred "${DEFERRED:-0}" "$REPORT" 2>/dev/null |
 while read -r line; do
-  [ -n "$line" ] && hpush "🎓 Laya 夜訓：${line}"
+  # 10-13 起不直推：交給 state-digest（Mythos 專案日報）改寫成人話後一起推
+  [ -n "$line" ] && printf '%s\t%s\n' "$(date +%F)" "$line" > "${LAYA_DIGEST_OUT:-$HOME/.cache/laya-nightly-last.tsv}"
 done
 echo "$(date -u +%FT%TZ) end rc=0"

@@ -34,6 +34,7 @@ state_dict 鍵名，再過 laya-export-onnx.py 的 parity。
 """
 import argparse
 import glob
+import hashlib
 import json
 import math
 import os
@@ -41,6 +42,7 @@ import random
 import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HOME = Path.home()
@@ -313,9 +315,13 @@ def boot_ci(values, reps=2000, alpha=0.05, rng=None):
 # 升級地板會把不設閘的 choice 算進去，量到的不是線上那個點（ADR-0002）。
 QTYPE_PILOT = frozenset(
     s.strip() for s in os.environ.get("JEV_LAYA_QTYPE_PILOT", "score,noul").split(",") if s.strip())
-def parse_conf_min(spec):
-    """單一數字＝所有題型共用；`score=0.65,noul=0.70`＝分題型。未列的題型無校準過的
-    地板，所以回 inf（過不了閘）。膝點因題型而異，見 ADR-0002。"""
+def parse_conf_min(spec, default=math.inf):
+    """單一數字＝所有題型共用；`score=0.65,noul=0.70`＝分題型。膝點因題型而異，見 ADR-0002。
+
+    `default` 是未列題型的地板。接手閘用 inf（沒校準過就不該無聲放行）；教師可信度閘
+    （`trusted_teacher`）用 -inf，因為那裡「沒列」的語意是「這個題型不吃信心門檻」，
+    用 inf 會把整個題型的教師標籤丟光。
+    """
     try:
         flat = float(spec)
     except ValueError:
@@ -326,7 +332,7 @@ def parse_conf_min(spec):
     for pair in filter(None, spec.split(",")):
         qtype, floor = pair.split("=")
         by_type[qtype.strip()] = float(floor)
-    return lambda qtype: by_type.get(qtype, math.inf)
+    return lambda qtype: by_type.get(qtype, default)
 
 
 CONF_MIN_SPEC = os.environ.get("JEV_LAYA_CONF_MIN", "score=0.65,noul=0.70")
@@ -381,6 +387,315 @@ def teacher_self_agreement(rows, qids):
     return {"n": n, "agreement": agree / n if n else None, "qids": sorted(want)}
 
 
+# ------------------------------------------------- A 教師可信度閘（hard example mining 前置）
+# 借鏡 cleanlab 的「先過濾可疑標籤再訓練」：教師標籤有噪聲時，加權學難題會把噪聲一起放大，
+# 所以 trusted_teacher 必須跑在 hard_weights 前面。
+# ponytail: 兩個軸（信心、自我一致）。要收緊就調 JEV_LAYA_TRUST_CONF_MIN（格式同
+# JEV_LAYA_CONF_MIN，未列的題型不吃信心閘，只走一致性過濾）；=off 關掉整個信心軸。
+# 預設只列 choice／score：10-13 實測語料 29113 題教師標籤，choice 8267 與 score 33 每一筆
+# 都帶 confidence，noul 20816 筆一筆都沒有。那不是語料壞了——noul 本來就不走自報
+# confidence：gateway.js 的 confOf() 對 noul 回 max(noul, 1-noul)，從答案值導出，從不讀
+# a.confidence（adapters.js 的 noul 分支因此也不驗證這個欄位，teacher-corpus.js:46 是
+# result.answers 原樣存，沿路沒有剝欄位）。
+# 所以 noul 這一軸不是「缺」，是「要不要拿它當門檻」：不拿。它等於 0.5+|noul-0.5|，拿它
+# 當可信度地板＝系統性丟掉中段的 noul 標籤，而那正是答錯加權要的難題，兩個機制互相抵銷。
+# 線上信心閘用同一個公式是對的（它在問「這題該不該接手」），訓練選題用它則不對。
+# 把 noul 列進 spec 會把整個題型濾光，而線上 pilot lane 就是 noul，等於無聲斷糧
+# （main() 的 starved 檢查會擋下來）。
+# 上限：0.5 這個地板沒有校準過，違反 AGENTS.md「所有自動化門檻必須經目標資料校準」。
+# 校準不了的原因是教師標籤沒有 ground truth——語料裡唯一的獨立訊號是自我一致性，10-13
+# 只有 71 筆不一致，樣本太少算不出 confidence 與正確率的關係。所以這裡只當保守的粗篩
+# （丟掉 choice 最低信心的 30%），不當正確率用；真要校準就改成用 OOF 算 per-qid 的教師
+# 可信度。
+TRUST_CONF_MIN = os.environ.get("JEV_LAYA_TRUST_CONF_MIN", "choice=0.5,score=0.5")
+
+
+def trusted_teacher(rows, conf_min_spec=None):
+    """只留「Jev 答得穩、而且信心夠」的判決，其餘整題從 teacher_answer 裡拿掉。
+
+    兩個軸：
+      * 信心：`confidence` 低於該題型地板就丟。**缺 confidence 也丟**——gateway.js 的
+        `confidenceLevel()` 把 null 當 escalate（最保守），這裡沿用同一個語意，所以
+        「丟掉 escalate 的判決」與「丟掉信心不足的判決」是同一條規則，不需要 corpus 另存
+        outcome（corpus 只存 provider 的原始 answer，見 teacher-corpus.js）。
+      * 自我一致：同一份 (state, questions) 在語料裡出現多次、Jev 前後答案不一致的，
+        那一題整個丟（不是多數決——dedup_exact 的多數決是為了「少一筆」，這裡要的是
+        「老師自己都不確定的題目不當標準答案」）。判準同 pred_matches：noul 差 < 0.2。
+
+    外部語料（label_source=external:*）不經這個閘：它的標籤不是 Jev 給的。
+    不改動輸入；回 (新的 rows, 統計)。
+    """
+    spec = TRUST_CONF_MIN if conf_min_spec is None else conf_min_spec
+    use_conf = bool(spec) and spec != "off"
+    floor = parse_conf_min(spec, default=-math.inf) if use_conf else (lambda _q: -math.inf)
+
+    # 第一遍：同 (state, questions) 同題的教師硬答案，看前後有沒有變卦
+    seen, shaky = {}, set()
+    for r in rows:
+        if is_external(r):
+            continue
+        qs, ans = r.get("questions") or {}, r.get("teacher_answer") or {}
+        key = json.dumps([r.get("state"), qs], sort_keys=True, ensure_ascii=False)
+        for qid, q in qs.items():
+            a = ans.get(qid)
+            t = teacher_hard(q, a) if isinstance(a, dict) else None
+            if t is None:
+                continue
+            prev = seen.get((key, qid))
+            if prev is not None:
+                same = abs(t - prev) < 0.2 if q.get("type") == "noul" else t == prev
+                if not same:
+                    shaky.add((key, qid))
+            seen[(key, qid)] = t
+
+    # 逐題型統計：信心閘把整個題型的標籤丟光時（provider 對那個題型不回 confidence），
+    # 只看總數看不出來——線上 pilot lane 就是 score／noul，那條 lane 會無聲斷糧。
+    stats = {"conf_min": spec if use_conf else None, "kept": 0, "low_conf": 0,
+             "no_conf": 0, "inconsistent": 0, "conf_present": 0, "by_qtype": {}}
+    out = []
+    for r in rows:
+        if is_external(r):
+            out.append(r)
+            continue
+        qs, ans = r.get("questions") or {}, r.get("teacher_answer") or {}
+        key = json.dumps([r.get("state"), qs], sort_keys=True, ensure_ascii=False)
+        keep = {}
+        for qid, a in ans.items():
+            if not isinstance(a, dict):
+                continue
+            qtype = (qs.get(qid) or {}).get("type")
+            per = stats["by_qtype"].setdefault(qtype, {"n": 0, "kept": 0, "low_conf": 0,
+                                                       "no_conf": 0, "inconsistent": 0,
+                                                       "conf_present": 0})
+            per["n"] += 1
+            conf = a.get("confidence")
+            if conf is not None:
+                stats["conf_present"] += 1
+                per["conf_present"] += 1
+            if (key, qid) in shaky:
+                stats["inconsistent"] += 1
+                per["inconsistent"] += 1
+                continue
+            gated = use_conf and floor(qtype) > -math.inf
+            if gated:
+                if conf is None:
+                    # gateway.js confidenceLevel(): 沒有 confidence＝未校準＝escalate
+                    stats["no_conf"] += 1
+                    per["no_conf"] += 1
+                    continue
+                if float(conf) < floor(qtype):
+                    stats["low_conf"] += 1
+                    per["low_conf"] += 1
+                    continue
+            keep[qid] = a
+            stats["kept"] += 1
+            per["kept"] += 1
+        out.append({**r, "teacher_answer": keep})
+    stats["dropped"] = stats["low_conf"] + stats["no_conf"] + stats["inconsistent"]
+    return out, stats
+
+
+# ------------------------------------------------- B 頻繁題型
+# ponytail: 近 14 天 ≥30 次。頻率按「題族」數（尾碼數字併掉，與 hard_weights 封頂同一個正規化），
+# 否則 call_t1..call_t45 每題一天只出現一次，整族都會被當冷門踢掉。
+# 升級路徑：想逐題而非逐族設門檻，就把 _family() 換成 identity，並把 min_n 調低。
+FREQ_DAYS = float(os.environ.get("JEV_LAYA_FREQ_DAYS", "14"))
+FREQ_MIN_N = int(os.environ.get("JEV_LAYA_FREQ_MIN_N", "30"))
+
+
+def _family(qid):
+    """題族：尾碼數字只是序號（call_t1、result_t27），併成一族。"""
+    return re.sub(r"\d+$", "#", str(qid))
+
+
+def frequent_qids(rows, days=None, min_n=None, now=None):
+    """近 days 天出現 ≥ min_n 次的題族。回 set；關閉（days<=0 或 min_n<=0）回 None＝不過濾。
+
+    只學本機真的常出現的題型：冷門題訓也訓不好，上線又沒量測過。外部語料不計次
+    （它的出現次數跟本機流量無關）。沒有 ts 的列不計次（舊 schema）。
+    """
+    days = FREQ_DAYS if days is None else days
+    min_n = FREQ_MIN_N if min_n is None else min_n
+    if days <= 0 or min_n <= 0:
+        return None
+    now = now or datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
+    n = {}
+    for r in rows:
+        if is_external(r):
+            continue
+        ts = r.get("ts")
+        if not isinstance(ts, str):
+            continue
+        try:
+            when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if when < since:
+            continue
+        for qid in (r.get("questions") or {}):
+            fam = _family(qid)
+            n[fam] = n.get(fam, 0) + 1
+    return {fam for fam, c in n.items() if c >= min_n}
+
+
+# 線上 pilot 題型（同 laya-routing.js 的 JEV_LAYA_QTYPE_PILOT、同一個預設）已經在線上接手，
+# 冷門也要訓：「不訓也不上線」只對不在線上的題型成立。10-13 驗收跑 score 全庫 33 筆被頻繁
+# 題族濾光，線上 score lane 從此每晚吃不到新標籤，報告卻一切正常。
+PILOT_QTYPES = {s.strip() for s in os.environ.get("JEV_LAYA_QTYPE_PILOT", "score,noul").split(",")
+                if s.strip()}
+
+
+def keep_frequent(units, freq, pilot=None):
+    """頻繁題族過濾；external 與線上 pilot 題型不吃這關。freq=None＝不過濾。"""
+    pilot = PILOT_QTYPES if pilot is None else pilot
+    if freq is None:
+        return units
+    return [u for u in units if u["external"] or u["qtype"] in pilot or _family(u["qid"]) in freq]
+
+
+def starved_pilot(before, after, pilot=None):
+    """語料裡有、篩完變 0 筆的 pilot 題型。任何一關把線上 lane 濾光都要停下來，不能無聲斷糧。"""
+    pilot = PILOT_QTYPES if pilot is None else pilot
+    return sorted(qt for qt in pilot if before.get(qt, 0) > 0 and after.get(qt, 0) == 0)
+
+
+# ------------------------------------------------- C 答錯加權＋防遺忘
+# 借鏡 hard example mining：現役答錯的題是學習訊號最大的那批，答對的留一部分防遺忘
+# （catastrophic forgetting）。
+# ponytail: 答錯 weight 2.0、答對按 1:1 抽樣、每族至少留 5 筆答對的。要更偏難題就調
+# JEV_LAYA_EASY_RATIO 往下；上限：答錯集是跟「出廠 int8 基線」比出來的，不是跟現役
+# champion 比（local_answer 釘在 laya-multilingual-int8，見 laya-nightly.sh 的註解）。
+# 等基線改釘現役後，這裡量到的「答錯」才等於「現役還不會的」。
+HARD_WEIGHT = float(os.environ.get("JEV_LAYA_HARD_WEIGHT", "2.0"))
+EASY_RATIO = float(os.environ.get("JEV_LAYA_EASY_RATIO", "1.0"))
+EASY_FLOOR = int(os.environ.get("JEV_LAYA_EASY_FLOOR", "5"))
+# 逐族封頂（原 cap_per_qid，10-13 折進 hard_weights）：10-10 語料 17152 units，
+# tier/route/ambiguous/wrong_reading_costly 各 2500+，訓練跑 2h40m 沒跑完被砍。快取預算在
+# tokenize 之後才抽、且是全體均勻抽，大題照樣佔大半，所以要在 tokenize 前就逐族封頂。
+# 為什麼折進來：封頂跑在加權「之後」會均勻抽、把剛挑出來的難題隨機丟掉，加權等於被抵銷；
+# 跑在「之前」又是在還不知道哪題難的時候先丟。唯一正確的位置是同一個函式裡——難題先在
+# 族內互相競爭填配額，剩下的配額才給防遺忘樣本。
+MAX_PER_QID = int(os.environ.get("JEV_LAYA_MAX_PER_QID", "300"))
+
+
+def hard_weights(units, hard_weight=None, easy_ratio=None, easy_floor=None, cap=None,
+                 seed=SEED):
+    """現役答錯的優先全收並加權；答對（含還沒標註的）逐族抽樣留一部分防遺忘。
+    回 (保留的 units, 統計)。
+
+    `baseline_correct(u) is False` 才算答錯。None（corpus 還沒 local_answer）歸在
+    retention 池：不知道現役錯沒錯，就不是難題，但仍可當防遺忘樣本。
+    `cap` 是每族上限（<=0 關閉）：難題先填，填不滿才給答對的。
+    外部題不動也不算在封頂內（只進訓練側、權重固定）。保留原順序。
+    ponytail: 族內均勻抽，罕見序號可能整個抽掉；要保底時改成族內再按 qid 分層。
+    """
+    hard_weight = HARD_WEIGHT if hard_weight is None else hard_weight
+    easy_ratio = EASY_RATIO if easy_ratio is None else easy_ratio
+    easy_floor = EASY_FLOOR if easy_floor is None else easy_floor
+    cap = MAX_PER_QID if cap is None else cap
+    by_fam = {}
+    for i, u in enumerate(units):
+        if not u.get("external"):
+            by_fam.setdefault(_family(u["qid"]), []).append(i)
+    rng = random.Random(seed)
+    keep, stats = set(), {"hard_weight": hard_weight, "easy_ratio": easy_ratio, "cap": cap,
+                          "hard_n": 0, "easy_n": 0, "hard_dropped": 0, "easy_dropped": 0}
+
+    def _take(pool, want):
+        want = max(want, 0)
+        return sorted(rng.sample(pool, want)) if want < len(pool) else pool
+
+    for idx in by_fam.values():
+        wrong_all = [i for i in idx if baseline_correct(units[i]) is False]
+        wrong_set = set(wrong_all)
+        easy = [i for i in idx if i not in wrong_set]
+        if cap > 0:
+            # 封頂內先替防遺忘留位子，否則難題會把名額吃光（實測語料每族 1000+ 難題、
+            # cap 150，不預留的話 9 族只剩 54 筆答對的），easy_ratio 就等於失效。
+            reserved = min(len(easy), max(easy_floor, int(round(cap * easy_ratio / (1 + easy_ratio)))))
+            wrong = _take(wrong_all, cap - reserved)
+        else:
+            wrong = wrong_all
+        want = max(easy_floor, int(round(easy_ratio * len(wrong))))
+        # 難題沒用滿配額時，剩下的讓給防遺忘樣本
+        picked = _take(easy, min(want, cap - len(wrong)) if cap > 0 else want)
+        for i in wrong:
+            units[i]["weight"] = hard_weight
+        for i in picked:
+            units[i]["weight"] = 1.0
+        keep.update(wrong)
+        keep.update(picked)
+        stats["hard_n"] += len(wrong)
+        stats["easy_n"] += len(picked)
+        stats["hard_dropped"] += len(wrong_all) - len(wrong)
+        stats["easy_dropped"] += len(easy) - len(picked)
+    return [u for i, u in enumerate(units) if u.get("external") or i in keep], stats
+
+
+# ------------------------------------------------- D 每晚總量上限
+# ponytail: 逐族等比例縮，族內維持當下的難/易比，每族至少留 1 筆。單純隨機抽（--limit）
+# 會把罕見題族整個抽光，也會打壞 1:1。上限：budget 很小時「等比例」會讓大族仍佔多數；
+# 要每族等量再改成逐族固定配額。
+MAX_UNITS = int(os.environ.get("JEV_LAYA_MAX_UNITS", "0"))
+
+
+def budget_units(units, budget=None, seed=SEED):
+    """總量封頂：逐族等比例降採樣，族內按難（weight>1）／易兩池各自等比例抽。
+    回 (保留的 units, 丟掉幾個)。budget<=0 或沒超過就原樣返回。外部題不算在內也不動。"""
+    budget = MAX_UNITS if budget is None else budget
+    own = [i for i, u in enumerate(units) if not u.get("external")]
+    if budget <= 0 or len(own) <= budget:
+        return units, 0
+    ratio = budget / len(own)
+    by_fam = {}
+    for i in own:
+        by_fam.setdefault(_family(units[i]["qid"]), []).append(i)
+    rng = random.Random(seed)
+    keep = set()
+    for idx in by_fam.values():
+        hard = [i for i in idx if units[i].get("weight", 1.0) > 1.0]
+        hard_set = set(hard)
+        easy = [i for i in idx if i not in hard_set]
+        for pool in (hard, easy):
+            if not pool:
+                continue
+            want = max(1, int(round(ratio * len(pool))))
+            keep.update(rng.sample(pool, want) if want < len(pool) else pool)
+    return ([u for i, u in enumerate(units) if u.get("external") or i in keep],
+            len(own) - len(keep))
+
+
+# ------------------------------------------------- E 熱啟動（增量訓練）
+def warm_start_dir(out_dir, base_dir, enabled=True):
+    """熱啟動來源：現役 champion 的 safetensors 在 out_dir（promote 寫在那裡，是完整
+    state_dict，含 encoder）。有就從它續訓，沒有（第一次）或關閉就回出廠 base_dir。
+
+    cfg／tokenizer／encoder 目錄一律還是 base_dir：champion 目錄只有權重與 config，
+    而 encoder 是凍結的，兩邊必然相同。
+    """
+    out_dir, base_dir = Path(out_dir), Path(base_dir)
+    if enabled and (out_dir / "model.safetensors").exists():
+        return out_dir
+    return base_dir
+
+
+def sd_fingerprint(state_dict, prefixes=("head.", "scorer.", "type_emb", "act_head")):
+    """可訓練那幾塊權重的指紋。熱啟動要證明真的載到 champion，不能只看路徑存在
+    （載錯／靜默 fallback 到出廠權重的話，增量訓練就變成每晚從頭訓）。"""
+    h = hashlib.sha256()
+    for k in sorted(state_dict):
+        if not k.startswith(prefixes):
+            continue
+        v = state_dict[k]
+        h.update(k.encode())
+        h.update(v.detach().cpu().contiguous().numpy().tobytes() if hasattr(v, "detach")
+                 else bytes(v))
+    return h.hexdigest()[:16]
+
+
 def coverage_curve(conf, correct, thresholds=None):
     """信心閾值 → 覆蓋率 / 準確率。這是整支腳本的產物。"""
     thresholds = thresholds or [0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95]
@@ -433,31 +748,6 @@ def open_disk_cache(path, lengths, hidden):
         offs.append(offs[-1] + n)
     mm = np.lib.format.open_memmap(str(path), mode="w+", dtype=np.float16, shape=(max(offs[-1], 1), hidden))
     return mm, offs
-
-
-MAX_PER_QID = int(os.environ.get("JEV_LAYA_MAX_PER_QID", "300"))
-
-
-def cap_per_qid(units, cap, seed=SEED):
-    """10-10 語料 17152 units，tier/route/ambiguous/wrong_reading_costly 各 2500+，訓練跑 2h40m
-    沒跑完被砍。快取預算在 tokenize 之後才抽、且是全體均勻抽，大題照樣佔大半。這裡在 tokenize
-    前逐題封頂：小題全留，大題以固定 seed 抽 cap 筆。尾碼數字只是序號的題併成一族一起封頂
-    （call_t1..call_t66、result_t*、claim_* 共 259 題、4397 units，逐題封頂碰不到），
-    否則 cap 調到 50 也還剩 5597 units；併族後 cap=300 是 2341。
-    外部題不算在內（只進訓練側、數量固定）。保留原順序。回 (保留的 units, 丟掉幾個)。cap<=0 關閉。
-    ponytail: 族內均勻抽，罕見序號可能整個抽掉；要保底時改成族內再按 qid 分層。"""
-    if cap <= 0:
-        return units, 0
-    by_qid = {}
-    for i, u in enumerate(units):
-        if not u["external"]:
-            by_qid.setdefault(re.sub(r"\d+$", "#", u["qid"]), []).append(i)
-    rng = random.Random(seed)
-    drop = set()
-    for idx in by_qid.values():
-        if len(idx) > cap:
-            drop.update(set(idx) - set(rng.sample(idx, cap)))
-    return [u for i, u in enumerate(units) if i not in drop], len(drop)
 
 
 DEDUP_COS = float(os.environ.get("JEV_LAYA_DEDUP_COS", "0.95"))
@@ -703,18 +993,7 @@ def selftest():
     assert {u["qid"] for u in _k} == {"a", "b"}, "均勻抽樣不該整題抽光"
     assert fit_cache_budget(_cu, 4, 200_000)[0] == _k, "同 seed 要抽到同一批"
 
-    # 逐題封頂：大題砍到 cap、小題與外部題全留、可重現、0 關閉
-    _pu = ([{"qid": "big", "external": False, "n": i} for i in range(50)]
-           + [{"qid": "small", "external": False, "n": i} for i in range(5)]
-           + [{"qid": "big", "external": True, "n": i} for i in range(7)])
-    _k, _d = cap_per_qid(_pu, 10)
-    assert _d == 40 and len(_k) == 22, (_d, len(_k))
-    assert sum(1 for u in _k if u["qid"] == "small") == 5, "小題不該被抽"
-    assert sum(1 for u in _k if u["external"]) == 7, "外部題不算在封頂內"
-    assert cap_per_qid(_pu, 10)[0] == _k, "同 seed 要抽到同一批"
-    assert cap_per_qid(_pu, 0) == (_pu, 0), "cap 0 要關閉"
-    _fu = [{"qid": f"call_t{i % 20}", "external": False} for i in range(40)]  # 20 題各 2 筆＝同一族
-    assert len(cap_per_qid(_fu, 10)[0]) == 10, "尾碼序號要併族封頂"
+    # 逐族封頂 10-13 折進 hard_weights（原 cap_per_qid），測試在下面的「C 答錯加權」區塊
 
     # 完全重複：同答案留一筆；2:1 矛盾留多數那筆；平票整組丟；外部題不動
     def _du(qid, s, truth, ext=False, qtype="choice"):
@@ -767,6 +1046,157 @@ def selftest():
                 seg = back[offs[i]:offs[i + 1]]
                 assert seg.shape == ([2, 3, 1][i], 4) and (seg == i + 1).all(), (i, seg)
             del back
+
+    # ---- A 教師可信度閘
+    _tq = {"k": {"type": "choice", "criteria": {"a": "", "b": ""}}}
+    def _tr(u, choice, conf=0.9, **kw):
+        return {"ts": "2026-10-13T00:00:00Z", "state": {"u": u}, "questions": _tq,
+                "teacher_answer": {"k": {"type": "choice", "choice": choice, "confidence": conf}}, **kw}
+    _rows = [_tr(1, "a"), _tr(1, "b"),            # 同 state 變卦 → 整題丟
+             _tr(2, "a"), _tr(2, "a"),            # 一致 → 留
+             _tr(3, "a", conf=0.2),               # 信心不足 → 丟
+             _tr(4, "a", conf=None),              # 無 confidence＝escalate → 丟
+             _tr(5, "a", conf=0.2, label_source="external:t")]  # 外部題不經這個閘
+    _kept, _st = trusted_teacher(_rows, "choice=0.5")
+    assert _st["inconsistent"] == 2, _st          # 變卦那一題的兩筆都不能進
+    assert _st["low_conf"] == 1 and _st["no_conf"] == 1, _st
+    assert _st["kept"] == 2 and _st["dropped"] == 4, _st
+    assert [bool(r["teacher_answer"]) for r in _kept] == [False, False, True, True, False, False, True], \
+        "過濾結果要逐列對應，rec 索引不能位移"
+    assert _rows[0]["teacher_answer"], "不得就地修改輸入 rows"
+    # 教師不一致的題不得進入訓練：丟掉的那題 build_units 要算在 skipped 裡
+    _u_bad, _sk = build_units([_kept[0]])
+    assert _u_bad == [] and _sk == 1, (_u_bad, _sk)
+    # conf_min=off 只留一致性過濾（信心軸整個關掉），低信心與缺 confidence 都保留
+    _, _st_off = trusted_teacher(_rows, "off")
+    assert _st_off["low_conf"] == 0 and _st_off["no_conf"] == 0, _st_off
+    assert _st_off["kept"] == 4 and _st_off["inconsistent"] == 2, _st_off
+    # 未列的題型不吃信心閘（用 inf 會把整個題型的教師標籤丟光）
+    assert parse_conf_min("score=0.5", default=-math.inf)("choice") == -math.inf
+    assert parse_conf_min("score=0.5")("choice") == math.inf, "接手閘的未列題型仍要過不了"
+    # 未列的題型連「完全沒有 confidence」也要留下來。這是 noul 的實況（它的信心由 gateway
+    # 從答案值導出，不走 a.confidence，10-13 實測語料 20816 筆全無這個欄位），把它當
+    # escalate 丟掉＝線上 pilot lane 無聲斷糧。
+    _nq = {"k": {"type": "noul", "criteria": {"claim": ""}}}
+    _nr = [{"ts": "2026-10-13T00:00:00Z", "state": {"u": i}, "questions": _nq,
+            "teacher_answer": {"k": {"type": "noul", "noul": 0.8}}} for i in range(3)]
+    _nk, _ns = trusted_teacher(_nr, "choice=0.5,score=0.5")
+    assert _ns["kept"] == 3 and _ns["dropped"] == 0, ("未列題型不該被信心閘丟", _ns)
+    assert _ns["by_qtype"]["noul"]["conf_present"] == 0, _ns
+    assert all(r["teacher_answer"] for r in _nk), "noul 的教師標籤不得被丟光"
+
+    # ---- B 頻繁題族：冷門題族不得進入
+    _now = datetime(2026, 10, 13, tzinfo=timezone.utc)
+    _fr = ([{"ts": "2026-10-12T00:00:00Z", "questions": {"hot": {}, "call_t1": {}}}] * 30
+           + [{"ts": "2026-10-12T00:00:00Z", "questions": {"cold": {}}}] * 5
+           + [{"ts": "2026-09-01T00:00:00Z", "questions": {"stale": {}}}] * 99
+           + [{"ts": "2026-10-12T00:00:00Z", "questions": {"ext": {}}, "label_source": "external:t"}] * 99)
+    _f = frequent_qids(_fr, days=14, min_n=30, now=_now)
+    assert "hot" in _f, _f
+    assert "cold" not in _f, "冷門題族不得進入"
+    assert "stale" not in _f, "超過時間窗的不算次數"
+    assert "ext" not in _f, "外部語料不計次"
+    # 尾碼序號併族計次：call_t1..call_t45 每天各只出現一次，逐題算會整族被當冷門
+    _f2 = frequent_qids([{"ts": "2026-10-12T00:00:00Z", "questions": {f"call_t{i}": {}}}
+                         for i in range(30)], days=14, min_n=30, now=_now)
+    assert _f2 == {"call_t#"}, _f2
+    assert frequent_qids(_fr, days=0, min_n=30) is None, "days<=0 要關閉（回 None＝不過濾）"
+    assert frequent_qids(_fr, days=14, min_n=0) is None, "min_n<=0 要關閉"
+    assert frequent_qids([{"questions": {"x": {}}}], days=14, min_n=1, now=_now) == set(), \
+        "沒有 ts 的舊列不計次"
+    # pilot 題型免頻繁過濾：10-13 score 33 筆被濾光，線上 score lane 斷糧
+    _ku = [{"qid": "cold", "qtype": "score", "external": False},
+           {"qid": "cold", "qtype": "choice", "external": False},
+           {"qid": "hot", "qtype": "choice", "external": False}]
+    _kept = keep_frequent(_ku, {"hot"}, pilot={"score"})
+    assert [(u["qid"], u["qtype"]) for u in _kept] == [("cold", "score"), ("hot", "choice")], _kept
+    assert keep_frequent(_ku, None, pilot=set()) == _ku, "freq=None 不過濾"
+    assert starved_pilot({"score": 33, "noul": 9}, {"noul": 3}, pilot={"score", "noul"}) == ["score"]
+    assert starved_pilot({"noul": 9}, {"noul": 3}, pilot={"score", "noul"}) == [], \
+        "語料本來就沒有的 pilot 題型不算斷糧"
+
+    # ---- C 答錯加權：答錯的 weight 必須 > 答對的，而且答錯全收
+    def _hu(qid, ok, ext=False):
+        """ok=True/False/None → baseline_correct 回 True/False/None"""
+        b = None if ok is None else {"choice": "a" if ok else "b"}
+        return {"qid": qid, "external": ext, "weight": 0.2 if ext else 1.0, "qtype": "choice",
+                "question": {"criteria": {"a": "", "b": ""}}, "truth": 0, "baseline": b}
+    assert baseline_correct(_hu("x", True)) is True and baseline_correct(_hu("x", False)) is False
+    _hus = ([_hu("q", False) for _ in range(10)] + [_hu("q", True) for _ in range(40)]
+            + [_hu("q", None) for _ in range(5)] + [_hu("q", True, ext=True) for _ in range(3)])
+    _k, _hs = hard_weights(_hus, hard_weight=2.0, easy_ratio=1.0, easy_floor=5, cap=0)
+    assert _hs["hard_n"] == 10, _hs
+    assert _hs["easy_n"] == 10, _hs                      # 1:1，從 45 筆 retention 池抽
+    _w_hard = [u["weight"] for u in _k if baseline_correct(u) is False]
+    _w_easy = [u["weight"] for u in _k if not u["external"] and baseline_correct(u) is not False]
+    assert _w_hard == [2.0] * 10, _w_hard
+    assert _w_easy == [1.0] * 10, _w_easy
+    assert min(_w_hard) > max(_w_easy), "答錯 weight 必須 > 答對"
+    assert sum(1 for u in _k if u["external"]) == 3, "外部題不動"
+    assert [u["weight"] for u in _k if u["external"]] == [0.2] * 3
+    assert hard_weights(_hus, 2.0, 1.0, 5, cap=0)[0] == _k, "同 seed 要抽到同一批"
+    # 全對的題族不能整族消失（防遺忘地板）
+    _k2, _hs2 = hard_weights([_hu("q", True) for _ in range(40)], 2.0, 1.0, 5, cap=0)
+    assert _hs2["hard_n"] == 0 and len(_k2) == 5, (_hs2, len(_k2))
+
+    # ---- 逐族封頂（原 cap_per_qid）：大題砍到 cap、小題與外部題全留、可重現、0 關閉
+    _cu = ([_hu("big", False) for _ in range(50)] + [_hu("big", True) for _ in range(50)]
+           + [_hu("small", False) for _ in range(5)]
+           + [_hu("big", True, ext=True) for _ in range(7)])
+    _k, _cs = hard_weights(_cu, 2.0, 1.0, 5, cap=10)
+    assert sum(1 for u in _k if u["qid"] == "big" and not u["external"]) == 10, "大題要砍到 cap"
+    assert sum(1 for u in _k if u["qid"] == "small") == 5, "小題不該被抽"
+    assert sum(1 for u in _k if u["external"]) == 7, "外部題不算在封頂內"
+    assert hard_weights(_cu, 2.0, 1.0, 5, cap=10)[0] == _k, "同 seed 要抽到同一批"
+    # cap 0 關閉封頂：big 50 難＋50 易（1:1 全收）、small 5 難、外部 7
+    assert len(hard_weights(_cu, 2.0, 1.0, 5, cap=0)[0]) == 50 + 50 + 5 + 7, "cap 0 要關閉"
+    # 封頂內要替防遺忘留位子：big 族 50 難、50 易、cap 10、1:1 → 5 難 5 易。不預留的話
+    # 難題會把 10 個名額吃光，easy_ratio 形同失效（實測語料就是這樣，9 族只剩 54 筆答對的）。
+    assert _cs["easy_n"] == 5, ("封頂內要留防遺忘配額", _cs)
+    assert _cs["hard_n"] == 5 + 5, _cs  # big 5（另 5 個名額留給防遺忘）＋small 全 5
+    assert _cs["hard_dropped"] == 45 and _cs["easy_dropped"] == 45, _cs
+    # 難題不夠填滿配額時，剩下的名額讓給防遺忘樣本（3 難＋5 易，不是 3 難＋3 易）
+    _k4, _cs4 = hard_weights([_hu("big", False) for _ in range(3)]
+                             + [_hu("big", True) for _ in range(50)], 2.0, 1.0, 5, cap=10)
+    assert (_cs4["hard_n"], _cs4["easy_n"]) == (3, 5), _cs4
+    # 整族都是難題（沒有答對的可留）時，配額全給難題，不空等
+    _k5, _cs5 = hard_weights([_hu("big", False) for _ in range(50)], 2.0, 1.0, 5, cap=10)
+    assert (_cs5["hard_n"], _cs5["easy_n"]) == (10, 0), _cs5
+    # 尾碼序號要併族封頂：call_t1..call_t20 各 2 筆＝同一族，逐題封頂碰不到 cap=10
+    _fu = [_hu(f"call_t{i % 20}", False) for i in range(40)]
+    assert len(hard_weights(_fu, 2.0, 1.0, 5, cap=10)[0]) == 10, "尾碼序號要併族封頂"
+
+    # ---- D 總量上限：逐族等比例，難/易比維持，罕見題族不被抽光
+    _bu = ([{"qid": "big", "external": False, "weight": 2.0} for _ in range(400)]
+           + [{"qid": "big", "external": False, "weight": 1.0} for _ in range(400)]
+           + [{"qid": "rare", "external": False, "weight": 2.0}]
+           + [{"qid": "x", "external": True, "weight": 0.2} for _ in range(9)])
+    _k, _dropped = budget_units(_bu, 200)
+    assert sum(1 for u in _k if not u["external"]) == 200 + 1, len(_k)
+    assert _dropped == 801 - 201, _dropped
+    assert sum(1 for u in _k if u["external"]) == 9, "外部題不算在內也不動"
+    assert any(u["qid"] == "rare" for u in _k), "罕見題族不得被抽光"
+    _h = sum(1 for u in _k if u["qid"] == "big" and u["weight"] > 1)
+    assert _h == 100, ("難/易比要維持", _h)
+    assert budget_units(_bu, 0) == (_bu, 0), "0 要關閉"
+    assert budget_units(_bu, 10**6) == (_bu, 0), "沒超過就原樣返回"
+
+    # ---- E 熱啟動：有 champion 就從它續訓，而且指紋要跟出廠不同（證明真的載到）
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        _base, _out = Path(td) / "base", Path(td) / "out"
+        _base.mkdir(); _out.mkdir()
+        (_base / "model.safetensors").write_text("x")
+        assert warm_start_dir(_out, _base) == _base, "沒有 champion 要回出廠權重"
+        (_out / "model.safetensors").write_text("y")
+        assert warm_start_dir(_out, _base) == _out, "有 champion 就要從它續訓"
+        assert warm_start_dir(_out, _base, enabled=False) == _base, "--no-warm-start 要回出廠"
+    _sd_a = {"head.0.weight": b"\x01\x02", "encoder.0.weight": b"\xff"}
+    _sd_b = {"head.0.weight": b"\x01\x03", "encoder.0.weight": b"\xff"}
+    assert sd_fingerprint(_sd_a) == sd_fingerprint(dict(_sd_a)), "同權重要同指紋"
+    assert sd_fingerprint(_sd_a) != sd_fingerprint(_sd_b), "可訓練權重不同就要不同指紋"
+    assert sd_fingerprint(_sd_a) == sd_fingerprint({**_sd_a, "encoder.9.weight": b"\x07"}), \
+        "指紋只看可訓練那幾塊；encoder 凍結，變了也不算熱啟動"
 
     print("selftest PASS")
 
@@ -837,6 +1267,8 @@ def main():
     ap.add_argument("--lora", action="store_true", help="encoder 掛 LoRA 一起訓（實驗，不能配 --promote）")
     ap.add_argument("--lora-r", type=int, default=16)
     ap.add_argument("--device", choices=["auto", "mps", "cpu"], default="auto")
+    ap.add_argument("--warm-start", action=argparse.BooleanOptionalAction, default=True,
+                    help="從現役 champion（--out-dir）的權重續訓；--no-warm-start 從出廠權重重訓")
     ap.add_argument("--promote", action="store_true", help="達標才寫出權重")
     ap.add_argument("--min-gain", type=float, default=0.05, help="OOF 準確率要比 int8 基線高多少才算達標")
     ap.add_argument("--verify-parity", action="store_true", help="拿完整 forward 比對快取路徑")
@@ -846,6 +1278,7 @@ def main():
     ap.add_argument("--cache-dir", help="h 快取寫到這個目錄的 memmap，快取完卸掉 encoder（低記憶體模式）")
     ap.add_argument("--limit", type=int, default=0, help="只取 N 個 units（固定 seed 抽樣），量峰值用")
     args = ap.parse_args()
+    train_t0 = time.time()  # 整趟耗時（含去重與編碼）；報告與推播都引用它
 
     if args.selftest:
         selftest()
@@ -863,7 +1296,37 @@ def main():
     rows = load_cases(CORPUS)
     n_own = len(rows)
     rows += load_external()  # 接在後面：線上列的 rec 索引不變，fold 分配也就不變
+    raw_rows = rows  # teacher_self_agreement 要量原始語料：過濾後的一致率必然接近 1，沒有資訊
+    # A 教師可信度閘在最前面：標籤噪聲不先拿掉，後面的答錯加權會把噪聲一起放大。
+    rows, trust_stats = trusted_teacher(rows)
+    print(f"教師可信度閘（conf_min={trust_stats['conf_min']}）：留 {trust_stats['kept']} 題，"
+          f"丟 {trust_stats['dropped']}（信心不足 {trust_stats['low_conf']}、"
+          f"無 confidence＝escalate {trust_stats['no_conf']}、前後不一致 {trust_stats['inconsistent']}）")
+    for qt, per in sorted(trust_stats["by_qtype"].items(), key=lambda kv: str(kv[0])):
+        print(f"  {qt}: n={per['n']} 留={per['kept']} 有信心={per['conf_present']} "
+              f"信心不足={per['low_conf']} 無信心={per['no_conf']} 不一致={per['inconsistent']}")
+    starved = [qt for qt, per in trust_stats["by_qtype"].items()
+               if per["n"] >= 30 and per["kept"] == 0]
+    if starved:
+        # 整個題型被濾光＝那條 lane 無聲斷糧（線上 pilot 就是 score／noul）。繼續跑只會
+        # 訓出一個沒碰過那個題型的模型，而報告看起來一切正常。
+        print(f"教師可信度閘把這些題型整個濾光：{starved}。"
+              f"把它們從 JEV_LAYA_TRUST_CONF_MIN 移除（改成只靠一致性過濾），"
+              f"或修 corpus 寫入端讓它存 confidence", file=sys.stderr)
+        return 1
     units, skipped = build_units(rows)
+    print(f"corpus={n_own} units={len(units)} records={len({u['rec'] for u in units})} "
+          f"skipped={skipped}")
+    # B 頻繁題族：冷門題訓不好、上線又沒量測過，不訓也不上線
+    type_before = {}
+    for u in units:
+        type_before[u["qtype"]] = type_before.get(u["qtype"], 0) + 1
+    freq = frequent_qids(rows)
+    if freq is not None:
+        before = len(units)
+        units = keep_frequent(units, freq)
+        print(f"頻繁題族（近 {FREQ_DAYS:g} 天 ≥{FREQ_MIN_N} 次，pilot {sorted(PILOT_QTYPES)} 免過濾）："
+              f"{len(freq)} 族，保留 {len(units)} units，丟 {before - len(units)}")
     by_type = {}
     for u in units:
         by_type[u["qtype"]] = by_type.get(u["qtype"], 0) + 1
@@ -873,7 +1336,7 @@ def main():
         if u["external"]:
             src = rows[u["rec"]].get("label_source")
             ext_by_source[src] = ext_by_source.get(src, 0) + 1
-    print(f"corpus={n_own} units={len(units)} records={n_rec} skipped={skipped} by_type={by_type}")
+    print(f"by_type={by_type}")
     # 去重在封頂前：封頂只是抽樣，先把重複與矛盾拿掉，抽到的 300 筆才彼此不同。
     units, dedup_stats = dedup_exact(units)
     t0 = time.time()
@@ -882,12 +1345,27 @@ def main():
     print(f"去重：完全重複丟 {dedup_stats['dropped']}（矛盾 {dedup_stats['conflict_groups']} 組、"
           f"平票整組丟 {dedup_stats['tie_groups']}），cosine≥{DEDUP_COS} 同答案丟 "
           f"{dedup_stats['near_dropped']}（{time.time() - t0:.0f}s），剩 {len(units)} units")
-    units, capped = cap_per_qid(units, MAX_PER_QID)
-    if capped:
-        print(f"每題上限 {MAX_PER_QID}：保留 {len(units)} units，丟 {capped}")
+    # C 答錯加權＋防遺忘。在去重之後：抽到的 retention 樣本才彼此不同。
+    units, hard_stats = hard_weights(units)
+    print(f"答錯加權（每族上限 {hard_stats['cap']}）：難題 {hard_stats['hard_n']}"
+          f"（weight {hard_stats['hard_weight']}，封頂丟 {hard_stats['hard_dropped']}）、"
+          f"防遺忘留 {hard_stats['easy_n']}（1:{hard_stats['easy_ratio']:g}，丟 "
+          f"{hard_stats['easy_dropped']}），剩 {len(units)} units")
+    # D 每晚總量上限（逐族等比例，保住難/易比與罕見題族）
+    units, over = budget_units(units, MAX_UNITS)
+    if over:
+        print(f"總量上限 {MAX_UNITS}：保留 {len(units)} units，丟 {over}")
     if args.limit and len(units) > args.limit:
         units = random.Random(SEED).sample(units, args.limit)
         print(f"--limit {args.limit}：抽樣保留 {len(units)} units")
+    type_after = {}
+    for u in units:
+        type_after[u["qtype"]] = type_after.get(u["qtype"], 0) + 1
+    gone = starved_pilot(type_before, type_after)
+    if gone and not args.limit:
+        print(f"線上 pilot 題型 {gone} 被篩光（語料 {[type_before[q] for q in gone]} 筆 → 0）："
+              f"線上 lane 會無聲斷糧。查是哪一關丟的（去重／加權／總量）再跑", file=sys.stderr)
+        return 1
     if ext_by_source:
         print(f"external（只進訓練 fold，weight={EXTERNAL_WEIGHT}）: {ext_by_source}")
 
@@ -921,8 +1399,22 @@ def main():
     _fix_tokenizer_config(str(base))
     tok = AutoTokenizer.from_pretrained(base / "tokenizer")
     model = build_model(cfg, encoder_dir=str(base / "encoder"))
-    state_dict = load_file(str(base / "model.safetensors"))
+    # E 熱啟動：有現役 champion 就從它續訓，低強度增量才有意義（從頭訓每晚都要重學一次）。
+    # 注意：local_answer（配對基線）仍釘在出廠 int8，所以熱啟動後「vs int8」會含進
+    # champion 已有的增益，promote 閘因此偏寬鬆——真正擋退步的是 laya-nightly.sh 的
+    # 同卷 McNemar（對現役 bundle），那一關不受熱啟動影響。
+    init = warm_start_dir(args.out_dir, base, args.warm_start)
+    state_dict = load_file(str(init / "model.safetensors"))
     model.load_state_dict(state_dict, strict=True)
+    init_fp = sd_fingerprint(state_dict)
+    base_fp = init_fp if init == base else sd_fingerprint(load_file(str(base / "model.safetensors")))
+    print(f"init={init} fingerprint={init_fp}"
+          + ("（出廠權重，無 champion 可續訓）" if init == base else f"（出廠 {base_fp}）"))
+    if init != base and init_fp == base_fp:
+        # 載到的權重跟出廠一樣＝champion 檔是空殼或載錯，熱啟動沒生效。無聲 fallback
+        # 的話每晚都在從頭訓，而報告仍寫 warm_start，所以這裡直接失敗。
+        print("熱啟動失敗：champion 的可訓練權重與出廠權重相同", file=sys.stderr)
+        return 1
     del state_dict  # 不放掉的話 1.2GB 的出廠權重整趟陪跑
     model.to(device).eval()
 
@@ -1169,6 +1661,19 @@ def main():
         "external_weight": EXTERNAL_WEIGHT if ext_by_source else None,
         "records": n_rec,
         "by_type": by_type,
+        # 改版後的三個必備欄位（推播摘要引用）：今晚學了幾題難題、教師不可信丟了幾題、
+        # 以及真的進訓練的題族名單。沒有這三個，低強度增量跑成空轉也看不出來。
+        "hard_n": hard_stats["hard_n"],
+        "easy_n": hard_stats["easy_n"],
+        "hard": hard_stats,
+        "trusted_drop_n": trust_stats["dropped"],
+        "trusted": trust_stats,
+        "qids": sorted({_family(u["qid"]) for u in units if not u["external"]}),
+        "frequent": {"days": FREQ_DAYS, "min_n": FREQ_MIN_N,
+                     "families": (None if freq is None else sorted(freq))},
+        "max_units": MAX_UNITS,
+        "warm_start": {"init": str(init), "fingerprint": init_fp, "base_fingerprint": base_fp},
+        "train_seconds": round(time.time() - train_t0, 1),
         "trainable": trainable_names,
         "trainable_params": n_train,
         "lora": {"r": args.lora_r, "targets": ["Wqkv", "Wo", "Wi"]} if args.lora else None,
@@ -1186,7 +1691,9 @@ def main():
         "brier": brier(probs, targets),
         "coverage_curve": curve,
         "live_gated": live_gated(oof_rows),
-        "teacher_self": teacher_self_agreement(rows, live_gated(oof_rows)["qids"]),
+        # 原始語料的教師自我一致率：trusted_teacher 已經把變卦的題丟掉，拿過濾後的
+        # rows 來量必然接近 1，那個數字沒有資訊。
+        "teacher_self": teacher_self_agreement(raw_rows, live_gated(oof_rows)["qids"]),
         "oof_rows": oof_rows,
     }
     Path(args.report).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
@@ -1208,6 +1715,9 @@ def main():
               f"  accuracy={c['accuracy'] * 100:5.1f}%{tail}")
     print(f"ECE={report['ece']:.4f}  Brier={report['brier']:.4f}" if report["ece"] is not None else "")
     print(f"report → {args.report}")
+    print(f"難題 {report['hard_n']}、防遺忘 {report['easy_n']}、教師不可信丟 "
+          f"{report['trusted_drop_n']}、題族 {len(report['qids'])}、"
+          f"耗時 {report['train_seconds'] / 60:.1f} 分")
 
     # ---- 升級閘：只有 OOF 配對增益達標才寫權重
     gain = report["paired_delta"]
@@ -1257,7 +1767,7 @@ def main():
             new_cfg = dict(cfg)
             new_cfg["temperature"] = [temps.get("choice", 1.0), temps.get("score", 1.0),
                                       temps.get("noul", 1.0)]
-            new_cfg["trained_from"] = str(base)
+            new_cfg["trained_from"] = str(init)
             new_cfg["trained_units"] = len(units)
             (out / "rl_agent_config.json").write_text(json.dumps(new_cfg, indent=2) + "\n")
             print(f"promoted → {out}")

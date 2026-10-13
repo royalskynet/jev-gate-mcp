@@ -20,7 +20,8 @@ import { getModel, getStopModel, DEFAULT_CONFIG } from './judge.js';
 function logLine(cfg, event) {
   const line = JSON.stringify({ ts: new Date().toISOString(), ...event });
   try {
-    appendFileSync(cfg.gateLog, line + '\n', 'utf8');
+    // 600: claims are logged verbatim (secret-shaped text, emails seen 10-13).
+    appendFileSync(cfg.gateLog, line + '\n', { encoding: 'utf8', mode: 0o600 });
   } catch { /* logging never blocks */ }
 }
 
@@ -76,11 +77,11 @@ export function runConfig(cfg = DEFAULT_CONFIG) {
  * Uses jevwire runVerify against one claim. Fail-open -> neutral.
  */
 export function makeStopGate(cfg = DEFAULT_CONFIG) {
-  const stopGate = shadow(async ({ claim, evidence }) => {
+  const stopGate = shadow(async ({ claim, claims, evidence }) => {
     const model = getStopModel(cfg);
     if (!model) throw new Error('no Jev model configured');
     const cfgOut = runConfig(cfg);
-    const out = await runVerify(model, { claims: [claim], evidence }, cfgOut);
+    const out = await runVerify(model, { claims: claims?.length ? claims : [claim], evidence }, cfgOut);
     return out;
   }, cfg, 'stop');
   return stopGate;

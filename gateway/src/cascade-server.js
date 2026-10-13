@@ -168,13 +168,14 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const zenKey = readKey(DEFAULTS.apiKeyFile);
   const or = orKey ? withPaymentStop(withDailyBudget(makeOpenrouterAdapter({ apiKey: orKey }))) : null;
   const zen = zenKey ? makeZenAdapter({ apiKey: zenKey, model: 'jev-1.13-free', backup: or }) : or;
-  let cascade = withRedaction(makeLayaRouter({ local, cloud: zen ? withTeacherCorpus(zen) : null }));
+  const shadow = !!zen && process.env.JEV_LAYA_SHADOW !== '0';
+  let cascade = withRedaction(makeLayaRouter({ local, cloud: zen ? withTeacherCorpus(zen) : null, shadow }));
   const layaOnly = withRedaction(makeLayaRouter({ local, cloud: async () => { const e = new Error('laya abstained'); e.code = 'LAYA_ABSTAIN'; throw e; } }));
   if (process.env.JEV_CASCADE_MODE === 'laya-only') cascade = layaOnly;
   const lanes = new Map();
   const cascadeFor = process.env.JEV_CASCADE_MODE === 'laya-only' ? null : (qtypes) => {
     const k = qtypes.join(',');
-    if (!lanes.has(k)) lanes.set(k, withRedaction(makeLayaRouter({ local, cloud: zen ? withTeacherCorpus(zen) : null, qtypes })));
+    if (!lanes.has(k)) lanes.set(k, withRedaction(makeLayaRouter({ local, cloud: zen ? withTeacherCorpus(zen) : null, qtypes, shadow })));
     return lanes.get(k);
   };
   // Shared instance (e.g. for M2): JEV_CASCADE_HOST=<this node's tailnet IP>,

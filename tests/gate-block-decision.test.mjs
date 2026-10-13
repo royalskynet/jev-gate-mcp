@@ -11,15 +11,26 @@ assert.equal(blockDecision({ verdict: 'contradicted', gate: 'auto' })?.decision,
 // Absence of support is not. The first real block this gate ever issued landed
 // on a report that said, in its own words, which part was still unproven — the
 // house rules require writing that, so blocking it trains the wrong lesson.
-const soft = blockDecision({ verdict: 'not_addressed', gate: 'auto' });
-assert.equal(soft.decision, undefined, 'not_addressed must not block');
-assert.equal(soft.continue, true);
-assert.match(soft.systemMessage, /does not support/);
+// Feedback must reach the agent. Stop `systemMessage` is shown to the user
+// only, so the old soft path told nobody who could act on it.
+const toAgent = (out) => {
+  assert.equal(out?.decision, undefined, 'feedback must not block');
+  assert.equal(out.systemMessage, undefined, 'systemMessage never reaches the agent');
+  assert.equal(out.hookSpecificOutput?.hookEventName, 'Stop');
+  return out.hookSpecificOutput.additionalContext;
+};
+assert.match(toAgent(blockDecision({ verdict: 'not_addressed', gate: 'auto' })), /does not support/);
+
+// An unsure contradiction is still a contradiction: 191/196 lived here and
+// were silent. Ask for a re-check instead of blocking — whatever the gate.
+for (const gate of ['review', 'escalate']) {
+  assert.match(toAgent(blockDecision({ verdict: 'contradicted', gate })), /may contradict/);
+}
 
 assert.equal(blockDecision({ verdict: 'supported', gate: 'auto' }), undefined);
-// Below the auto threshold the gate records and stays out of the way entirely.
-assert.equal(blockDecision({ verdict: 'contradicted', gate: 'review' }), undefined);
+// Unsure absence of support is noise; that stays silent.
 assert.equal(blockDecision({ verdict: 'not_addressed', gate: 'review' }), undefined);
+assert.equal(blockDecision({ verdict: 'not_addressed', gate: 'escalate' }), undefined);
 assert.equal(blockDecision(undefined), undefined, 'a missing judgment says nothing');
 
-console.log('ok: contradicted blocks, not_addressed advises, everything else is silent');
+console.log('ok: sure contradiction blocks, unsure contradiction and sure not_addressed reach the agent, rest silent');

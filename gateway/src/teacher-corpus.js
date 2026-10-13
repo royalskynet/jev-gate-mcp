@@ -23,7 +23,7 @@ export const TEACHER_CORPUS_FILE = process.env.JEV_TEACHER_CORPUS ?? REAL_TEACHE
 
 // `extra` overrides the trailing bookkeeping fields (label_source, split, …);
 // scripts/backtest-teacher.mjs tags its replayed rows with it.
-export function recordTeacherSample({ state, questions, result }, file = TEACHER_CORPUS_FILE, extra = {}) {
+export function recordTeacherSample({ state, questions, result, caller = null }, file = TEACHER_CORPUS_FILE, extra = {}) {
   if (!file || file === 'off') return false;
   // Fakes exist to make tests deterministic; training on them teaches nothing.
   if (/^(fake|mock)(\/|$)/.test(result?.model ?? '')) return false;
@@ -40,6 +40,8 @@ export function recordTeacherSample({ state, questions, result }, file = TEACHER
       ts: new Date().toISOString(),
       schema_version: 1,
       question_digest,
+      // Who asked: the local lane's whitelist is keyed on it (laya-calibrate.py).
+      caller,
       state,
       questions,
       teacher_model: result.model ?? null,
@@ -69,7 +71,7 @@ export function recordTeacherSample({ state, questions, result }, file = TEACHER
 export function withTeacherCorpus(adapter, record = recordTeacherSample) {
   return async (state, questions, opts) => {
     const result = await adapter(state, questions, opts);
-    try { record({ state, questions, result }); } catch { /* evidence only */ }
+    try { record({ state, questions, result, caller: opts?.caller ?? null }); } catch { /* evidence only */ }
     return result;
   };
 }

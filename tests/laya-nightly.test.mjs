@@ -17,10 +17,13 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 
 const QIDS = ['costly_mistake', 'difficulty', 'kind'];
 
-const REPORT = (promoted, live = { n: 170, accuracy: 0.994 }) => JSON.stringify({
+const REPORT = (promoted, live = { n: 170, accuracy: 0.994 }, extra = {}) => JSON.stringify({
   units: 533, oof_accuracy: 0.674, paired_delta: 0.317, promoted,
+  // 10-13 改版欄位：難題數、教師不可信丟掉幾題、訓練題族、耗時。
+  hard_n: 142, easy_n: 142, trusted_drop_n: 318, train_seconds: 912, qids: QIDS,
   live_gated: { qids: QIDS, ...live, conf_min: 0.7, pilot: ['noul', 'score'] },
   coverage_curve: [{ threshold: 0.7, coverage: 0.278, accuracy: 0.952 }],
+  ...extra,
 });
 
 // n same-paper rows, all routed locally; `wrong` lists the indices answered wrong.
@@ -54,6 +57,9 @@ case "$1" in
     while [ $# -gt 0 ]; do case "$1" in --bundle) B="$2"; shift ;; --gate-dump) G="$2"; shift ;; esac; shift; done
     case "$B" in *candidate*) cp ${at('dump-cand.jsonl')} "$G" ;; *) cp ${at('dump-champ.jsonl')} "$G" ;; esac ;;
   *laya_paired_gate.py) exec python3 "$@" ;;
+  *laya-calibrate.py)
+    [ -n "$FAKE_CALIB_FAIL" ] && { echo "boom: samples unreadable"; exit 1; }
+    echo '{"entries":[{"caller":"cascade:compact","family":"result_t#","threshold":0.9}],"rejected":[{},{}]}' > "$HOME/.jevgate/laya-whitelist.json" ;;
 esac
 exit 0
 `, { mode: 0o755 });
@@ -62,12 +68,21 @@ exit 0
   fs.writeFileSync(at('.jevgate/laya-trained-onnx/laya.onnx'), 'champ');
   fs.writeFileSync(at('dump-champ.jsonl'), DUMP(338, []));
   fs.writeFileSync(at('dump-cand.jsonl'), DUMP(338, []));
-  const pushes = () => (fs.existsSync(at('pushes.txt')) ? fs.readFileSync(at('pushes.txt'), 'utf8').trim().split('\n') : []);
+  // befa3dd 起摘要不走 hpush，改寫 LAYA_DIGEST_OUT（`日期<TAB>摘要`）交給 state-digest；
+  // 它是夜訓最後一步，所以接在 hpush 紀錄之後，.at(-1) 仍是那晚的摘要。
+  const lines = (f) => (fs.existsSync(at(f)) ? fs.readFileSync(at(f), 'utf8').trim().split('\n') : []);
+  const pushes = () => [...lines('pushes.txt'), ...lines('digest.tsv').map(l => l.split('\t').slice(1).join('\t'))];
   const run = (extraEnv = {}) => execFileSync('bash', [path.join(ROOT, 'scripts/laya-nightly.sh')], {
     env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`,
       JEV_LAYA_TRAIN_REPORT: at('report.json'), JEV_LAYA_PYTHON: at('bin/fakepy'),
-      JEV_LAYA_LABEL_DONE: at('label.done'),
+      JEV_LAYA_LABEL_DONE: at('label.done'), LAYA_DIGEST_OUT: at('digest.tsv'),
       JEV_LAYA_BASELINE_DIR: '/sentinel/int8', JEV_LAYA_MODEL_DIR: '/sentinel/trained-must-not-be-used',
+      // sysctl is an absolute path (a56bb86), so PATH cannot stub it: the gate
+      // reads this machine's real memory and skipped training whenever the real
+      // nightly ran beside the suite (6–12 flaky fails, 10-13). Open the gate.
+      JEV_LAYA_MEM_LEVEL_MIN: '0',
+      // The suite runs in daytime, past the 05:50 deadline.
+      JEV_LAYA_TRAIN_DEADLINE: 'none',
       ...extraEnv },
     encoding: 'utf8',
   });
@@ -91,6 +106,12 @@ test('a promoted night labels against int8, exports, and says what it gained', (
   assert.match(summary, /線上 lane n=170 準確 99\.4%/, 'summary must quote the online lanes, not an all-qtype fiction');
   assert.match(summary, /已換權重/);
   assert.doesNotMatch(summary, /n\/a|null|undefined/);
+  // 低強度增量可以「跑完但什麼都沒學」：難題 0 題、或教師標籤全被可信度閘濾掉。
+  // 只看 units 與 OOF 分不出那種空轉，所以摘要必須帶這幾個數字（10-13 改版）。
+  assert.match(summary, /難題 142／防遺忘 142/);
+  assert.match(summary, /教師不可信丟 318/);
+  assert.match(summary, /題族 3/);
+  assert.match(summary, /耗時 15 分/);
 
   // Only a bundle that actually reached production may become the champion,
   // and it records the same-paper number (the paired eval), not the OOF one —
@@ -103,6 +124,27 @@ test('a promoted night labels against int8, exports, and says what it gained', (
   // Without the question list on the record there is nothing for the next night
   // to compare against, and the population gate silently stops gating.
   assert.deepEqual(champ.qids, QIDS);
+});
+
+test('training runs under the launchd PATH, which has no /usr/sbin', () => {
+  const { at, run } = sandbox();
+  // The plist PATH. The suite's own PATH has /usr/sbin, so a bare sbin tool
+  // passed here while every night died rc=127 (taskpolicy, 10-13).
+  fs.writeFileSync(at('next-report.json'), REPORT(true));
+  run({ PATH: `${at('bin')}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin` });
+  assert.equal(fs.readFileSync(at('exported.txt'), 'utf8').trim(), 'ran', 'training never ran under launchd PATH');
+});
+
+test('a night with too little time left before the deadline skips training', () => {
+  const { at, run, pushes } = sandbox();
+  // Labelling length varies; training that starts late runs into Hindsight's
+  // 06:10 morning cruise. A deadline of "now" leaves no time.
+  fs.writeFileSync(at('next-report.json'), REPORT(true));
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  run({ JEV_LAYA_TRAIN_DEADLINE: hhmm });
+  assert.equal(fs.existsSync(at('exported.txt')), false, 'trained past the deadline');
+  assert.match(pushes().join('\n'), /收工/);
 });
 
 test('a question that was never measured locally cannot enter the local lane', () => {
@@ -159,6 +201,9 @@ test('an unpromoted night neither exports nor claims a gain it did not get', () 
   assert.match(summary, /vs int8 n\/a/);
   assert.match(summary, /線上 lane 無樣本/);
   assert.match(summary, /未達標/);
+  // 這份報告沒有 10-13 改版的欄位（舊檔／訓練在寫完它們之前就失敗）。摘要要整段省略，
+  // 不是印 null——推播是唯一有人看的輸出，印 null 會被當成「學了 null 題」。
+  assert.doesNotMatch(summary, /null|undefined|難題|教師不可信|題族|耗時/);
 });
 
 // 10-11: the absolute floor and MIN_N used to sit here. With them, local
@@ -264,6 +309,35 @@ test('a missing train venv is reported, not silently skipped', () => {
   const { run, pushes } = sandbox();
   run({ JEV_LAYA_PYTHON: '/nonexistent/python' });
   assert.match(pushes().at(-1), /訓練跳過/);
+});
+
+test('too little free memory skips training and says so, instead of fighting Hindsight', () => {
+  const { at, run, pushes } = sandbox();
+  fs.writeFileSync(at('next-report.json'), REPORT(true));
+  const out = run({ JEV_LAYA_MEM_LEVEL_MIN: '101' }); // no real level reaches 101%
+  assert.match(out, /train=skipped mem_level=\d+/);
+  assert.match(pushes().at(-1), /夜訓今晚跳過/);
+  assert.equal(fs.existsSync(at('exported.txt')), false, 'a skipped night must not export');
+});
+
+test('every finished night recalibrates the handoff whitelist and names its size', () => {
+  const { at, run, pushes } = sandbox();
+  fs.writeFileSync(at('next-report.json'), REPORT(false));
+  run();
+  assert.match(pushes().at(-1), /白名單 1 族／未過 2 族/);
+});
+
+test('a failed calibration is pushed, and the night still writes its summary', () => {
+  const { at, run, pushes } = sandbox();
+  fs.writeFileSync(at('next-report.json'), REPORT(false));
+  run({ FAKE_CALIB_FAIL: '1' });
+  assert.ok(pushes().some(l => /白名單校準失敗.*boom/.test(l)), pushes().join('\n'));
+  assert.doesNotMatch(pushes().at(-1), /白名單 \d/);
+  assert.match(pushes().at(-1), /units=/);
+});
+
+test('calibration selftest (CP bound, strict fixed-sequence, request floor)', () => {
+  assert.match(execFileSync('python3', [path.join(ROOT, 'scripts/laya-calibrate.py'), '--selftest'], { encoding: 'utf8' }), /selftest ok/);
 });
 
 test('paired gate selftest (McNemar arithmetic and the ship/block cases)', () => {

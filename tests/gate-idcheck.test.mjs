@@ -134,6 +134,15 @@ try {
     transcript_path: tpLive,
   });
   assert.equal(invented?.decision, 'block', 'a hash absent from every tool output is still an invented result');
+
+  // Loop guard, scoped to this gate. A bare stop_hook_active skip also skipped
+  // the round after fi-reminder.sh blocked, which is usually the final answer.
+  const s = { ...{ hook_event_name: 'Stop', last_assistant_message: '落地完成，`deadbee` 已推。', transcript_path: tpLive }, session_id: 'sess-loop' };
+  assert.equal((await handleStop(s))?.decision, 'block', 'the gate speaks');
+  assert.equal(await handleStop({ ...s, stop_hook_active: true }), undefined, 'its own follow-up round is never judged: no loop');
+  assert.equal((await handleStop({ ...s, stop_hook_active: true }))?.decision, 'block',
+    "a round another hook blocked is still judged");
+  await handleStop({ ...s, stop_hook_active: true }); // consume the mark
 } finally {
   DEFAULT_CONFIG.shadow = savedShadow;
   DEFAULT_CONFIG.idcheckShadow = savedIdcheckShadow;

@@ -242,3 +242,109 @@ test('every routed request leaves one handoff line with counts and reasons, no c
   assert.equal(lines[1].by_state_filter, 2);
   assert.ok(!JSON.stringify(lines).includes('SECRET'), 'handoff line must not carry content');
 });
+
+// --- Shadow runs and the calibrated (caller, family) whitelist lane ---
+
+const COMPACT_STATE = { phase: 'compact', transcript: 'long', dirty_paths: ['a'] };
+
+test('shadow runs cloud-bound questions locally without changing or delaying the answer', async () => {
+  const calls = [], samples = [];
+  let releaseLocal;
+  const local = (s, q) => { calls.push(['laya', Object.keys(q)]);
+    return new Promise(res => { releaseLocal = () => res({ model: 'local', answers: { result_t3: { type: 'noul', noul: 0.9 } } }); }); };
+  const cloud = async (s, q) => { calls.push(['jev', Object.keys(q)]);
+    return { model: 'cloud', answers: Object.fromEntries(Object.keys(q).map(id => [id, { type: 'noul', noul: 0.8 }])) }; };
+  const run = makeLayaRouter({ local, cloud, record: s => samples.push(s), shadow: true });
+  // The local run never settles before the response: if the router awaited it, this would hang.
+  const r = await run(COMPACT_STATE, { result_t3: NOUL_Q }, { caller: 'cascade:compact' });
+  assert.deepEqual(r.answers, { result_t3: { type: 'noul', noul: 0.8 } }, 'the caller gets the teacher answer');
+  assert.equal(r.model, 'cloud');
+  assert.equal(samples.length, 0, 'shadow row waits for the local answer');
+
+  // A second request while the first shadow run is in flight waits in the queue.
+  await run(COMPACT_STATE, { result_t4: NOUL_Q }, { caller: 'cascade:compact' });
+  assert.equal(calls.filter(c => c[0] === 'laya').length, 1);
+
+  releaseLocal();
+  await new Promise(res => setImmediate(res));
+  assert.equal(samples.length, 1);
+  assert.match(samples[0].request_id, /^[0-9a-f-]{36}$/, 'calibration counts requests, not units');
+  assert.deepEqual({ ...samples[0], question: undefined, request_id: undefined }, { shadow: true, request_id: undefined, question_id: 'result_t3', caller: 'cascade:compact',
+    family: 'result_t#', profile: null, question: undefined, local_model: 'local', local_answer: { type: 'noul', noul: 0.9 },
+    local_confidence: 0.9, fallback_reason: null, teacher_model: 'cloud', teacher_answer: { type: 'noul', noul: 0.8 } });
+  assert.ok(!('state' in samples[0]), 'the teacher corpus keeps state; the shadow row does not');
+});
+
+test('shadow digests a large request in small sampled batches after the teacher answers', async () => {
+  const order = [], sizes = [], samples = [];
+  const local = async (s, q) => { order.push('laya'); sizes.push(Object.keys(q).length);
+    return { model: 'local', answers: Object.fromEntries(Object.keys(q).map(id => [id, { type: 'noul', noul: 0.9 }])) }; };
+  const cloud = async (s, q) => { order.push('jev');
+    return { model: 'cloud', answers: Object.fromEntries(Object.keys(q).map(id => [id, { type: 'noul', noul: 0.8 }])) }; };
+  const run = makeLayaRouter({ local, cloud, record: s => samples.push(s), shadow: true,
+    shadowLimits: { maxQ: 10, queueMax: 15, gapMs: 1, batch: 4 } });
+  const many = (p, n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`${p}${i}`, NOUL_Q]));
+  await run(COMPACT_STATE, many('result_t', 190), { caller: 'cascade:compact' });
+  // Queue holds 10; a second 10-question sample would overflow 15 and is dropped.
+  await run(COMPACT_STATE, many('claim_', 50), { caller: 'cascade:compact' });
+  await new Promise(res => setTimeout(res, 50));
+  assert.equal(order[0], 'jev', 'shadow never competes with the live request');
+  assert.deepEqual(sizes, [4, 4, 2], '190 questions → 10 sampled, digested 4 at a time');
+  assert.equal(samples.length, 10);
+  assert.ok(samples.every(s => s.family === 'result_t#'));
+  // Drained queue accepts work again.
+  await run(COMPACT_STATE, many('claim_', 3), { caller: 'cascade:compact' });
+  await new Promise(res => setTimeout(res, 20));
+  assert.equal(samples.length, 13);
+});
+
+test('whitelist lane serves only the certified (caller, family) pair, behind its own floor', async () => {
+  const wl = new Map([['cascade:compact\tresult_t#', 0.9]]);
+  const mk = (noul) => {
+    const calls = [], samples = [];
+    const local = async (s, q) => { calls.push(['laya', Object.keys(q)]);
+      return { model: 'local', answers: Object.fromEntries(Object.keys(q).map(id => [id, { type: 'noul', noul }])) }; };
+    const cloud = async (s, q) => { calls.push(['jev', Object.keys(q)]);
+      return { model: 'cloud', answers: Object.fromEntries(Object.keys(q).map(id => [id, { teacher: true }])) }; };
+    return { calls, samples, run: makeLayaRouter({ local, cloud, record: s => samples.push(s), whitelist: () => wl }) };
+  };
+  // The state filter would reject this state outright; the whitelist replaces it for this pair.
+  let t = mk(0.95);
+  let r = await t.run(COMPACT_STATE, { result_t1: NOUL_Q, call_t1: NOUL_Q }, { caller: 'cascade:compact' });
+  assert.deepEqual(t.calls, [['laya', ['result_t1']], ['jev', ['call_t1']]], 'call_t# is not certified');
+  assert.deepEqual(r.answers.result_t1, { type: 'noul', noul: 0.95 });
+
+  // Under the family's floor (0.9), even though it clears the type floor noul=0.70.
+  t = mk(0.8);
+  await t.run(COMPACT_STATE, { result_t1: NOUL_Q }, { caller: 'cascade:compact' });
+  assert.deepEqual(t.calls, [['laya', ['result_t1']], ['jev', ['result_t1']]]);
+  assert.equal(t.samples[0].fallback_reason, 'low-confidence');
+
+  // Same family from another caller was never measured: cloud.
+  t = mk(0.99);
+  await t.run(COMPACT_STATE, { result_t1: NOUL_Q }, { caller: 'cascade:stop-gate' });
+  assert.deepEqual(t.calls, [['jev', ['result_t1']]]);
+
+  // A pinned model bypasses every local lane.
+  t = mk(0.99);
+  await t.run(COMPACT_STATE, { result_t1: NOUL_Q }, { caller: 'cascade:compact', model: 'pinned' });
+  assert.deepEqual(t.calls, [['jev', ['result_t1']]]);
+});
+
+test('a stale, broken or missing whitelist file is an empty whitelist', async () => {
+  const { loadWhitelist } = await import('../src/laya-routing.js');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'wl-'));
+  const f = join(dir, 'wl.json');
+  const now = Date.parse('2026-10-13T00:00:00Z');
+  const entries = [{ caller: 'c', family: 'f#', threshold: 0.8 }, { caller: 'c', family: 'g#', threshold: null }];
+  writeFileSync(f, JSON.stringify({ generated: '2026-10-12T00:00:00Z', entries }));
+  assert.deepEqual([...loadWhitelist(f, now)], [['c\tf#', 0.8]], 'an entry without a threshold is not certified');
+  writeFileSync(f, JSON.stringify({ generated: '2026-10-09T00:00:00Z', entries }));
+  assert.equal(loadWhitelist(f, now).size, 0, 'older than 3 days');
+  writeFileSync(f, '{not json');
+  assert.equal(loadWhitelist(f, now).size, 0);
+  assert.equal(loadWhitelist(join(dir, 'missing.json'), now).size, 0);
+});

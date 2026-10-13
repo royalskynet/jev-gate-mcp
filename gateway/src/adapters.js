@@ -238,7 +238,7 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
     }
     const laya = await deadline(sessionPromise, timeoutMs, 'laya load');
     try {
-      const result = await deadline(laya.systemOne(state, questions), timeoutMs, 'laya systemOne');
+      const result = await deadline(runChunked(laya, state, questions, timeoutMs), timeoutMs, 'laya systemOne');
       // This bundle's action head exposes raw logits under act_probability.
       // It is unused for typed classification and cannot authorize anything.
       // Quarantine the entire extension; never clamp/sigmoid it into fake certainty.
@@ -259,6 +259,31 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
   };
   layaAdapter.release = unload;
   return layaAdapter;
+}
+
+// receptron's systemOne pads every question into one [n, max_len] batch, so
+// peak memory grows ~330MB per question at max_len 1024: a 190-question
+// compact request in shadow reached 31GB (fix 10532). Run at most
+// JEV_LAYA_BATCH questions per forward pass and stop between chunks once the
+// deadline has passed — the outer deadline() cannot cancel ONNX work.
+export async function runChunked(laya, state, questions, timeoutMs, batch = Number(process.env.JEV_LAYA_BATCH) || 4) {
+  const stopAt = Date.now() + timeoutMs;
+  const entries = Object.entries(questions);
+  const answers = {};
+  const usage = { input_tokens: 0, output_tokens: 0 };
+  let model;
+  for (let i = 0; i < entries.length; i += batch) {
+    if (i > 0) {
+      await new Promise((r) => setImmediate(r));
+      if (Date.now() >= stopAt) throw ERR.timeout(`laya systemOne exceeded ${timeoutMs}ms`);
+    }
+    const r = await laya.systemOne(state, Object.fromEntries(entries.slice(i, i + batch)));
+    model ??= r.model;
+    Object.assign(answers, r.answers ?? {});
+    usage.input_tokens += r.usage?.input_tokens ?? 0;
+    usage.output_tokens += r.usage?.output_tokens ?? 0;
+  }
+  return { model, answers, usage };
 }
 
 function deadline(promise, ms, what) {

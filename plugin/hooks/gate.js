@@ -1,10 +1,11 @@
-import { readFileSync, statSync, promises as fsP } from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync, statSync, existsSync, unlinkSync, mkdirSync, writeFileSync, promises as fsP } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { makeStopGate, makeNextGate, logAsync } from '../lib/gate.js';
 import { readEvidence } from '../lib/transcript.js';
 import { stateEvidence } from '../lib/state.js';
 import { unsupportedIds, idBlock } from '../lib/idcheck.js';
+import { atomicClaims, decisive } from '../lib/claims.js';
 import { DEFAULT_CONFIG } from '../lib/judge.js';
 
 const cfg = DEFAULT_CONFIG;
@@ -36,7 +37,7 @@ export async function captureState(c, payload, state) {
       state: state.text,
     };
     await fsP.mkdir(dirname(c.stateCaptureLog), { recursive: true });
-    await fsP.appendFile(c.stateCaptureLog, `${JSON.stringify(rec)}\n`);
+    await fsP.appendFile(c.stateCaptureLog, `${JSON.stringify(rec)}\n`, { mode: 0o600 });
   } catch {
     // Fail open: observing must never cost a turn.
   }
@@ -55,8 +56,35 @@ export async function captureState(c, payload, state) {
  * switch (~/bots/mythos/bin/stop-gate.mjs) without forking this logic.
  */
 export async function handleStop(payload, c = cfg) {
-  // fi-reminder.sh's guard: one block per turn-chain, never a loop.
-  if (payload?.stop_hook_active) return undefined;
+  // Loop guard, scoped to this gate. A bare `stop_hook_active` skip also
+  // skipped every round another hook (fi-reminder.sh) had blocked — usually
+  // the real final answer. With a session id, only the Stop right after this
+  // gate's own intervention is skipped; without one, the old blanket rule.
+  const mark = interventionMark(c, payload?.session_id);
+  if (mark) {
+    if (existsSync(mark)) {
+      try { unlinkSync(mark); } catch { /* fail open */ }
+      return undefined;
+    }
+  } else if (payload?.stop_hook_active) return undefined;
+  const out = await judgeStop(payload, c);
+  if (out && mark) {
+    try {
+      mkdirSync(dirname(mark), { recursive: true });
+      writeFileSync(mark, '');
+    } catch { /* fail open: worst case one more judged round */ }
+  }
+  return out;
+}
+
+/** Per-session flag: "this gate spoke on the last Stop". */
+function interventionMark(c, sessionId) {
+  const id = String(sessionId ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  if (!id || !c?.gateLog) return null;
+  return join(dirname(c.gateLog), 'stop-rounds', id);
+}
+
+async function judgeStop(payload, c) {
   const claim = String(payload?.last_assistant_message ?? '').slice(0, 4000);
   // Nothing claimed, nothing to check — and no reason to ask git about it.
   if (!claim.trim()) return undefined;
@@ -109,9 +137,12 @@ export async function handleStop(payload, c = cfg) {
   } catch {
     // Fail open, like every other guard in this hook.
   }
-  const result = await makeStopGate(c)({ claim, evidence });
+  // Atomic claims, not the whole reply: see lib/claims.js. A reply with no
+  // completion sentence falls back to the old single claim.
+  const claims = c.splitClaims === false ? [] : atomicClaims(claim);
+  const result = await makeStopGate(c)({ claim, claims, evidence });
   if (result.shadow) return undefined;
-  return blockDecision(result.decided?.claims?.[0]);
+  return blockDecision(decisive(result.decided?.claims));
 }
 
 /**
@@ -145,20 +176,36 @@ export function composeEvidence(toolOutput, stateText, shadow = true) {
  * contradicts it is a different animal and still stops.
  */
 export function blockDecision(judged) {
-  if (judged?.gate !== 'auto') return undefined;
+  if (!judged) return undefined;
+  // Name the sentence: "a claim is off" without saying which one sends the
+  // agent re-reading the whole reply and usually changing nothing.
+  const which = judged.claim ? ` Claim: "${String(judged.claim).slice(0, 200)}"` : '';
   if (judged.verdict === 'contradicted') {
-    return {
-      decision: 'block',
-      reason: "this round's tool output contradicts the claim (jev-gate: contradicted). Re-read the output and correct the claim.",
-    };
+    if (judged.gate === 'auto') {
+      return {
+        decision: 'block',
+        reason: `this round's tool output contradicts the claim (jev-gate: contradicted). Re-read the output and correct the claim.${which}`,
+      };
+    }
+    // Below auto the judge is unsure, so this is a re-check request, not an
+    // accusation. 10-03..10-12: 191 of 196 contradicted verdicts sat here and
+    // said nothing at all — the gate saw the problem and nobody was told.
+    return feedback(`(jev-gate) this round's tool output may contradict the completion claim (judge unsure). Re-check the claim against the output; correct it or state what is unverified.${which}`);
   }
-  if (judged.verdict === 'not_addressed') {
-    return {
-      continue: true,
-      systemMessage: "(jev-gate) this round's tool output does not support the completion claim. If something is still unproven, say so plainly.",
-    };
+  if (judged.gate === 'auto' && judged.verdict === 'not_addressed') {
+    // Was `systemMessage`, which the Stop hook shows to the user only: 176
+    // reminders in ten days that the agent never received (hooks docs, 10-13).
+    return feedback(`(jev-gate) this round's tool output does not support the completion claim. If something is still unproven, say so plainly.${which}`);
   }
   return undefined;
+}
+
+/**
+ * Non-error Stop feedback: Claude receives it and the turn continues so it can
+ * act. `stop_hook_active` on that next Stop keeps this to one round.
+ */
+function feedback(text) {
+  return { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: text } };
 }
 
 /**

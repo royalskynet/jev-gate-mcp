@@ -193,3 +193,30 @@ the published int8 bundle.
   Gating on question identity directly would be the honest design, but it would
   also admit `kind` units the state filter currently rejects and that nobody has
   scored, so the filter stays as the belt and the list is the alarm.
+
+## Amendment 2026-10-13: (caller, family) whitelist, calibrated on shadow traffic
+
+Ten nights of training moved no traffic: the state filter admits only
+≤320-character single-sentence states, and both live callers (`stop-gate`,
+`compact`) send structured states, so 0 of 78 held-out records reached the lane
+while noul accuracy on them rose 71.0% → 94.9%. The filter was standing in for
+caller identity, which the router now has (`opts.caller`, from `x-jev-caller`).
+
+- **Shadow** (cascade-server, on unless `JEV_LAYA_SHADOW=0`): cloud-bound
+  `choice/score/noul` questions also run locally in the background; one run at
+  a time, the response never waits. Each leaves a `shadow: true` row in
+  `routing-samples.jsonl` with caller, family, confidence, the local answer and
+  the teacher's answer. Training OOF cannot stand in for this: the nightly
+  samples hard examples and caps each family, so it is not the served population.
+- **Calibration** (`scripts/laya-calibrate.py`, nightly, zero tokens): per
+  (caller, family), thresholds 0.99 → 0.50 in fixed sequence (Jung et al.,
+  *Trust or Escalate*); a threshold passes when the one-sided Clopper–Pearson
+  lower bound (δ=0.05) is ≥ 0.90 (α=0.10) over ≥ 20 distinct requests. The first
+  failure stops the sequence and a thin top bucket is a failure, not a skip.
+  Output `~/.jevgate/laya-whitelist.json`; older than 3 days reads as empty.
+- **Serving** (`JEV_LAYA_WHITELIST=live`, default off): a certified pair goes
+  local whatever the state's shape, behind its own threshold rather than the
+  type floor; everything else is unchanged. Turning it on is a separate decision
+  after at least 7 days of shadow rows.
+- Families served live stop producing teacher rows, so they age out of the
+  14-day window and return to shadow — a periodic re-audit by construction.
