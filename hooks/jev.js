@@ -112,6 +112,10 @@ const TARGETS = {
     thresholdChars: CONFIG.chunkChars,
     get: (r) => (r?.type === 'text' && typeof r?.file?.content === 'string' ? r.file.content : undefined),
     set: (r, text) => ({ ...r, file: { ...r.file, content: text, numLines: countLines(text) } }),
+    // Ledger to 2026-10-14: 134 Read calls, 1 dropped anything (4,139 chars),
+    // ~650 ms each. Ordinary source never meets the drop criteria, so only
+    // output that already looks like bulk is worth a Jev call.
+    worth: (text, r) => looksLikeBulk(text, r?.file?.filePath),
     criteria: {
       keep: 'The chunk is source, configuration or prose the user could read, reference or edit. When in doubt, keep.',
       drop: 'The chunk is mechanical bulk that carries no meaning to read: minified or bundled code, base64 or hex blobs, lock-file bodies, generated tables, or long runs of repeated near-identical lines.',
@@ -124,6 +128,27 @@ const INSTRUCTIONS =
 
 function countLines(text) {
   return text.split('\n').length;
+}
+
+const LOCK_FILE = /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|uv\.lock|Gemfile\.lock|composer\.lock|go\.sum)$/;
+const BLOB_LINE = /^[A-Za-z0-9+/=]{60,}$|^[0-9a-fA-F\s]{60,}$/;
+
+/**
+ * Cheap shape test for Read's drop criteria: minified code (a 2,000-char line),
+ * base64/hex blobs, lock files, or long runs of near-identical lines. Read
+ * output arrives with `cat -n` prefixes, which are stripped first.
+ * ponytail: shape heuristics only; a generated table with distinct short rows
+ * slips through. Widen from ledger `jev-skip(Read)` sizes if hits show up there.
+ */
+export function looksLikeBulk(text, filePath = '') {
+  if (LOCK_FILE.test(filePath)) return true;
+  const lines = text.split('\n').map((l) => l.replace(/^\s*\d+\t/, ''));
+  if (lines.some((l) => l.length >= 2000)) return true;
+  const nonEmpty = lines.filter((l) => l.trim());
+  if (nonEmpty.length < 20) return false;
+  if (nonEmpty.filter((l) => BLOB_LINE.test(l.trim())).length / nonEmpty.length >= 0.5) return true;
+  const shapes = new Set(nonEmpty.map((l) => l.replace(/\d+/g, '#').trim()));
+  return shapes.size / nonEmpty.length < 0.2;
 }
 
 /** Split on line boundaries, each part at most `chunkChars`. Lines longer than that stand alone. */
@@ -506,6 +531,10 @@ async function prune(tool, $, e, next) {
   if (r?.isError) return r;
   const { text: out, persisted } = await resolvePersisted($, target.get(r?.result));
   if (typeof out !== 'string' || out.length < target.thresholdChars) return r;
+  if (target.worth && !target.worth(out, r?.result)) {
+    await appendLedger($, `jev-skip(${tool}): ${out.length} chars, not bulk`);
+    return r;
+  }
 
   await followZenCooldown($);
   const key = await apiKey($);

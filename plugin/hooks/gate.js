@@ -142,7 +142,33 @@ async function judgeStop(payload, c) {
   const claims = c.splitClaims === false ? [] : atomicClaims(claim);
   const result = await makeStopGate(c)({ claim, claims, evidence });
   if (result.shadow) return undefined;
-  return blockDecision(decisive(result.decided?.claims));
+  const judged = decisive(result.decided?.claims);
+  const withState = evidence !== String(toolOutput ?? '') && String(toolOutput ?? '').trim();
+  if (!withState) return blockDecision(judged);
+  return keepToolsOnlyBlock(judged, async () => {
+    const plain = await makeStopGate(c)({ claim, claims, evidence: toolOutput });
+    const out = blockDecision(decisive(plain.decided?.claims));
+    if (out?.decision === 'block') await logAsync(c, { event: 'state_block_kept', gate: 'stop' });
+    return out;
+  });
+}
+
+/**
+ * With state shown, the judge blocked less: in the 10-14 replay 3 of the 9
+ * rounds the tools-only judge blocked came back as "unsure contradicted".
+ * Blocking stays where it was by asking the tools-only judge again, but only
+ * on that verdict (30 of 146 rounds), so every other round costs one call.
+ */
+export async function keepToolsOnlyBlock(judged, rejudgeToolsOnly) {
+  const out = blockDecision(judged);
+  if (judged?.verdict !== 'contradicted' || judged.gate === 'auto') return out;
+  try {
+    const plain = await rejudgeToolsOnly();
+    if (plain?.decision === 'block') return plain;
+  } catch {
+    // Fail open: the state verdict already stands.
+  }
+  return out;
 }
 
 /**

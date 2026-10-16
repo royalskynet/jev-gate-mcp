@@ -239,7 +239,7 @@ plugin enabled ≠ hook 有跑，而 grep 出來的數字看起來剛好像「�
   本來就全部經過 `notify()`，所以這是唯一的縫。`$.fs` 沒有 append，只能 read-then-write；
   一次壓縮一行，檔案長不大。整段包在 try/catch：ledger 是觀察用的，不准弄壞壓縮。
   `npm run typecheck` 過、32 測試全過（含活線）。
-- `bin/jev-compaction-watch.sh` + launchd `com.51mini.jev-compaction-watch`（每日 09:00），
+- `bin/jev-compaction-watch.sh` + launchd `com.host.jev-compaction-watch`（每日 09:00），
   有新事件才推 Coco，沒事安靜。`--dry-run` 是無頭驗收入口，且刻意不消耗 state。
 - 安裝走 `oneshot.d` break-glass（沙箱擋 `~/Library/LaunchAgents`）。第一次被
   `BREAKGLASS REFUSED`：boot-guard 用 `head -1` 檢查 `# break-glass:` header，
@@ -248,8 +248,8 @@ plugin enabled ≠ hook 有跑，而 grep 出來的數字看起來剛好像「�
 驗收：
 
 ```
-launchctl print "gui/$(id -u)/com.51mini.jev-compaction-watch"
-    path = /Users/you/Library/LaunchAgents/com.51mini.jev-compaction-watch.plist
+launchctl print "gui/$(id -u)/com.host.jev-compaction-watch"
+    path = /Users/you/Library/LaunchAgents/com.host.jev-compaction-watch.plist
     state = not running        # calendar job 未到點，正常
     runs = 0
 ```

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { CONFIG, LEDGER, TARGETS, TARGET_NAMES, appendLedger, followZenCooldown, judgeChunk, pruneText, register, userRequestOf } from '../hooks/jev.js';
+import { CONFIG, LEDGER, TARGETS, TARGET_NAMES, appendLedger, followZenCooldown, judgeChunk, looksLikeBulk, pruneText, register, userRequestOf } from '../hooks/jev.js';
 
 // The hook module carries its own wire code (it runs with no Node, so it cannot
 // share plugin/lib/judge.js). That duplicate is exactly where a wrong model id
@@ -131,6 +131,21 @@ test('Read rewrites file.content in place and recomputes numLines', async () => 
   assert.equal(pruned.type, 'text');
   assert.equal(core.result.file.content, bulk, 'the original record must not be mutated');
   assert.ok($.logs.length === 0);
+});
+
+test('Read only spends a Jev call on output shaped like bulk', () => {
+  // Real source, in Read's `cat -n` shape.
+  const src = readFileSync(new URL('../hooks/jev.js', import.meta.url), 'utf8').split('\n')
+    .map((l, i) => `${String(i + 1).padStart(6)}\t${l}`).join('\n');
+  assert.ok(src.length > TARGETS.Read.thresholdChars);
+  assert.equal(looksLikeBulk(src, '/a.js'), false, 'ordinary source is not bulk');
+  assert.equal(TARGETS.Read.worth(src, { file: { filePath: '/a.js' } }), false);
+  assert.equal(looksLikeBulk(src, '/x/package-lock.json'), true, 'lock files by name');
+  assert.equal(looksLikeBulk(`     1\t${'a'.repeat(2500)}`, '/a.min.js'), true, 'minified line');
+  const b64 = Array.from({ length: 300 }, (_, i) => `${String(i + 1).padStart(6)}\t${'QUJDRA'.repeat(12)}${i % 10}A`).join('\n');
+  assert.equal(looksLikeBulk(b64, '/blob.txt'), true, 'base64 run');
+  const rep = Array.from({ length: 300 }, (_, i) => `row ${i} | ok | 200 | ${i * 3}ms`).join('\n');
+  assert.equal(looksLikeBulk(rep, '/t.log'), true, 'near-identical lines');
 });
 
 test('non-text Read branches (image, notebook) are not touched', () => {

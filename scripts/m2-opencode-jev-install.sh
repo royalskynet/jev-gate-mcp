@@ -1,5 +1,5 @@
 #!/bin/bash
-# 在 M2 跑（不是 51mini）：把 opencode TUI 接上 jev-laya plugin。
+# 在 M2 跑（不是 host）：把 opencode TUI 接上 jev-laya plugin。
 # 效果：每個工具輸出先做 L0 剪裁（免費、本機）；剪完仍 ≥16KB 的 bash/read/grep/glob/webfetch
 # 輸出，再交 Jev 依「使用者這次要做的事」判斷 keep/drop。任何失敗都原樣放行，不分模型。
 # 另外：compaction（舊工具輸出交 Jev 判 keep/drop）、推理強度（每則訊息判一次難度，
@@ -9,7 +9,7 @@
 set -euo pipefail
 
 if [ "$(sysctl -n hw.model)" = "Mac16,10" ]; then
-  echo "這台是 51mini（Mac16,10），本腳本只給 M2 跑，停止。" >&2
+  echo "這台是 host（Mac16,10），本腳本只給 M2 跑，停止。" >&2
   exit 1
 fi
 

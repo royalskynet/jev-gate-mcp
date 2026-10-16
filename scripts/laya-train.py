@@ -1283,6 +1283,9 @@ def main():
     if args.selftest:
         selftest()
         return 0
+    heavy = Path.home() / ".local/bin/heavy"  # 全機重活閘（agent-tools/bin/heavy）：10-11 手動訓練與 TTS 併跑到 free 6%
+    if os.environ.get("HEAVY_HELD") != "1" and heavy.exists():
+        os.execv(str(heavy), [str(heavy), "--", sys.executable, *sys.argv])
     if args.lora and args.promote:
         print("--lora 不支援 --promote（見檔頭 ponytail）", file=sys.stderr)
         return 2

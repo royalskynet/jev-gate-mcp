@@ -28,9 +28,9 @@ test('cascadeUrlFor accepts loopback or tailnet only, per caller', () => {
   assert.equal(cascadeUrlFor('effort', '{"compact":"http://127.0.0.1:8793"}'), '');
   assert.equal(cascadeUrlFor('effort', '{"effort":"http://evil.example:8793"}'), '');
   assert.equal(cascadeUrlFor('effort', 'not json'), '');
-  // M2 -> 51mini shared daemon over the tailnet.
+  // M2 -> host shared daemon over the tailnet.
   assert.equal(cascadeUrlFor('effort', '{"effort":"http://100.64.0.2:8793"}'), 'http://100.64.0.2:8793');
-  assert.equal(cascadeUrlFor('effort', '{"effort":"http://51minidemac-mini.tail5498f5.ts.net:8793"}'), 'http://51minidemac-mini.tail5498f5.ts.net:8793');
+  assert.equal(cascadeUrlFor('effort', '{"effort":"http://host.tailnet.ts.net:8793"}'), 'http://host.tailnet.ts.net:8793');
   // 100.x outside 100.64.0.3/10 is public address space, not the tailnet.
   assert.equal(cascadeUrlFor('effort', '{"effort":"http://100.1.2.3:8793"}'), '');
   assert.equal(cascadeUrlFor('effort', '{"effort":"http://evil.ts.net.example.com:8793"}'), '');

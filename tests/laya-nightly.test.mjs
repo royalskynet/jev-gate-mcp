@@ -270,6 +270,29 @@ test('a stale champion number cannot block: same paper 98.8% vs 98.2% on 338 shi
   assert.match(pushes().at(-1), /已換權重，同卷 n=338 新版 98\.2%.*McNemar p=0\.6875/);
 });
 
+test('a champion younger than the freeze keeps serving, so the whitelist window can fill', () => {
+  const { at, run, pushes } = sandbox();
+  // 10-14：白名單只吃現役上線後的 shadow 列，夜夜換版窗口就夜夜歸零。
+  const at2d = new Date(Date.now() - 2 * 86400e3).toISOString().replace(/\.\d+Z$/, 'Z');
+  fs.writeFileSync(at('.jevgate/laya-champion.json'),
+    JSON.stringify({ accuracy: 0.9, n: 48, qids: QIDS, promoted_at: at2d }));
+  fs.writeFileSync(at('next-report.json'), REPORT(true));
+  run();
+  assert.equal(serving(at), 'champ');
+  assert.equal(fs.existsSync(at('exported.txt')), false, 'exported during the freeze');
+  assert.match(pushes().at(-1), /校準凍結：現役上線 2 天 < 7/);
+});
+
+test('a champion past the freeze goes through the paired gate as before', () => {
+  const { at, run } = sandbox();
+  const at8d = new Date(Date.now() - 8 * 86400e3).toISOString();  // 帶毫秒也要能解析
+  fs.writeFileSync(at('.jevgate/laya-champion.json'),
+    JSON.stringify({ accuracy: 0.9, n: 48, qids: QIDS, promoted_at: at8d }));
+  fs.writeFileSync(at('next-report.json'), REPORT(true));
+  run();
+  assert.equal(serving(at), 'cand');
+});
+
 test('no serving bundle: nothing to pair, the candidate ships', () => {
   const { at, run } = sandbox();
   fs.rmSync(at('.jevgate/laya-trained-onnx'), { recursive: true });
@@ -336,7 +359,7 @@ test('a failed calibration is pushed, and the night still writes its summary', (
   assert.match(pushes().at(-1), /units=/);
 });
 
-test('calibration selftest (CP bound, strict fixed-sequence, request floor)', () => {
+test('calibration selftest (CP bound, multi-start fixed-sequence, request floor)', () => {
   assert.match(execFileSync('python3', [path.join(ROOT, 'scripts/laya-calibrate.py'), '--selftest'], { encoding: 'utf8' }), /selftest ok/);
 });
 

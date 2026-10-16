@@ -5,6 +5,7 @@
 // timeout, rate-limit, upstream failure — with zero provider cost.
 import os from 'node:os';
 import path from 'node:path';
+import { statSync } from 'node:fs';
 import { JevDecisionModel } from 'jevwire';
 import { ERR, LIMITS } from './core.js';
 import { recordZenStatus, zenCoolingDown } from './zen-status.js';
@@ -185,6 +186,20 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
     serveAdapter.release = async () => {};
     return serveAdapter;
   }
+  const loadBundle = async (dir) => {
+    const { loadLaya } = await import('./laya-loader.js');
+    return loadLaya({
+      modelDir: dir,
+      // receptron's Laya.load spreads these through (laya.js:46). They
+      // keep onnxruntime's CPU memory arena from staging the whole graph.
+      sessionOptions: {
+        enableCpuMemArena: false,
+        enableMemPattern: false,
+        intraOpNumThreads: 2,
+        ...(sessionOptions ?? {}),
+      },
+    });
+  };
   let sessionPromise = null;
   let idleTimer = null;
   // Idle unload: release the ONNX session after JEV_LAYA_IDLE_MS (default
@@ -213,24 +228,15 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
     if (!sessionPromise) {
       sessionPromise = (async () => {
-        if (load) return load();
-        const { loadLaya } = await import('./laya-loader.js');
         // Default bundle: the quantized int8 checkpoint. JEV_LAYA_MODEL_DIR
         // still wins; the fp16 bundle stays available for a manual switch.
         const dir = modelDir
           || process.env.JEV_LAYA_MODEL_DIR
           || path.join(os.homedir(), '.jevgate', 'laya-multilingual-int8');
-        return loadLaya({
-          modelDir: dir,
-          // receptron's Laya.load spreads these through (laya.js:46). They
-          // keep onnxruntime's CPU memory arena from staging the whole graph.
-          sessionOptions: {
-            enableCpuMemArena: false,
-            enableMemPattern: false,
-            intraOpNumThreads: 2,
-            ...(sessionOptions ?? {}),
-          },
-        });
+        const t0 = Date.now();
+        const laya = load ? await load() : await loadBundle(dir);
+        logLayaLoad(dir, Date.now() - t0);
+        return laya;
       })();
       // A failed download must not poison every later request: drop the cached
       // promise so the next call retries the load.
@@ -284,6 +290,17 @@ export async function runChunked(laya, state, questions, timeoutMs, batch = Numb
     usage.output_tokens += r.usage?.output_tokens ?? 0;
   }
   return { model, answers, usage };
+}
+
+/**
+ * One stderr line per Laya session load (cascade: ~/.jevgate/cascade.err.log).
+ * Nightly swaps the bundle in place and the idle unload picks it up on the next
+ * call; this line is the only record of when the new weights actually went live.
+ */
+export function logLayaLoad(dir, ms, write = (s) => process.stderr.write(s)) {
+  let mtime = '?';
+  try { mtime = statSync(path.join(dir, 'laya.onnx')).mtime.toISOString(); } catch { /* injected or missing bundle */ }
+  write(`${new Date().toISOString()} laya-load dir=${dir} onnx_mtime=${mtime} ms=${ms}\n`);
 }
 
 function deadline(promise, ms, what) {

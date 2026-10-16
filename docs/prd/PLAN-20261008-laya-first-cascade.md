@@ -58,12 +58,12 @@ L0（零模型、全宿主可用、M2 也有）：`agent-glue/src/l0-prune.js` �
 
 ### P2（P1 merge 後；主 session 做接線，dc 做程式）
 
-- 主：載入 launchd `com.51mini.jev-cascade`，`curl /health`，確認只有一份 ONNX。**10-08 23:30 已載入。**
-- **P2a（10-08 完成，觀察到 10-09 23:45）**：只有 Stop gate 走 daemon（`stopCascadeUrl`，帶 `x-jev-caller: stop-gate`；daemon 連不上就直連 Zen/OR，不會靜默失效）。plugin prune 仍直連。報告 `scripts/cascade-stopgate-report.mjs`，一次性 launchd `com.51mini.jev-cascade-report-1009` 寫報告後用 Mythos `remind --ask` 交給 Mythos 判讀並由它的 bot 回覆（不再 hpush）。預期 Laya 接手 0：verify 的 state 是 claim＋evidence，過不了 `shortStandaloneState`，這期要看的是記帳、快取、OR 日上限，不是 Laya 比例。ledger 每筆雲端呼叫有兩列（`gateway:cascade-server` 是上游、`cascade:<caller>` 是宿主），加總時只取其一。
+- 主：載入 launchd `com.host.jev-cascade`，`curl /health`，確認只有一份 ONNX。**10-08 23:30 已載入。**
+- **P2a（10-08 完成，觀察到 10-09 23:45）**：只有 Stop gate 走 daemon（`stopCascadeUrl`，帶 `x-jev-caller: stop-gate`；daemon 連不上就直連 Zen/OR，不會靜默失效）。plugin prune 仍直連。報告 `scripts/cascade-stopgate-report.mjs`，一次性 launchd `com.host.jev-cascade-report-1009` 寫報告後用 Mythos `remind --ask` 交給 Mythos 判讀並由它的 bot 回覆（不再 hpush）。預期 Laya 接手 0：verify 的 state 是 claim＋evidence，過不了 `shortStandaloneState`，這期要看的是記帳、快取、OR 日上限，不是 Laya 比例。ledger 每筆雲端呼叫有兩列（`gateway:cascade-server` 是上游、`cascade:<caller>` 是宿主），加總時只取其一。
 - 主：plugin `config.default.json` baseUrl → daemon；`settings.json` 的 `JEV_ENDPOINT` → daemon（hooks/jev.js）；Codex `~/.codex/config.toml` 與 Claude MCP 改指 daemon。
 - dc：`compact-hook.mjs`、openclaw `compact-provider.mjs`、hermes `cli.mjs` 改打 daemon（帶 `x-jev-caller`）；hermes 改 HTTP，不再每次開 node subprocess。
 - dc：夜訓 int8 parity 失敗時改導 fp32（daemon 單份記憶體，養得起），不再整晚白跑。
-- 主：退役 `com.51mini.jev-zen-watch`（daemon 已處理冷卻）。
+- 主：退役 `com.host.jev-zen-watch`（daemon 已處理冷卻）。
 - 主：查 10-07 夜訓 SIGTERM 來源。
 
 ### P3（擴大 Laya 地盤，資料驅動）

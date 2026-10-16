@@ -120,10 +120,14 @@ try {
 
   // Nothing claimed, nothing said.
   assert.equal(gitState([]).text, '');
-  // A path with no repo above it is reported, not thrown on.
+  // A path with no repo above it is counted, not thrown on, and says nothing
+  // to the judge; one that vanished still does.
   const outside = join(root, 'loose.txt');
   writeFileSync(outside, 'x\n');
-  assert.match(gitState([outside]).text, /not inside a git repo/);
+  const loose = gitState([outside]);
+  assert.equal(loose.text, '', 'no repo, no line for the judge');
+  assert.equal(loose.stats.changed, 1, 'still counted in the ledger');
+  assert.match(gitState([join(root, 'gone.txt')]).text, /MISSING on disk/);
 
   // An unreadable transcript degrades to silence, never an exception.
   assert.equal(stateEvidence('/nonexistent/transcript.jsonl').text, '');

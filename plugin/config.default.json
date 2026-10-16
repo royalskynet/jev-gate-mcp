@@ -18,7 +18,7 @@
   "gateLog": "${HOME}/.jev-gate/gate.log",
   "shadow": false,
   "idcheckShadow": false,
-  "stateShadow": true,
+  "stateShadow": false,
   "stateCaptureLog": "${HOME}/.jev-gate/state-capture.jsonl",
   "ghostMaxAttempts": 2
 }

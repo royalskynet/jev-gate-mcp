@@ -33,6 +33,13 @@ def load_train_module():
     return mod
 
 
+def fmt_ci(ci):
+    """boot_ci 樣本 <2 時回 None（不是 tuple）；格式化成字串免得整支 crash。"""
+    if not ci:
+        return "n<2"
+    return f"{ci[0] * 100:+.1f}, {ci[1] * 100:+.1f}"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bundle", default=os.environ.get(
@@ -147,9 +154,8 @@ def main():
     for qt, (c, n) in sorted(per_type.items()):
         print(f"  {qt:6s} {c}/{n} = {c / n * 100:.1f}%")
     if pairs:
-        lo, hi = T.boot_ci(pairs)
         print(f"vs int8 基線（配對，n={len(pairs)}）: "
-              f"{sum(pairs) / len(pairs) * 100:+.1f}pp, 95% CI [{lo * 100:+.1f}, {hi * 100:+.1f}]pp")
+              f"{sum(pairs) / len(pairs) * 100:+.1f}pp, 95% CI [{fmt_ci(T.boot_ci(pairs))}]pp")
     print(f"ECE {T.ece(conf, correct):.3f}")
 
     # 分題型的信心閘表現。整體覆蓋率漂亮可能靠某個題型撐著，而另一個題型
@@ -163,9 +169,8 @@ def main():
                 print(f"  {qt:6s} 覆蓋 0/{tot_qt}")
                 continue
             a = sum(o for _, o in sel) / len(sel)
-            lo, hi = T.boot_ci([float(o) for _, o in sel])
             print(f"  {qt:6s} 覆蓋 {len(sel):>3}/{tot_qt:<3} ({len(sel) / tot_qt * 100:>5.1f}%) "
-                  f"準確 {a * 100:>5.1f}%  CI [{lo * 100:+.1f}, {hi * 100:+.1f}]")
+                  f"準確 {a * 100:>5.1f}%  CI [{fmt_ci(T.boot_ci([float(o) for _, o in sel]))}]")
 
     if args.route_sim:
         allow = {s.strip() for s in args.route_sim.split(",") if s.strip()}
@@ -178,10 +183,10 @@ def main():
             print("  路由 0 題")
         else:
             a = sum(routed) / len(routed)
-            lo, hi = T.boot_ci([float(o) for o in routed])
             wrong = len(routed) - sum(routed)
             print(f"  本機接手 {len(routed)}/{n_all} = {len(routed) / n_all * 100:.1f}% 的判斷")
-            print(f"  準確 {a * 100:.1f}%  ({wrong} 錯)  bootstrap CI [{lo * 100:+.1f}, {hi * 100:+.1f}]")
+            print(f"  準確 {a * 100:.1f}%  ({wrong} 錯)  bootstrap CI "
+                  f"[{fmt_ci(T.boot_ci([float(o) for o in routed]))}]")
             # 全對時 bootstrap 下界會退化成 100%，改報 Clopper-Pearson 下界才誠實。
             if wrong == 0:
                 try:
@@ -196,9 +201,8 @@ def main():
         if row["accuracy"] is None:
             print(f"T={row['threshold']:.2f}  coverage=  0.0%  n=   0  accuracy=   n/a")
             continue
-        lo, hi = row["ci"]
         print(f"T={row['threshold']:.2f}  coverage={row['coverage'] * 100:5.1f}%  n={row['n']:4d}  "
-              f"accuracy={row['accuracy'] * 100:5.1f}%  [{lo * 100:.1f}, {hi * 100:.1f}]")
+              f"accuracy={row['accuracy'] * 100:5.1f}%  [{fmt_ci(row['ci'])}]")
     return 0
 
 

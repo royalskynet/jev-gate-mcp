@@ -1,11 +1,11 @@
 #!/bin/bash
-# One-shot launchd job (com.51mini.jev-cascade-report-1009): pushes the Stop
+# One-shot launchd job (com.host.jev-cascade-report-1009): pushes the Stop
 # gate's first-day cascade summary once, then unloads and removes itself.
 # Zero-token.
 set -u
 # DRY=1: write the report and judge it, change nothing, hand nothing over.
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-LABEL=com.51mini.jev-cascade-report-1009
+LABEL=com.host.jev-cascade-report-1009
 REPORT=$(node "$DIR/scripts/cascade-stopgate-report.mjs" --since 2026-10-08T15:35:00Z 2>&1 | head -12)
 OUT="$HOME/.jevgate/reports/cascade-stopgate-2026-10-09.md"
 # fix 10255: a dry run must never overwrite the real report.

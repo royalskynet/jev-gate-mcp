@@ -186,7 +186,10 @@ export function gitState(paths, { timeoutMs = 2500, maxChars = 2000 } = {}) {
     const here = existsSync(abs);
     if (here) stats.changed += 1;
     else stats.missing += 1;
-    out.push(`  ${abs}: ${here ? 'exists, not inside a git repo' : 'MISSING on disk'}`);
+    // "exists, not inside a git repo" told the judge nothing and drew feedback
+    // on rounds that were fine (10-14 replay, 2 of 16 disagreements). Counted
+    // in stats, withheld from the text; a missing file still is evidence.
+    if (!here) out.push(`  ${abs}: MISSING on disk`);
   }
 
   if (!out.length) return { text: '', stats };

@@ -6,7 +6,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.51mini.jev-cascade-tailnet</string>
+	<string>com.host.jev-cascade-tailnet</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/opt/homebrew/bin/node</string>

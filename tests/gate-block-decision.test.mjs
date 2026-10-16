@@ -34,3 +34,27 @@ assert.equal(blockDecision({ verdict: 'not_addressed', gate: 'escalate' }), unde
 assert.equal(blockDecision(undefined), undefined, 'a missing judgment says nothing');
 
 console.log('ok: sure contradiction blocks, unsure contradiction and sure not_addressed reach the agent, rest silent');
+
+// State evidence on: blocking stays where the tools-only judge put it.
+{
+  const { keepToolsOnlyBlock } = await import('../plugin/hooks/gate.js');
+  const block = { decision: 'block', reason: 'x' };
+  let calls = 0;
+  const rejudge = (out) => async () => { calls += 1; return out; };
+  // Unsure contradiction with state, tools-only would block -> block.
+  assert.equal((await keepToolsOnlyBlock({ verdict: 'contradicted', gate: 'review' }, rejudge(block)))?.decision, 'block');
+  // Tools-only would not block -> the state verdict (feedback) stands.
+  const soft = await keepToolsOnlyBlock({ verdict: 'contradicted', gate: 'review' }, rejudge(undefined));
+  assert.equal(soft?.decision, undefined);
+  assert.match(soft.hookSpecificOutput.additionalContext, /may contradict/);
+  // Any other verdict never pays a second call.
+  calls = 0;
+  await keepToolsOnlyBlock({ verdict: 'supported', gate: 'auto' }, rejudge(block));
+  await keepToolsOnlyBlock({ verdict: 'not_addressed', gate: 'auto' }, rejudge(block));
+  assert.equal((await keepToolsOnlyBlock({ verdict: 'contradicted', gate: 'auto' }, rejudge(undefined)))?.decision, 'block');
+  assert.equal(calls, 0, 'only an unsure contradiction asks again');
+  // A failing second call leaves the first verdict.
+  const err = await keepToolsOnlyBlock({ verdict: 'contradicted', gate: 'review' }, async () => { throw new Error('net'); });
+  assert.match(err.hookSpecificOutput.additionalContext, /may contradict/);
+}
+console.log('ok: tools-only block kept under state evidence');

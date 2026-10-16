@@ -15,6 +15,8 @@ set -u
 # launchd plist PATH 沒有 /usr/sbin：sysctl（10-12, fix 10447）、taskpolicy（10-13 rc=127，
 # 訓練一行都沒跑）先後踩到。逐一補絕對路徑會漏下一個，在這裡一次補齊。
 PATH="$PATH:/usr/sbin:/sbin"
+# 全機重活閘（agent-tools/bin/heavy）：一次只跑一個重活、free 夠才開跑；GPU 被卡死行程佔住時 exit 70（10-14 事故）
+[ -n "${HEAVY_HELD:-}" ] || [ ! -x "$HOME/.local/bin/heavy" ] || exec "$HOME/.local/bin/heavy" -- bash "$0" "$@"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPORT="${JEV_LAYA_TRAIN_REPORT:-$HOME/.jevgate/laya-train-report.json}"
 PY="${JEV_LAYA_PYTHON:-$HOME/.jevgate/train-venv/bin/python}"
@@ -140,8 +142,15 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
     ($c[0].qids // null) as $k
     | if $k == null then "" else [.live_gated.qids[] | select(. as $q | $k | index($q) | not)] | join(",") end
   ' "$REPORT" 2>/dev/null)
+  # 校準凍結（10-14）：白名單只吃現役 bundle 上線後的 shadow 列（換版＝溫度與權重都變），
+  # compact 每天約 5–16 個 request、門檻要 20 個，夜夜換版窗口就夜夜歸零、白名單永遠空。
+  # 現役上線未滿 FREEZE 天只換權重不換 bundle；滿了下一晚照常走配對閘，帶的是最新權重。
+  FREEZE_DAYS="${JEV_LAYA_SHIP_FREEZE_DAYS:-7}"
+  CHAMP_AGE=$(jq -r '.promoted_at // empty | sub("\\.[0-9]+Z$"; "Z") | (now - fromdateiso8601) / 86400 | floor' "$CHAMP" 2>/dev/null)
   if [ -n "$NEW_QIDS" ]; then
     hpush "⚠️ Laya 權重已換但不導出：本機 lane 出現現役沒有的題目 ${NEW_QIDS}（從未量測就上線），bundle 維持舊版"
+  elif [ -n "$CHAMP_AGE" ] && [ "$CHAMP_AGE" -lt "$FREEZE_DAYS" ]; then
+    PAIRED="校準凍結：現役上線 ${CHAMP_AGE} 天 < ${FREEZE_DAYS}，bundle 不換"
   else
     rm -rf "$CAND" "$CAND.prev" "$CAND.new"
     # parity 只比本機會答的題，翻轉只警告：int8 實測會翻 gated 題 10/64（fp32 0/64），
