@@ -1,10 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Shared Laya for M2: binds the tailnet IP only, laya-only (never the paid
-     judge), source IP must be a JEV_CASCADE_ALLOW_NODES peer. Exits 78 and is
-     retried while tailscale is not up yet. -->
+<!-- Shared Laya for M2: binds the tailnet IP only; source IP must be a
+     JEV_CASCADE_ALLOW_NODES peer. JEV_CASCADE_TAILNET_CLOUD=1 lets that peer fall
+     through to the paid cloud judge (unset it and set JEV_CASCADE_MODE=laya-only
+     to keep M2 on Laya only). Exits 78 and is retried while tailscale is not up yet. -->
 <plist version="1.0">
 <dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>JEV_CASCADE_ALLOW_NODES</key>
+		<string>m2-userspace</string>
+		<key>JEV_CASCADE_HOST</key>
+		<string>100.64.0.2</string>
+		<key>JEV_CASCADE_PORT</key>
+		<string>8793</string>
+		<key>JEV_CASCADE_TAILNET_CLOUD</key>
+		<string>1</string>
+		<key>JEV_LAYA_MODEL_DIR</key>
+		<string>/Users/you/.jevgate/laya-trained-onnx</string>
+		<key>TAILSCALE_BIN</key>
+		<string>/opt/homebrew/bin/tailscale</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
 	<key>Label</key>
 	<string>local.jev-gate.cascade-tailnet</string>
 	<key>ProgramArguments</key>
@@ -12,28 +30,13 @@
 		<string>/opt/homebrew/bin/node</string>
 		<string>/Users/you/dev/jev-gate-mcp/gateway/src/cascade-server.js</string>
 	</array>
-	<key>KeepAlive</key>
-	<true/>
 	<key>RunAtLoad</key>
 	<true/>
-	<key>ThrottleInterval</key>
-	<integer>30</integer>
-	<key>StandardOutPath</key>
-	<string>/Users/you/.jevgate/cascade-tailnet.log</string>
 	<key>StandardErrorPath</key>
 	<string>/Users/you/.jevgate/cascade-tailnet.err.log</string>
-	<key>EnvironmentVariables</key>
-	<dict>
-		<key>JEV_CASCADE_HOST</key>
-		<string>100.64.0.2</string>
-		<key>JEV_CASCADE_PORT</key>
-		<string>8793</string>
-		<key>JEV_CASCADE_MODE</key>
-		<string>laya-only</string>
-		<key>JEV_CASCADE_ALLOW_NODES</key>
-		<string>m2-userspace</string>
-		<key>TAILSCALE_BIN</key>
-		<string>/opt/homebrew/bin/tailscale</string>
-	</dict>
+	<key>StandardOutPath</key>
+	<string>/Users/you/.jevgate/cascade-tailnet.log</string>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
 </dict>
 </plist>
