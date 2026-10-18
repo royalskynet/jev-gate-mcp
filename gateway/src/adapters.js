@@ -224,7 +224,13 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
     idleTimer = setTimeout(() => { void unload(); }, idleMs);
     if (typeof idleTimer.unref === 'function') idleTimer.unref();
   };
-  const layaAdapter = async function layaAdapter(state, questions, _opts) {
+  const layaAdapter = async function layaAdapter(state, questions, opts = {}) {
+    // The router hands the local lane its own slice of the request deadline
+    // (laya-routing LOCAL_BUDGET_MS). Honour it: load and inference together
+    // must fit, so a slow local run cannot eat the paid fallback's budget.
+    const budgetMs = Number.isFinite(opts?.deadlineAtMs)
+      ? Math.min(timeoutMs, Math.max(0, opts.deadlineAtMs - Date.now()))
+      : timeoutMs;
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
     if (!sessionPromise) {
       sessionPromise = (async () => {
@@ -242,9 +248,11 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
       // promise so the next call retries the load.
       sessionPromise.catch(() => { sessionPromise = null; });
     }
-    const laya = await deadline(sessionPromise, timeoutMs, 'laya load');
+    const laya = await deadline(sessionPromise, budgetMs, 'laya load');
     try {
-      const result = await deadline(runChunked(laya, state, questions, timeoutMs), timeoutMs, 'laya systemOne');
+      const left = Number.isFinite(opts?.deadlineAtMs)
+        ? Math.max(0, opts.deadlineAtMs - Date.now()) : budgetMs;
+      const result = await deadline(runChunked(laya, state, questions, left), left, 'laya systemOne');
       // This bundle's action head exposes raw logits under act_probability.
       // It is unused for typed classification and cannot authorize anything.
       // Quarantine the entire extension; never clamp/sigmoid it into fake certainty.

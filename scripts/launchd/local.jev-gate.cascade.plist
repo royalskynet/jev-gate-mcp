@@ -6,8 +6,12 @@
 	<dict>
 		<key>JEV_CASCADE_PORT</key>
 		<string>8793</string>
+		<key>JEV_LAYA_IDLE_MS</key>
+		<string>120000</string>
 		<key>JEV_LAYA_MODEL_DIR</key>
 		<string>/Users/you/.jevgate/laya-trained-onnx</string>
+		<key>JEV_LAYA_WHITELIST</key>
+		<string>shadow</string>
 	</dict>
 	<key>KeepAlive</key>
 	<true/>

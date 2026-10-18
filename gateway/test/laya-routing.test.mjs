@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeLayaRouter, maxSoftmax, TASK_KIND, MESSAGE_TOPIC } from '../src/laya-routing.js';
+import { makeLayaRouter, maxSoftmax, TASK_KIND, MESSAGE_TOPIC, LOCAL_BUDGET_MS } from '../src/laya-routing.js';
 import { buildGateway } from '../src/config.js';
 import { makeLayaAdapter } from '../src/adapters.js';
-import { ERR } from '../src/core.js';
+import { ERR, LIMITS } from '../src/core.js';
 
 function reply(model, questions, choice) {
   return { model, answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
@@ -108,7 +108,7 @@ test('expired request cannot start a cloud call after slow local work', async ()
   const run = makeLayaRouter({ local: async (s, q) => {
     await new Promise(resolve => setTimeout(resolve, 30));
     return reply('local', q, 'general');
-  }, cloud: async () => { calls++; return {}; }, record: () => {} });
+  }, cloud: async () => { calls++; return {}; }, record: () => {}, cloudReserveMs: 0 });
   await assert.rejects(run('請翻譯', { kind: TASK_KIND }, { deadlineAtMs: Date.now() + 10 }), /deadline/);
   assert.equal(calls, 0);
 });
@@ -329,6 +329,32 @@ test('whitelist lane serves only the certified (caller, family) pair, behind its
   t = mk(0.99);
   await t.run(COMPACT_STATE, { result_t1: NOUL_Q }, { caller: 'cascade:compact', model: 'pinned' });
   assert.deepEqual(t.calls, [['jev', ['result_t1']]]);
+});
+
+// fix 10628: live 白名單讓 62 題 compact 進本地，Laya 吃掉整個 15s deadline，
+// 請求在 Jev 還沒被呼叫前就死掉——本地沒接到手，變成整條 compact 判斷全掛。
+// 釘住：本地慢不能拖垮請求，Jev 一定還有預算答完。
+test('a slow local lane loses only its own slice; the cloud still answers', async () => {
+  const wl = new Map([['cascade:compact\tresult_t#', 0.5]]);
+  const calls = [], samples = [];
+  let localBudget = null;
+  const local = async (s, q, opts) => {
+    calls.push(['laya', Object.keys(q)]);
+    localBudget = opts.deadlineAtMs - Date.now();
+    await new Promise(r => setTimeout(r, 40));
+    throw ERR.timeout('laya systemOne exceeded');
+  };
+  const cloud = async (s, q) => { calls.push(['jev', Object.keys(q)]);
+    return { model: 'cloud', answers: Object.fromEntries(Object.keys(q).map(id => [id, { type: 'noul', noul: 0.1 }])) }; };
+  const run = makeLayaRouter({ local, cloud, record: s => samples.push(s), whitelist: () => wl });
+  const r = await run(COMPACT_STATE, { result_t1: NOUL_Q, call_t1: NOUL_Q }, { caller: 'cascade:compact' });
+  assert.deepEqual(calls, [['laya', ['result_t1']], ['jev', ['call_t1', 'result_t1']]]);
+  assert.equal(r.model, 'cloud');
+  assert.deepEqual(Object.keys(r.answers).sort(), ['call_t1', 'result_t1']);
+  assert.equal(samples[0].fallback_reason, 'local-error-or-invalid');
+  // 本地只拿到自己那一片，剩下的留給 Jev
+  assert.ok(localBudget <= LOCAL_BUDGET_MS, `local budget ${localBudget} must not exceed its slice`);
+  assert.ok(localBudget < LIMITS.deadlineMs, 'local budget must not be the whole request deadline');
 });
 
 test('a stale, broken or missing whitelist file is an empty whitelist', async () => {

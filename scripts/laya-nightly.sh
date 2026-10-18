@@ -138,9 +138,14 @@ PAIRED=""
 if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
   SPEC=$(jq -r '.live_gated.conf_min // ""' "$REPORT" 2>/dev/null)
   # 現役沒有 qids（舊檔）就無從比對，這一輪只靠同卷配對擋。
+  # 現役名單沒有、但現役上線前就出現過的題不算新題：只是那晚抽樣沒抽到（10-18 誤報 difficulty,q）。
+  # 報告沒有 first_seen（舊版）或該題沒 ts，一律當新題擋。
   NEW_QIDS=$(jq -r --slurpfile c "$CHAMP" '
-    ($c[0].qids // null) as $k
-    | if $k == null then "" else [.live_gated.qids[] | select(. as $q | $k | index($q) | not)] | join(",") end
+    ($c[0].qids // null) as $k | ($c[0].promoted_at // "") as $p
+    | (.live_gated.first_seen // {}) as $fs
+    | if $k == null then "" else [.live_gated.qids[]
+        | select(. as $q | $k | index($q) | not)
+        | select(($fs[.] // "") as $t | $t == "" or $p == "" or $t > $p)] | join(",") end
   ' "$REPORT" 2>/dev/null)
   # 校準凍結（10-14）：白名單只吃現役 bundle 上線後的 shadow 列（換版＝溫度與權重都變），
   # compact 每天約 5–16 個 request、門檻要 20 個，夜夜換版窗口就夜夜歸零、白名單永遠空。

@@ -387,6 +387,23 @@ def teacher_self_agreement(rows, qids):
     return {"n": n, "agreement": agree / n if n else None, "qids": sorted(want)}
 
 
+def qid_first_seen(rows, qids):
+    """每題在原始語料第一次出現的 ts。nightly 人口閘只攔現役上線後才首次出現的題。
+
+    訓練只抽 600 units，舊題（10-10 退役的 difficulty）或探針題這晚抽到、現役那晚沒抽到，
+    單比 qids 名單就會誤報「從未量測」（10-18）。名單外的題沒 ts 就不給，nightly 當新題擋。
+    """
+    want, seen = set(qids), {}
+    for r in rows:
+        ts = r.get("ts")
+        if is_external(r) or not isinstance(ts, str):
+            continue
+        for qid in want & (r.get("questions") or {}).keys():
+            if qid not in seen or ts < seen[qid]:
+                seen[qid] = ts
+    return seen
+
+
 # ------------------------------------------------- A 教師可信度閘（hard example mining 前置）
 # 借鏡 cleanlab 的「先過濾可疑標籤再訓練」：教師標籤有噪聲時，加權學難題會把噪聲一起放大，
 # 所以 trusted_teacher 必須跑在 hard_weights 前面。
@@ -944,6 +961,12 @@ def selftest():
     _r2 = [{"qtype": "noul", "conf": 0.68, "correct": False, "state_ok": True},
            {"qtype": "score", "conf": 0.66, "correct": True, "state_ok": True}]
     assert live_gated(_r2, conf_min_spec="score=0.65,noul=0.70")["n"] == 1, "分題型地板沒分開套"
+    # qid_first_seen：取最早 ts、外部語料不算、名單外不給
+    _fs = qid_first_seen([{"ts": "2026-10-09T00:00:00Z", "questions": {"a": {}, "z": {}}},
+                          {"ts": "2026-10-01T00:00:00Z", "questions": {"a": {}}},
+                          {"ts": "2026-09-01T00:00:00Z", "questions": {"b": {}},
+                           "label_source": "external:x"}], ["a", "b"])
+    assert _fs == {"a": "2026-10-01T00:00:00Z"}, _fs
 
     # 外部語料：只進訓練側。fold 若把外部題分進驗證側，OOF／溫度／live_gated 就混進
     # 非線上的題目，nightly 的「退步不導出」閘量到的就不是線上那批。
@@ -1693,7 +1716,8 @@ def main():
         "ece": ece(conf, correct),
         "brier": brier(probs, targets),
         "coverage_curve": curve,
-        "live_gated": live_gated(oof_rows),
+        "live_gated": {**live_gated(oof_rows),
+                       "first_seen": qid_first_seen(raw_rows, live_gated(oof_rows)["qids"])},
         # 原始語料的教師自我一致率：trusted_teacher 已經把變卦的題丟掉，拿過濾後的
         # rows 來量必然接近 1，那個數字沒有資訊。
         "teacher_self": teacher_self_agreement(raw_rows, live_gated(oof_rows)["qids"]),

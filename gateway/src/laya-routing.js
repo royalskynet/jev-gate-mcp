@@ -113,6 +113,11 @@ function cachedWhitelist() {
 // per local call with `gapMs` between calls so live traffic gets the session.
 const shadowQueues = new WeakMap();
 const envInt = (k, d) => { const v = Number(process.env[k]); return process.env[k] && Number.isFinite(v) && v >= 0 ? v : d; };
+// Local-lane budget. LOCAL_BUDGET_MS is how long Laya may run on the request
+// path; LOCAL_RESERVE_MS is what is held back for Jev no matter what, so a slow
+// or failing local lane can only lose its own share of the deadline.
+export const LOCAL_BUDGET_MS = envInt('JEV_LAYA_LOCAL_BUDGET_MS', 5000);
+export const LOCAL_RESERVE_MS = envInt('JEV_LAYA_CLOUD_RESERVE_MS', 8000);
 export const SHADOW_LIMITS = Object.freeze({
   maxQ: envInt('JEV_LAYA_SHADOW_MAX_Q', 16),
   queueMax: envInt('JEV_LAYA_SHADOW_QUEUE', 64),
@@ -184,7 +189,7 @@ function shadowQueueFor(local, limits) {
 // The response never waits for it: once the teacher answer is in, a sample of
 // the questions goes to the shared digestion queue above.
 export function makeLayaRouter({ local, cloud, record = recordRoutingSample, onRoute = () => {}, qtypes = QTYPE_PILOT, handoff = logHandoff,
-  shadow = false, shadowLimits = SHADOW_LIMITS,
+  shadow = false, shadowLimits = SHADOW_LIMITS, localBudgetMs = LOCAL_BUDGET_MS, cloudReserveMs = LOCAL_RESERVE_MS,
   whitelist = process.env.JEV_LAYA_WHITELIST === 'live' ? cachedWhitelist : () => new Map() }) {
   const pilot = new Set(qtypes);
   const shadowQueue = shadow ? shadowQueueFor(local, shadowLimits) : null;
@@ -209,7 +214,17 @@ export function makeLayaRouter({ local, cloud, record = recordRoutingSample, onR
     const answers = {};
     if (Object.keys(localQs).length) {
       let error;
-      try { localResult = await local(state, localQs, opts); }
+      // The local attempt may never spend the budget the paid fallback needs.
+      // Laya costs ~5s per batch of 4 on a compact-sized state, so a 62-question
+      // whitelisted request used to burn the whole 15s deadline and the request
+      // then died before Jev was ever called — a local miss turned into a total
+      // outage (fix 10628). Cap the local lane at its own slice and keep the
+      // rest for the cloud, which still has to answer whatever Laya misses.
+      const localDeadlineAtMs = Math.min(deadlineAtMs - cloudReserveMs, Date.now() + localBudgetMs);
+      try {
+        if (localDeadlineAtMs <= Date.now()) throw ERR.timeout('no budget left for the local lane');
+        localResult = await local(state, localQs, { ...opts, deadlineAtMs: localDeadlineAtMs });
+      }
       catch (e) { error = e; }
       for (const [id, q] of Object.entries(localQs)) {
         const a = localResult?.answers?.[id];

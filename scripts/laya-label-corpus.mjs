@@ -43,6 +43,12 @@ const CHUNK = Math.max(1, Number(process.env.JEV_LAYA_LABEL_CHUNK) || 8);
 // pass pushes training into the working day; stop at the budget and leave the
 // rest pending for tomorrow. 0 disables the budget.
 const BUDGET_SEC = Math.max(0, Number(process.env.JEV_LAYA_LABEL_BUDGET_SEC ?? 5400));
+// Per-chunk deadline. The adapter defaults to the gateway's 15s request
+// deadline, which belongs to a caller that is waiting — nothing waits here, and
+// one CHUNK=8 slice over a compact-sized state already takes ~11s, so 15s threw
+// away whole records on a timeout (10-17 夜訓: failed=176, deferred=496). The
+// pass is bounded by BUDGET_SEC instead; this only has to stop a hung session.
+const CHUNK_TIMEOUT_MS = Math.max(1000, Number(process.env.JEV_LAYA_LABEL_TIMEOUT_MS) || 120_000);
 // Tests substitute a stub adapter here; nothing else should.
 const ADAPTER_MODULE = process.env.JEV_LAYA_ADAPTER_MODULE ?? '../gateway/src/adapters.js';
 
@@ -95,7 +101,7 @@ let scored = 0, agreed = 0, failed = 0, deferred = 0;
 if (pending.length) {
   // Lazy: a report-only run (nothing pending) never loads the 540MB graph.
   const { makeLayaAdapter } = await import(ADAPTER_MODULE);
-  const laya = makeLayaAdapter({ modelDir: MODEL_DIR });
+  const laya = makeLayaAdapter({ modelDir: MODEL_DIR, timeoutMs: CHUNK_TIMEOUT_MS });
   const started = Date.now();
   for (const record of pending) {
     if (BUDGET_SEC && (Date.now() - started) / 1000 >= BUDGET_SEC) {

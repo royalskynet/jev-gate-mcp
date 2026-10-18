@@ -22,6 +22,8 @@ const PATTERNS = [
   ['telegram', /\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}\b/g],
   ['jwt', /\beyJ[\w-]{8,}\.eyJ[\w-]{8,}\.[\w-]{8,}/g],
   ['bearer', /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/g],
+  // Labelled sk- key shorter than the generic floor (10-18: 19-char local proxy key).
+  ['labelled', /(?<![A-Za-z])((?:api[_-]?)?key|token|secret)(\s*[:=：]\s*["']?)sk-(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{8,}/gi, '$1$2[REDACTED:labelled]'],
   // Unknown provider, but labelled: "ci key:  <token>" (10-07 incident). The label
   // stays; the value must mix letters and digits so snake_case names pass.
   ['labelled', /(?<![A-Za-z])((?:api[_-]?)?key|token|secret|passw(?:or)?d|密鑰|金鑰|密碼)(\s*[:=：]\s*["']?)(?=[A-Za-z0-9._~+/=-]*\d)(?=[A-Za-z0-9._~+/=-]*[A-Za-z])[A-Za-z0-9._~+/=-]{20,}/gi, '$1$2[REDACTED:labelled]'],

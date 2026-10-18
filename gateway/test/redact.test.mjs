@@ -40,6 +40,15 @@ test('redact masks a labelled bare key, keeps the label and plain identifiers', 
   assert.equal(redact(`the key ${bare}`), `the key ${bare}`);
 });
 
+// 10-18: a pasted hermes config.yaml carried "api_key: sk-<word>-<10 digits>"
+// (19 chars), one short of the labelled floor; gitleaks caught it in the corpus.
+test('redact masks a short labelled sk- key', () => {
+  const short = 'sk-' + 'local' + '-' + '1234567890';
+  assert.equal(short.length, 19);
+  assert.equal(redact(`model:\n    api_key: ${short}\n`), 'model:\n    api_key: [REDACTED:labelled]\n');
+  assert.equal(redact('task: sk-learn notes'), 'task: sk-learn notes');
+});
+
 // The incident: a pasted key in a hook prompt reached the cloud teacher and the
 // teacher corpus. Both sinks sit behind the adapter boundary and must see only
 // the masked state.
