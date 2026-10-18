@@ -32,6 +32,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from laya_state import laya_state  # noqa: E402  逐題裁切，鏡像 gateway/src/laya-state.js
+
 HOME = Path.home()
 DEFAULT_IN = Path(os.environ.get("JEV_LAYA_TRAINED_DIR", HOME / ".jevgate" / "laya-trained"))
 DEFAULT_SRC = Path(os.environ.get("JEV_LAYA_FP_DIR", HOME / ".jevgate" / "laya-fp"))
@@ -107,7 +110,7 @@ def _torch_stage(in_dir, src, tmp_path, refs_path, do_parity, parity_n, keep_qid
                         continue
                     qq = {"t": q["type"], "ins": q["instructions"], "crit": q.get("criteria")}
                     try:
-                        seq, markers = build_sequence(tk, r.get("state"), qq, cfg["max_len"], cfg["head_max_len"])
+                        seq, markers = build_sequence(tk, laya_state(r.get("state"), qid), qq, cfg["max_len"], cfg["head_max_len"])
                     except Exception:
                         continue
                     if len(markers) != len(render_options(qq)):
@@ -229,6 +232,8 @@ def main():
         "head_max_len": cfg["head_max_len"],
         "temperature": temps,
         "temperature_by_options": cfg.get("temperature_by_options", {}),
+        # laya-train.py 一律用 laya_state 裁過的 state 訓練；gateway 只對帶這個旗標的 bundle 裁切
+        "state_crop": True,
     }, indent=1) + "\n")
 
     def commit():

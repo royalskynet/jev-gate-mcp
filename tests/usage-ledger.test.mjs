@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { logUsage, meteredFetch } from '../agent-glue/src/usage-ledger.js';
+import { logUsage, meteredFetch, usageFile, handoffFile } from '../agent-glue/src/usage-ledger.js';
 import { hookUsageFile } from '../agent-glue/claude/usage-line.mjs';
 
 const SECRET = 'PROMPT-CONTENT-must-not-leak';
@@ -27,6 +27,18 @@ test('a usage line carries the counters and none of the content passed with them
   assert.deepEqual(Object.keys(line).sort(),
     ['caller', 'input_tokens', 'latency_ms', 'model', 'output_tokens', 'status', 'ts']);
   assert.equal(line.status, 429);
+});
+
+// fix 10668: a bare `node --test` used to append laya-routing fixtures to the
+// live laya-handoff.jsonl as caller cascade:compact — 16 of the 210 "invalid"
+// rows on 10-18 were test runs. Under the test runner the default is off.
+test('under node --test the ledgers default to off; an explicit path still wins; hosts get the live file', () => {
+  const t = { NODE_TEST_CONTEXT: 'child-v8' };
+  assert.equal(usageFile(t), 'off');
+  assert.equal(handoffFile(t), 'off');
+  assert.equal(handoffFile({ ...t, JEV_HANDOFF_LOG: '/tmp/h.jsonl' }), '/tmp/h.jsonl');
+  assert.match(usageFile({}), /\.jevgate\/usage\.jsonl$/);
+  assert.match(handoffFile({}), /\.jevgate\/laya-handoff\.jsonl$/);
 });
 
 test('an unwritable ledger answers false instead of throwing', () => {

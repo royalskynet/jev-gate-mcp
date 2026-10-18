@@ -5,6 +5,20 @@ import { buildGateway } from '../src/config.js';
 import { makeLayaAdapter } from '../src/adapters.js';
 import { ERR, LIMITS } from '../src/core.js';
 
+/**
+ * Waits for a background queue to reach a state instead of sleeping a guessed
+ * number of milliseconds: shadow digestion is paced by timers, so a fixed sleep
+ * passes alone and fails under a loaded `node --test` run (it did, on the
+ * `[4, 4, 2]` assertion). Fails loudly with what it was still waiting for.
+ */
+async function until(done, what, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!done()) {
+    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`);
+    await new Promise(res => setTimeout(res, 2));
+  }
+}
+
 function reply(model, questions, choice) {
   return { model, answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => {
     const pick = choice ?? Object.keys(q.criteria)[0];
@@ -266,7 +280,7 @@ test('shadow runs cloud-bound questions locally without changing or delaying the
   assert.equal(calls.filter(c => c[0] === 'laya').length, 1);
 
   releaseLocal();
-  await new Promise(res => setImmediate(res));
+  await until(() => samples.length >= 1, 'the shadow row to be recorded');
   assert.equal(samples.length, 1);
   assert.match(samples[0].request_id, /^[0-9a-f-]{36}$/, 'calibration counts requests, not units');
   assert.deepEqual({ ...samples[0], question: undefined, request_id: undefined }, { shadow: true, request_id: undefined, question_id: 'result_t3', caller: 'cascade:compact',
@@ -287,14 +301,14 @@ test('shadow digests a large request in small sampled batches after the teacher 
   await run(COMPACT_STATE, many('result_t', 190), { caller: 'cascade:compact' });
   // Queue holds 10; a second 10-question sample would overflow 15 and is dropped.
   await run(COMPACT_STATE, many('claim_', 50), { caller: 'cascade:compact' });
-  await new Promise(res => setTimeout(res, 50));
+  await until(() => samples.length >= 10, 'the 10 sampled questions to be digested');
   assert.equal(order[0], 'jev', 'shadow never competes with the live request');
   assert.deepEqual(sizes, [4, 4, 2], '190 questions → 10 sampled, digested 4 at a time');
   assert.equal(samples.length, 10);
   assert.ok(samples.every(s => s.family === 'result_t#'));
   // Drained queue accepts work again.
   await run(COMPACT_STATE, many('claim_', 3), { caller: 'cascade:compact' });
-  await new Promise(res => setTimeout(res, 20));
+  await until(() => samples.length >= 13, 'the drained queue to accept three more');
   assert.equal(samples.length, 13);
 });
 

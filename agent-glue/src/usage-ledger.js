@@ -13,9 +13,17 @@ import { homedir } from 'node:os';
 import { dirname, join, basename, extname } from 'node:path';
 import { usageRecord, tokensOf, modelOf } from '../claude/usage-line.mjs';
 
+// `node --test` sets NODE_TEST_CONTEXT in the test process and every subprocess
+// it spawns. `npm test` turns the ledgers off through env, but a bare
+// `node --test` did not: a test that forgot to inject a sink wrote the live
+// files under real caller names (cascade:compact), which no filter can tell
+// apart (fix 10668). Same guard as routing-corpus.js / teacher-corpus.js; an
+// explicit env path still wins, so tests that redirect to a tmp file keep it.
+const underTest = (env) => Boolean(env.NODE_TEST_CONTEXT);
+
 /** Read at call time so tests and hosts can redirect per run. */
 export function usageFile(env = process.env) {
-  return env.JEV_USAGE_LOG ?? join(homedir(), '.jevgate', 'usage.jsonl');
+  return env.JEV_USAGE_LOG ?? (underTest(env) ? 'off' : join(homedir(), '.jevgate', 'usage.jsonl'));
 }
 
 /** Append one usage line. Never throws; returns whether it wrote. */
@@ -32,7 +40,7 @@ export function logUsage(rec, file = usageFile()) {
 
 /** `~/.jevgate/laya-handoff.jsonl` (override: JEV_HANDOFF_LOG, `off` disables). */
 export function handoffFile(env = process.env) {
-  return env.JEV_HANDOFF_LOG ?? join(homedir(), '.jevgate', 'laya-handoff.jsonl');
+  return env.JEV_HANDOFF_LOG ?? (underTest(env) ? 'off' : join(homedir(), '.jevgate', 'laya-handoff.jsonl'));
 }
 
 /**

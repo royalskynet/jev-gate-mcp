@@ -115,6 +115,14 @@ describe('cascade-server', () => {
     assert.equal(logs[0].model, 'fake/cascade');
   });
 
+  test('caller header already prefixed with cascade: is not doubled', async () => {
+    await start();
+    const body = { state: { user_request: 'test' }, questions: { q1: { type: 'noul' } } };
+    await post(body, { 'x-jev-caller': 'cascade:compact' });
+    await post({ ...body, state: { user_request: 'test2' } }, { 'x-jev-caller': 'cascade:' });
+    assert.deepEqual(logs.map(l => l.caller), ['cascade:compact', 'cascade:unknown']);
+  });
+
   // Triage keeps costly_mistake (noul) on the cloud judge; the header is how it
   // says so to the daemon. Without it the default lane (score,noul) would let
   // Laya call a risky task "safe" and the effort knob would drop on it.

@@ -21,6 +21,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from laya_state import laya_state  # noqa: E402  逐題裁切，鏡像 gateway/src/laya-state.js
+
 HOME = Path.home()
 HERE = Path(__file__).resolve().parent
 
@@ -104,7 +107,8 @@ def main():
         q = u["question"]
         qq = {"t": q["type"], "ins": q["instructions"], "crit": q.get("criteria")}
         try:
-            seq, markers = build_sequence(tk, u["state"], qq, cfg["max_len"], cfg["head_max_len"])
+            st = laya_state(u["state"], u["qid"]) if cfg.get("state_crop") else u["state"]  # 照 bundle 線上吃的輸入評
+            seq, markers = build_sequence(tk, st, qq, cfg["max_len"], cfg["head_max_len"])
         except Exception:
             continue
         if len(markers) != len(render_options(qq)):

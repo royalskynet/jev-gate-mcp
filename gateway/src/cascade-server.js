@@ -77,7 +77,9 @@ export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsag
   return createServer(async (req, res) => {
     const started = now();
     // Remote calls are tagged so the usage ledger never mixes them with local ones.
-    const caller = (allowed ? 'cascade:tailnet:' : 'cascade:') + (req.headers['x-jev-caller'] || 'unknown');
+    // A client that already prefixed its name must not produce cascade:cascade:*.
+    const caller = (allowed ? 'cascade:tailnet:' : 'cascade:')
+      + (String(req.headers['x-jev-caller'] || '').replace(/^cascade:(tailnet:)?/, '') || 'unknown');
     const send = (status, payload, headers = {}) => {
       res.writeHead(status, { 'content-type': 'application/json', ...headers });
       res.end(JSON.stringify(payload));

@@ -14,6 +14,8 @@ import test from 'node:test';
 
 import { compactMessages } from '../../agent-glue/src/compact.js';
 import { askerFor, backendFor, compactAnthropic } from '../../agent-glue/claude/compact-anthropic.mjs';
+import { compact } from '../../agent-glue/vendor/fast-jev/index.js';
+import { batchCalls, resolveOptions } from '../../agent-glue/vendor/fast-jev/compact.js';
 
 const BIG = 'x'.repeat(20_000);
 const TAIL_TEXT = ['next', 'ok', 'x', 'y', 'z', 'w'];
@@ -166,4 +168,91 @@ test('compactAnthropic forwards the core knobs', async () => {
   const body = JSON.stringify(truncated.messages);
   assert.ok(body.includes('x'.repeat(7)), '7 chars of head must survive');
   assert.ok(!body.includes('x'.repeat(8)), 'and no more than 7');
+});
+
+// Why: `result_#` ("keep this output verbatim") only changes the outcome for a
+// call that is kept, and it is the longer question (66 vs 58 tokens), so asking
+// the pair nearly halves how many calls fit one request — a compaction paid
+// batches of Jev calls for an answer that, in 11,577 recorded teacher answers,
+// never reached 0.5 (fix 10629). Splitting the passes costs one extra request,
+// so it must only happen when it saves more than one. Both directions are
+// silent and only show on the bill, hence an assertion per direction.
+const KEEP = 't3';
+const FOUR_CALLS = [
+  { role: 'user', text: 'go', toolUses: [] },
+  ...['t1', 't2', KEEP, 't4'].flatMap((id) => [
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Read', input: { file_path: `/${id}` }, text: BIG }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: BIG }] },
+  ]),
+  ...TAIL_TEXT.map((t, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', text: t, toolUses: [] })),
+];
+
+/** Records the questions of every request; keeps one call, drops every result. */
+function spyAsker(asked) {
+  return {
+    async ask(_state, questions) {
+      const keys = Object.keys(questions);
+      asked.push(keys);
+      return { answers: Object.fromEntries(keys.map((k) => [k, { noul: k === `call_${KEEP}` ? 1 : 0 }])) };
+    },
+  };
+}
+
+test('compact asks call_# first and result_# only for the calls it keeps', async () => {
+  // Four calls only split into two passes when the questions are the binding
+  // constraint, so the budget is narrowed to ~130 tokens of questions: one
+  // pair, or two lone `call_#`. The state's own size is whatever fitState
+  // makes it, so it is measured first rather than assumed.
+  const probe = await compact(FOUR_CALLS, dropAsker, { preserveRecentMessages: 6 });
+  const options = {
+    keepThreshold: 0.5,
+    preserveRecentMessages: 6,
+    maxRequestTokens: probe.stats.stateTokens + 40 + 130,
+  };
+
+  const asked = [];
+  const out = await compact(FOUR_CALLS, spyAsker(asked), options);
+
+  const callPasses = asked.filter((keys) => keys.every((k) => k.startsWith('call_')));
+  const resultPasses = asked.filter((keys) => keys.every((k) => k.startsWith('result_')));
+  assert.equal(callPasses.length + resultPasses.length, asked.length, 'no request may mix the two questions');
+  assert.equal(callPasses.length, 2, 'the lone call_# questions pack two to a request');
+  assert.deepEqual(resultPasses.flat(), [`result_${KEEP}`], 'only the kept call earns a result_# question');
+  assert.equal(out.stats.requests, asked.length);
+  assert.equal(out.stats.requests, 3, 'three requests, where asking the pairs needs four');
+
+  const byId = new Map(out.decisions.map((d) => [d.id, d]));
+  assert.equal(byId.get(KEEP).action, 'drop_result', 'kept call, worthless result');
+  for (const id of ['t1', 't2', 't4']) assert.equal(byId.get(id).action, 'drop_call', `${id} must go whole`);
+});
+
+test('compact keeps asking the pair when splitting the passes would cost a request', async () => {
+  // Default budget: all four pairs fit one request, so a second pass would be
+  // one request more than the whole job needs.
+  const asked = [];
+  const out = await compact(FOUR_CALLS, spyAsker(asked), { keepThreshold: 0.5, preserveRecentMessages: 6 });
+
+  assert.equal(out.stats.requests, 1, 'one request must stay one request');
+  assert.deepEqual(asked.length, 1);
+  assert.ok(asked[0].includes(`call_${KEEP}`) && asked[0].includes(`result_${KEEP}`), 'that request carries the pair');
+  const byId = new Map(out.decisions.map((d) => [d.id, d]));
+  assert.equal(byId.get(KEEP).action, 'drop_result');
+});
+
+// Why: the core budgeted 30k tokens per request, but Jev 1.13 takes 64k for
+// state plus all questions — the 32k number in its docs limits state plus the
+// *longest single* question, a different thing (docs.typesafe.ai/models).
+// Conflating them split a 190-call compaction into three requests that each
+// re-sent the same ~22k state. Both halves of the fix need holding down: the
+// bigger request budget, and the state ceiling that the other limit still
+// imposes however large that budget gets.
+test('one request fits a real compaction, and the state keeps its own ceiling', () => {
+  const options = resolveOptions({});
+  const calls = Array.from({ length: 190 }, (_, i) => ({ id: `t${i}`, tool: 'Bash', resultChars: 4096 }));
+
+  assert.equal(batchCalls(calls, 22_000, options, 'both').length, 1, '190 calls over a 22k state must be one request');
+  assert.equal(batchCalls(calls, options.maxStateTokens, options, 'both').length, 1, 'and still one at the state cap');
+
+  assert.equal(resolveOptions({ maxStateTokens: 60_000 }).maxStateTokens, 27_000, 'state cannot exceed the 32k state+question limit');
+  assert.ok(options.maxRequestTokens <= 64_000, 'the request budget must stay under the documented 64k');
 });

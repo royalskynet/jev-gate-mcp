@@ -77,7 +77,7 @@ export function makeLayaAdapter() {
 
 test('a 186-question record is answered in bounded batches, and every question gets an answer', () => {
   const { run, widths, corpus } = sandbox();
-  const out = run([record('wide', 186)], { JEV_LAYA_LABEL_CHUNK: '8' });
+  const out = run([record('wide', 186)], { JEV_LAYA_LABEL_CHUNK: '8', JEV_LAYA_LABEL_PER_FAMILY: '0' });
   assert.ok(widths().length > 1, 'answered 186 questions in one batch — this is what hit 31GB');
   assert.equal(Math.max(...widths()), 8, `a batch exceeded the chunk size: ${widths().join(',')}`);
   assert.equal(widths().reduce((a, b) => a + b, 0), 186, 'slicing dropped or duplicated questions');
@@ -85,6 +85,23 @@ test('a 186-question record is answered in bounded batches, and every question g
   // report, so the row must come back complete.
   assert.equal(Object.keys(corpus()[0].local_answer).length, 186);
   assert.match(out, /scored=1 .* failed=0 deferred=0/);
+});
+
+test('a wide record labels at most PER_FAMILY questions of one family, spread over the record', () => {
+  const { at, run, widths, corpus, done } = sandbox();
+  // 10-18: a compact record asks call_t1…call_t190; labelling all of them made
+  // the backlog 22k questions ≈ 9.9h against a 1.5h budget.
+  const row = JSON.parse(record('wide', 186));
+  row.questions.other = { choice: ['a', 'b'] };
+  run([JSON.stringify(row)], { JEV_LAYA_LABEL_CHUNK: '8' });
+  const got = Object.keys(corpus()[0].local_answer);
+  assert.deepEqual(got, ['q0', 'q62', 'q123', 'q185', 'other']);
+  assert.equal(widths().reduce((a, b) => a + b, 0), 5);
+  assert.equal(done().scored, 1);
+  // the agreement report only compares questions Laya was asked
+  const rep = JSON.parse(fs.readFileSync(at('agreement.json'), 'utf8'));
+  assert.equal(rep.groups['dwide/q1'], undefined);
+  assert.equal(rep.groups['dwide/q62'].n, 1);
 });
 
 test('narrow records stay on the single-batch path', () => {

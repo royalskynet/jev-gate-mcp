@@ -218,6 +218,8 @@ else
   hpush "⚠️ Laya 白名單校準失敗：$(tail -1 /tmp/laya-calibrate.$$)"
 fi
 cat /tmp/laya-calibrate.$$; rm -f /tmp/laya-calibrate.$$
+# ADR-0002：開 live 的前置條件齊備就每晚推提醒，直到切 live（只通知，不切換）
+if READY=$("$PY" "$DIR/scripts/laya-live-ready.py" 2>/dev/null); then hpush "$READY"; fi
 
 # 推播一行摘要：增益、是否換權重、以及 97% 準確率下能接走多少比例。
 # hard_n／trusted_drop_n／train_seconds 必須在摘要裡：低強度增量跑成空轉（難題 0 題、

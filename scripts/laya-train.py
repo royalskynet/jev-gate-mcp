@@ -45,6 +45,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from laya_state import laya_state  # noqa: E402  逐題裁切，鏡像 gateway/src/laya-state.js
+
 HOME = Path.home()
 CORPUS = Path(os.environ.get("JEV_TEACHER_CORPUS", HOME / ".jevgate" / "teacher-corpus.jsonl"))
 BASE_DIR = Path(os.environ.get("JEV_LAYA_FP_DIR", HOME / ".jevgate" / "laya-fp"))
@@ -961,6 +964,13 @@ def selftest():
     _r2 = [{"qtype": "noul", "conf": 0.68, "correct": False, "state_ok": True},
            {"qtype": "score", "conf": 0.66, "correct": True, "state_ok": True}]
     assert live_gated(_r2, conf_min_spec="score=0.65,noul=0.70")["n"] == 1, "分題型地板沒分開套"
+    # 逐題裁切：與 gateway/src/laya-state.js 同一份 golden，兩邊實作不准漂移
+    import laya_state as _ls
+    _g = json.loads((Path(__file__).resolve().parent.parent / "tests/fixtures/laya-crop-golden.json").read_text())
+    for _c in _g["cases"]:
+        _s = _c.get("state", _g["state"])
+        assert _ls.crop_key(_s, _c["qid"]) == _c["key"], _c["qid"]
+        assert _ls.laya_state(_s, _c["qid"]) == _c["expected"], f"laya_state 與 JS golden 不一致：{_c['qid']}"
     # qid_first_seen：取最早 ts、外部語料不算、名單外不給
     _fs = qid_first_seen([{"ts": "2026-10-09T00:00:00Z", "questions": {"a": {}, "z": {}}},
                           {"ts": "2026-10-01T00:00:00Z", "questions": {"a": {}}},
@@ -1450,7 +1460,7 @@ def main():
     for u in units:
         q = {"t": u["qtype"], "ins": u["question"]["instructions"], "crit": u["question"].get("criteria")}
         try:
-            seq, markers = build_sequence(tok, u["state"], q, cfg["max_len"], cfg["head_max_len"])
+            seq, markers = build_sequence(tok, laya_state(u["state"], u["qid"]), q, cfg["max_len"], cfg["head_max_len"])
         except Exception as e:
             print(f"  skip {u['digest']}/{u['qid']}: build_sequence {e}")
             continue

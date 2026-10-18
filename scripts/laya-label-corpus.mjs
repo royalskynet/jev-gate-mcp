@@ -49,6 +49,12 @@ const BUDGET_SEC = Math.max(0, Number(process.env.JEV_LAYA_LABEL_BUDGET_SEC ?? 5
 // away whole records on a timeout (10-17 夜訓: failed=176, deferred=496). The
 // pass is bounded by BUDGET_SEC instead; this only has to stop a hung session.
 const CHUNK_TIMEOUT_MS = Math.max(1000, Number(process.env.JEV_LAYA_LABEL_TIMEOUT_MS) || 120_000);
+// Questions per family (call_t1…call_t190 is one family) labelled per record.
+// local_answer only feeds hard-example mining, and training keeps at most 300
+// units per family; a compact record asks one family up to 190 times, so the
+// unlabelled backlog reached 22k questions ≈ 9.9h against a 1.5h budget
+// (10-18). Unlabelled questions stay in training's retention pool. 0 = all.
+const PER_FAMILY = Math.max(0, Number(process.env.JEV_LAYA_LABEL_PER_FAMILY ?? 4));
 // Tests substitute a stub adapter here; nothing else should.
 const ADAPTER_MODULE = process.env.JEV_LAYA_ADAPTER_MODULE ?? '../gateway/src/adapters.js';
 
@@ -101,7 +107,9 @@ let scored = 0, agreed = 0, failed = 0, deferred = 0;
 if (pending.length) {
   // Lazy: a report-only run (nothing pending) never loads the 540MB graph.
   const { makeLayaAdapter } = await import(ADAPTER_MODULE);
-  const laya = makeLayaAdapter({ modelDir: MODEL_DIR, timeoutMs: CHUNK_TIMEOUT_MS });
+  // Crop like training does (laya_state.py): a baseline miss only counts as a
+  // hard example if it happened on the input the trained model will see.
+  const laya = makeLayaAdapter({ modelDir: MODEL_DIR, timeoutMs: CHUNK_TIMEOUT_MS, cropStates: true });
   const started = Date.now();
   for (const record of pending) {
     if (BUDGET_SEC && (Date.now() - started) / 1000 >= BUDGET_SEC) {
@@ -168,8 +176,8 @@ writeFileSync(DONE, JSON.stringify({
  * records the whole row as failed.
  */
 async function answerInChunks(laya, record) {
-  const ids = Object.keys(record.questions ?? {});
-  if (ids.length <= CHUNK) return laya(record.state, record.questions);
+  const ids = sampleIds(Object.keys(record.questions ?? {}));
+  if (ids.length <= CHUNK) return laya(record.state, Object.fromEntries(ids.map((k) => [k, record.questions[k]])));
   process.stdout.write(`  ${record.id}: ${ids.length} questions, ${Math.ceil(ids.length / CHUNK)} batches of ${CHUNK}\n`);
   let model;
   const answers = {};
@@ -182,12 +190,30 @@ async function answerInChunks(laya, record) {
   return { model, answers };
 }
 
+/** At most PER_FAMILY ids per family, evenly spaced so a long history is not sampled only at its start. */
+function sampleIds(ids, cap = PER_FAMILY) {
+  if (!cap) return ids;
+  const fams = new Map();
+  for (const id of ids) {
+    const f = id.replace(/\d+$/, '#');
+    if (!fams.has(f)) fams.set(f, []);
+    fams.get(f).push(id);
+  }
+  const keep = new Set();
+  for (const members of fams.values()) {
+    if (members.length <= cap) { members.forEach((m) => keep.add(m)); continue; }
+    for (let i = 0; i < cap; i++) keep.add(members[cap === 1 ? 0 : Math.round(i * (members.length - 1) / (cap - 1))]);
+  }
+  return ids.filter((id) => keep.has(id));
+}
+
 /** Cumulative agreement per `<digest12>/<question id>` over records that carry both answers. */
 function agreement(rows) {
   const out = {};
   for (const r of rows) {
     if (!r.local_answer || !r.teacher_answer) continue;
     for (const id of Object.keys(r.teacher_answer)) {
+      if (!(id in r.local_answer)) continue; // sampled out (PER_FAMILY)
       const key = `${String(r.question_digest).slice(0, 12)}/${id}`;
       const g = (out[key] ??= { n: 0, agree: 0, rate: 0 });
       g.n++;
@@ -200,7 +226,8 @@ function agreement(rows) {
 
 function sameAnswer(a, b) {
   if (!a || !b) return false;
-  return Object.keys(b).every((id) => sameOne(a[id], b[id]));
+  const ids = Object.keys(b).filter((id) => id in a);
+  return ids.length > 0 && ids.every((id) => sameOne(a[id], b[id]));
 }
 
 function sameOne(x, y) {

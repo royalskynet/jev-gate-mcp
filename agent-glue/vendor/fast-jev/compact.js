@@ -5,11 +5,24 @@ export const DEFAULT_OPTIONS = {
     keepThreshold: 0.5,
     preserveRecentMessages: 6,
     maxStateTokens: 25_000,
-    maxRequestTokens: 30_000,
+    // Jev 1.13 takes 64k tokens per request for state plus *all* questions
+    // combined; the 32k figure in its docs is a second, separate limit on state
+    // plus the single *longest* question (docs.typesafe.ai/models). A budget of
+    // 30k conflated the two and cost a compaction three requests where one
+    // would do — and each request re-sends the whole state. 54k leaves room for
+    // `estimateTokens` undercounting these JSON states by about 9% (a state
+    // estimated at 30k billed as 32.6k over 519 recorded compactions).
+    maxRequestTokens: 54_000,
     truncateHeadChars: 300,
 };
 /** Tokens the request envelope (`model`, `provider`, key names) adds around state and questions. */
 const REQUEST_OVERHEAD_TOKENS = 40;
+/**
+ * The state has to fit the other limit — 32k for state plus the longest
+ * question — no matter how big `maxRequestTokens` is, with the same undercount
+ * margin.
+ */
+const MAX_STATE_TOKENS_CEILING = 27_000;
 function finite(value, fallback) {
     return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
@@ -18,35 +31,42 @@ export function resolveOptions(options = {}) {
         goal: options.goal ?? DEFAULT_OPTIONS.goal,
         keepThreshold: finite(options.keepThreshold, DEFAULT_OPTIONS.keepThreshold),
         preserveRecentMessages: Math.max(0, Math.floor(finite(options.preserveRecentMessages, DEFAULT_OPTIONS.preserveRecentMessages))),
-        maxStateTokens: Math.max(1, finite(options.maxStateTokens, DEFAULT_OPTIONS.maxStateTokens)),
+        maxStateTokens: Math.min(MAX_STATE_TOKENS_CEILING, Math.max(1, finite(options.maxStateTokens, DEFAULT_OPTIONS.maxStateTokens))),
         maxRequestTokens: Math.max(1, finite(options.maxRequestTokens, DEFAULT_OPTIONS.maxRequestTokens)),
         truncateHeadChars: Math.max(0, Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars))),
     };
 }
-/** The two `noul` questions asked about one call: keep the call, keep its result. */
-export function questionsFor(call) {
-    return {
-        [`call_${call.id}`]: {
+/**
+ * The `noul` questions asked about one call: keep the call, keep its result.
+ * `stage` picks one of the two ('call' | 'result'), or both ('both').
+ */
+export function questionsFor(call, stage = 'both') {
+    const questions = {};
+    if (stage !== 'result') {
+        questions[`call_${call.id}`] = {
             type: 'noul',
             instructions: `Tool call ${call.id} (${call.tool}) should stay in the history: knowing this call was made, with its input, still matters for what the assistant does next`,
-        },
-        [`result_${call.id}`]: {
+        };
+    }
+    if (stage !== 'call') {
+        questions[`result_${call.id}`] = {
             type: 'noul',
             instructions: `The full output of tool call ${call.id} (${call.tool}, ${call.resultChars} chars) should stay in the history verbatim: the assistant still needs its contents and re-running the tool would not do`,
-        },
-    };
+        };
+    }
+    return questions;
 }
 /**
  * Splits the candidate calls into batches whose questions, together with the
  * (always complete) state, fit one request.
  */
-export function batchCalls(calls, stateTokens, options) {
+export function batchCalls(calls, stateTokens, options, stage = 'both') {
     const budget = options.maxRequestTokens - stateTokens - REQUEST_OVERHEAD_TOKENS;
     const batches = [];
     let current = [];
     let currentTokens = 0;
     for (const call of calls) {
-        const tokens = estimateTokens(JSON.stringify(questionsFor(call)));
+        const tokens = estimateTokens(JSON.stringify(questionsFor(call, stage)));
         if (current.length > 0 && currentTokens + tokens > budget) {
             batches.push(current);
             current = [];
@@ -74,16 +94,17 @@ export function decideCall(call, answer, options) {
     }
     return { ...base, action: 'drop_call', reason: 'call_dropped' };
 }
-async function askBatch(asker, state, batch) {
-    const questions = Object.assign({}, ...batch.map(questionsFor));
+async function askBatch(asker, state, batch, stage = 'both') {
+    const questions = Object.assign({}, ...batch.map((call) => questionsFor(call, stage)));
     const { answers } = await asker.ask(state, questions);
-    return new Map(batch.map((call) => [
-        call.id,
-        {
-            keepCall: noulAnswer(answers, `call_${call.id}`),
-            keepResult: noulAnswer(answers, `result_${call.id}`),
-        },
-    ]));
+    return new Map(batch.map((call) => {
+        const answer = {};
+        if (stage !== 'result')
+            answer.keepCall = noulAnswer(answers, `call_${call.id}`);
+        if (stage !== 'call')
+            answer.keepResult = noulAnswer(answers, `result_${call.id}`);
+        return [call.id, answer];
+    }));
 }
 function truncatedResultText(text, isError, headChars) {
     if (text.length <= headChars + 120)
@@ -203,11 +224,48 @@ export async function compact(messages, asker, options = {}) {
     if (candidates.length > 0) {
         const state = fitState(messages, calls, resolved);
         fitted = state;
-        batches = batchCalls(candidates, state.tokens, resolved);
-        const answered = await Promise.all(batches.map((batch) => askBatch(asker, state.state, batch)));
-        for (const map of answered)
-            for (const [id, answer] of map)
-                answers.set(id, answer);
+        // `result_#` ("keep this output verbatim") only decides anything for a
+        // call that is kept at all, and it is the longer of the two questions
+        // (66 vs 58 tokens), so pairing them nearly halves how many calls fit
+        // one request. Asking `call_#` alone first and `result_#` only of the
+        // calls that cleared `keepThreshold` costs one extra request but makes
+        // the first pass' batches twice as big, so it is a win exactly when it
+        // saves more than that one request — on a 190-call compaction, 2+1
+        // requests instead of 3 (fix 10629). Below that it is a loss, hence
+        // the comparison rather than a flag.
+        //
+        // Behaviour changes only for a call whose `result_#` clears the
+        // threshold while its `call_#` does not: it used to be kept whole, now
+        // it is dropped unasked. In 11,577 recorded teacher answers `result_#`
+        // never once reached 0.5 (max .37), so that case has yet to happen.
+        const callBatches = batchCalls(candidates, state.tokens, resolved, 'call');
+        let pairBatches = null;
+        try {
+            pairBatches = batchCalls(candidates, state.tokens, resolved, 'both');
+        }
+        catch {
+            // The pair does not fit this state at all; two passes are the only way.
+        }
+        if (pairBatches !== null && callBatches.length + 1 >= pairBatches.length) {
+            batches = pairBatches;
+            const asked = await Promise.all(batches.map((batch) => askBatch(asker, state.state, batch, 'both')));
+            for (const map of asked)
+                for (const [id, answer] of map)
+                    answers.set(id, answer);
+        }
+        else {
+            const asked = await Promise.all(callBatches.map((batch) => askBatch(asker, state.state, batch, 'call')));
+            for (const map of asked)
+                for (const [id, answer] of map)
+                    answers.set(id, { keepCall: answer.keepCall, keepResult: 0 });
+            const wanted = candidates.filter((call) => (answers.get(call.id)?.keepCall ?? 0) >= resolved.keepThreshold);
+            const resultBatches = wanted.length > 0 ? batchCalls(wanted, state.tokens, resolved, 'result') : [];
+            const askedResults = await Promise.all(resultBatches.map((batch) => askBatch(asker, state.state, batch, 'result')));
+            for (const map of askedResults)
+                for (const [id, answer] of map)
+                    answers.set(id, { ...answers.get(id), keepResult: answer.keepResult });
+            batches = [...callBatches, ...resultBatches];
+        }
     }
     const decisions = calls.map((call) => decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved));
     const kept = applyDecisions(messages, decisions, calls, resolved.truncateHeadChars);

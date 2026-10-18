@@ -24,7 +24,9 @@ const usageFetch = meteredFetch(callerName('prune'));
  * hook-liveness probe reads a CLI run as hook activity (hooks/jev.js:358/371/391
  * are the hook-side probe's meaning and stay untouched).
  */
-export const CLI_LEDGER = process.env.JEV_CLI_LEDGER || `${process.env.HOME || homedir()}/.openclaw/state/jev-prune-cli.log`;
+// Under `node --test` the default is /dev/null, as for the usage ledgers (fix 10668).
+export const CLI_LEDGER = process.env.JEV_CLI_LEDGER
+  || (process.env.NODE_TEST_CONTEXT ? '/dev/null' : `${process.env.HOME || homedir()}/.openclaw/state/jev-prune-cli.log`);
 
 /**
  * Append one `jev-cli(...)` line to the CLI ledger. Never throws: a broken

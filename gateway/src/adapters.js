@@ -5,10 +5,11 @@
 // timeout, rate-limit, upstream failure — with zero provider cost.
 import os from 'node:os';
 import path from 'node:path';
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { JevDecisionModel } from 'jevwire';
 import { ERR, LIMITS } from './core.js';
 import { recordZenStatus, zenCoolingDown } from './zen-status.js';
+import { groupByCrop } from './laya-state.js';
 import { meteredFetch, callerName } from '../../agent-glue/src/usage-ledger.js';
 
 // `gateway:<script>` (jev-route, stdio = MCP, zen-free-probe…) unless
@@ -164,7 +165,7 @@ export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', mo
 // as Jev (choice/score/noul with probabilities), so the stateless gateway
 // contract `(state, questions, opts) => result` applies here unchanged — opts
 // is ignored (no model override on local weights).
-export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load, sessionOptions } = {}) {
+export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load, cropStates, sessionOptions } = {}) {
   // Upstream laya-serve (official PyTorch runtime, fp32 on MPS) speaks the
   // same /v1/systemone contract, so with JEV_LAYA_SERVE_URL set (e.g.
   // http://127.0.0.1:8019) the local lane is an HTTP client instead of the
@@ -202,6 +203,7 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
   };
   let sessionPromise = null;
   let idleTimer = null;
+  let crop = false;
   // Idle unload: release the ONNX session after JEV_LAYA_IDLE_MS (default
   // 600000ms = 10min) of no calls, so a gateway that triages rarely keeps ~0
   // resident memory between requests. Laya has no idempotent "release then
@@ -241,6 +243,7 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
           || path.join(os.homedir(), '.jevgate', 'laya-multilingual-int8');
         const t0 = Date.now();
         const laya = load ? await load() : await loadBundle(dir);
+        crop = cropStates ?? (!load && bundleCrops(dir));
         logLayaLoad(dir, Date.now() - t0);
         return laya;
       })();
@@ -252,7 +255,7 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
     try {
       const left = Number.isFinite(opts?.deadlineAtMs)
         ? Math.max(0, opts.deadlineAtMs - Date.now()) : budgetMs;
-      const result = await deadline(runChunked(laya, state, questions, left), left, 'laya systemOne');
+      const result = await deadline(runChunked(laya, state, questions, left, undefined, crop), left, 'laya systemOne');
       // This bundle's action head exposes raw logits under act_probability.
       // It is unused for typed classification and cannot authorize anything.
       // Quarantine the entire extension; never clamp/sigmoid it into fake certainty.
@@ -280,24 +283,39 @@ export function makeLayaAdapter({ modelDir, timeoutMs = LIMITS.deadlineMs, load,
 // compact request in shadow reached 31GB (fix 10532). Run at most
 // JEV_LAYA_BATCH questions per forward pass and stop between chunks once the
 // deadline has passed — the outer deadline() cannot cancel ONNX work.
-export async function runChunked(laya, state, questions, timeoutMs, batch = Number(process.env.JEV_LAYA_BATCH) || 4) {
+// With `crop`, questions anchored to one tool call see a per-call crop of the
+// state (laya-state.js); a batch never mixes two crops.
+export async function runChunked(laya, state, questions, timeoutMs, batch = Number(process.env.JEV_LAYA_BATCH) || 4, crop = false) {
   const stopAt = Date.now() + timeoutMs;
-  const entries = Object.entries(questions);
   const answers = {};
   const usage = { input_tokens: 0, output_tokens: 0 };
   let model;
-  for (let i = 0; i < entries.length; i += batch) {
-    if (i > 0) {
-      await new Promise((r) => setImmediate(r));
-      if (Date.now() >= stopAt) throw ERR.timeout(`laya systemOne exceeded ${timeoutMs}ms`);
+  let first = true;
+  for (const group of crop ? groupByCrop(state, questions) : [{ state, questions }]) {
+    const entries = Object.entries(group.questions);
+    for (let i = 0; i < entries.length; i += batch) {
+      if (!first) {
+        await new Promise((r) => setImmediate(r));
+        if (Date.now() >= stopAt) throw ERR.timeout(`laya systemOne exceeded ${timeoutMs}ms`);
+      }
+      first = false;
+      const r = await laya.systemOne(group.state, Object.fromEntries(entries.slice(i, i + batch)));
+      model ??= r.model;
+      Object.assign(answers, r.answers ?? {});
+      usage.input_tokens += r.usage?.input_tokens ?? 0;
+      usage.output_tokens += r.usage?.output_tokens ?? 0;
     }
-    const r = await laya.systemOne(state, Object.fromEntries(entries.slice(i, i + batch)));
-    model ??= r.model;
-    Object.assign(answers, r.answers ?? {});
-    usage.input_tokens += r.usage?.input_tokens ?? 0;
-    usage.output_tokens += r.usage?.output_tokens ?? 0;
   }
   return { model, answers, usage };
+}
+
+/**
+ * Weights trained on cropped states say so in laya_config.json (state_crop,
+ * written by laya-export-onnx.py). Cropping for a bundle trained on whole
+ * states would feed it inputs it never saw, so the flag rides with the weights.
+ */
+export function bundleCrops(dir) {
+  try { return JSON.parse(readFileSync(path.join(dir, 'laya_config.json'), 'utf8')).state_crop === true; } catch { return false; }
 }
 
 /**
