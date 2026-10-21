@@ -27,8 +27,12 @@ function writeJson(file, data) {
   writeFileSync(file, JSON.stringify(data), { mode: 0o600 });
 }
 
+// The last `reserve` calls of the day are kept for `reservedFor` callers, so a
+// chatty caller (stop-gate) cannot starve compaction into the built-in summary.
 export function withDailyBudget(adapter, {
   max = Number(process.env.JEV_OR_DAILY_MAX ?? 200),
+  reserve = Number(process.env.JEV_OR_RESERVE ?? Math.floor(max / 4)),
+  reservedFor = ['cascade:compact'],
   file = join(homedir(), '.jevgate', 'or-budget.json'),
   notify = defaultNotify,
   now = Date.now,
@@ -39,8 +43,14 @@ export function withDailyBudget(adapter, {
     const sameDay = data !== null && data.day === today;
     const calls = sameDay && Number.isFinite(data.calls) ? data.calls : 0;
     const notified = sameDay && data.notified === true;
+    const limit = reservedFor.includes(opts?.caller) ? max : max - reserve;
 
-    if (calls >= max) {
+    if (calls >= limit) {
+      if (limit < max) {
+        const err = new Error(`Jev OpenRouter 一般額度 ${limit} 次已到，剩餘 ${max - calls} 次保留給 ${reservedFor.join(',')}`);
+        err.code = 'JEV_BUDGET_EXCEEDED';
+        throw err;
+      }
       if (!notified) {
         notify(`Jev OpenRouter 日上限 ${max} 次已到，今日其餘呼叫 fail-open`);
         writeJson(file, { day: today, calls, notified: true });
@@ -52,6 +62,24 @@ export function withDailyBudget(adapter, {
 
     writeJson(file, { day: today, calls: calls + 1, notified: false });
     return adapter(state, questions, opts);
+  };
+}
+
+// Zen free tier: past `max` calls a day, hand the rest to the backup. 10-18 the
+// egress IP was flagged as abusive after 114–365 Zen calls a day; the cap keeps
+// our share of that traffic flat. Returns true when this call may go to Zen.
+export function makeZenDailyTake({
+  max = Number(process.env.JEV_ZEN_DAILY_MAX ?? 150),
+  file = process.env.JEV_ZEN_BUDGET_FILE ?? join(homedir(), '.jevgate', 'zen-budget.json'),
+  now = Date.now,
+} = {}) {
+  return () => {
+    const today = localDay(now());
+    const data = readJson(file);
+    const calls = data !== null && data.day === today && Number.isFinite(data.calls) ? data.calls : 0;
+    if (calls >= max) return false;
+    writeJson(file, { day: today, calls: calls + 1 });
+    return true;
   };
 }
 

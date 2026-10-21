@@ -40,6 +40,7 @@ import math
 import os
 import random
 import re
+import signal
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -245,6 +246,7 @@ def build_units(rows, external_weight=None):
                 "target": target,
                 "n_opt": n_opt,
                 "truth": teacher_hard(q, teacher.get(qid)),
+                "tconf": (teacher.get(qid) or {}).get("confidence"),
                 "baseline": local.get(qid),
                 "external": ext,
                 "weight": external_weight if ext else 1.0,
@@ -598,11 +600,11 @@ EASY_FLOOR = int(os.environ.get("JEV_LAYA_EASY_FLOOR", "5"))
 # 為什麼折進來：封頂跑在加權「之後」會均勻抽、把剛挑出來的難題隨機丟掉，加權等於被抵銷；
 # 跑在「之前」又是在還不知道哪題難的時候先丟。唯一正確的位置是同一個函式裡——難題先在
 # 族內互相競爭填配額，剩下的配額才給防遺忘樣本。
-MAX_PER_QID = int(os.environ.get("JEV_LAYA_MAX_PER_QID", "300"))
+MAX_PER_QID = int(os.environ.get("JEV_LAYA_MAX_PER_QID", "150"))  # 預設＝夜訓值
 
 
 def hard_weights(units, hard_weight=None, easy_ratio=None, easy_floor=None, cap=None,
-                 seed=SEED):
+                 seed=SEED, targets=()):
     """現役答錯的優先全收並加權；答對（含還沒標註的）逐族抽樣留一部分防遺忘。
     回 (保留的 units, 統計)。
 
@@ -616,6 +618,9 @@ def hard_weights(units, hard_weight=None, easy_ratio=None, easy_floor=None, cap=
     easy_ratio = EASY_RATIO if easy_ratio is None else easy_ratio
     easy_floor = EASY_FLOOR if easy_floor is None else easy_floor
     cap = MAX_PER_QID if cap is None else cap
+    # cap 可以是 {題族: 上限}（family_quotas 的輸出，沒列的族＝0）；targets 內的族改嚴選
+    caps = cap if isinstance(cap, dict) else None
+    targets = set(targets or ())
     by_fam = {}
     for i, u in enumerate(units):
         if not u.get("external"):
@@ -628,7 +633,19 @@ def hard_weights(units, hard_weight=None, easy_ratio=None, easy_floor=None, cap=
         want = max(want, 0)
         return sorted(rng.sample(pool, want)) if want < len(pool) else pool
 
-    for idx in by_fam.values():
+    def _strict(pool, want):
+        # 嚴選：供給遠大於配額時先拿老師最有把握的。只有 choice 帶 confidence；noul 沒有，
+        # 全部同分＝退回隨機抽，不拿 |noul-0.5| 排序（會偏掉中段難題，見 TRUST_CONF_MIN 註解）
+        want = max(want, 0)
+        if want >= len(pool):
+            return pool
+        shuffled = rng.sample(pool, len(pool))
+        return sorted(sorted(shuffled, key=lambda i: -(units[i].get("tconf") or 0.0))[:want])
+
+    for fam, idx in by_fam.items():
+        if caps is not None:
+            cap = caps.get(fam, 0)
+        take = _strict if fam in targets else _take
         wrong_all = [i for i in idx if baseline_correct(units[i]) is False]
         wrong_set = set(wrong_all)
         easy = [i for i in idx if i not in wrong_set]
@@ -636,12 +653,12 @@ def hard_weights(units, hard_weight=None, easy_ratio=None, easy_floor=None, cap=
             # 封頂內先替防遺忘留位子，否則難題會把名額吃光（實測語料每族 1000+ 難題、
             # cap 150，不預留的話 9 族只剩 54 筆答對的），easy_ratio 就等於失效。
             reserved = min(len(easy), max(easy_floor, int(round(cap * easy_ratio / (1 + easy_ratio)))))
-            wrong = _take(wrong_all, cap - reserved)
+            wrong = take(wrong_all, cap - reserved)
         else:
             wrong = wrong_all
         want = max(easy_floor, int(round(easy_ratio * len(wrong))))
         # 難題沒用滿配額時，剩下的讓給防遺忘樣本
-        picked = _take(easy, min(want, cap - len(wrong)) if cap > 0 else want)
+        picked = take(easy, min(want, cap - len(wrong)) if cap > 0 else want)
         for i in wrong:
             units[i]["weight"] = hard_weight
         for i in picked:
@@ -655,11 +672,128 @@ def hard_weights(units, hard_weight=None, easy_ratio=None, easy_floor=None, cap=
     return [u for i, u in enumerate(units) if u.get("external") or i in keep], stats
 
 
+# ------------------------------------------------- C2 接手價值配額
+# 訓練的目的是少打 Jev。10-17 夜訓 600 units 由每族 cap 150＋等比例縮平均分給 31 族（主要 8 族
+# 各 72），但只有「shadow 量過、還沒過接手閘」的題族練好才會少一次 Jev 呼叫：claim_#（stop-gate
+# 整個請求只有它，Jev 用量最大）、call_t#（compact 另一題 result_t# 已過閘）。其餘題族不是已過閘，
+# 就是沒有本機車道（route-judge 不走 Laya router），多練不會少一次呼叫，只留防遺忘底量。
+# 目標＝laya-whitelist.json 的 rejected 題族（laya-calibrate.py 每晚產）。檔案缺、沒有 rejected、
+# 或設 JEV_LAYA_TARGETS=off → 回 None，沿用舊的 cap＋等比例行為。
+# 10-20 起目標之間按「呼叫量 ÷ 離閘距離」分（target_weights）：差一點就過閘、呼叫又多的族先拿名額；
+# laya-calibrate.py 判為停滯（連 3 晚 lb 沒漲）的族權重 0，只留底量。
+# ponytail: 用不完的不回流；距離下限 0.02 防除以零，lb 缺（樣本不足）當距離 0.5。
+TARGETS = os.environ.get("JEV_LAYA_TARGETS", "auto")
+TARGET_FLOOR = int(os.environ.get("JEV_LAYA_TARGET_FLOOR", "15"))
+WHITELIST_FILE = os.environ.get("JEV_LAYA_WHITELIST_FILE",
+                                str(Path.home() / ".jevgate" / "laya-whitelist.json"))
+
+
+def target_families(spec=None, path=None):
+    """接手目標題族 set；None＝關閉。spec：auto（讀白名單 rejected）、off、或逗號清單。"""
+    spec = TARGETS if spec is None else spec
+    if not spec or spec == "off":
+        return None
+    if spec != "auto":
+        return {s.strip() for s in spec.split(",") if s.strip()} or None
+    try:
+        wl = json.loads(Path(path or WHITELIST_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    return {e["family"] for e in wl.get("rejected") or [] if e.get("family")} or None
+
+
+def target_weights(path=None):
+    """{題族: 權重}＝requests ÷ max(目標-lb, 0.02)，停滯族 0。讀不到白名單回 None（均分）。
+    目標＝max(1-alpha, constant)：calibrate 要 lb 贏過「一律答多數答案」才放行（10-20），
+    lb 0.996 但常數 1.0 的族不是「差一點」；常數 1.0（老師從不變）永遠過不了，權重 0。
+    被判 constant（lb 已高、只是贏不過常數）的族也是 0：差距小讓 requests÷差距爆大，10-20 試算
+    wrong_reading_costly（lb .963／常數 .989）權重 20374 吸走名額，tier／ambiguous 只剩底量；
+    老師幾乎只答一種，多練只會更會抄多數答案，抓不到少數的例外。
+    同族多個 caller：requests 加總、lb／constant 取 requests 最多那筆（與 laya-calibrate.fam_summary 同規則）。"""
+    try:
+        wl = json.loads(Path(path or WHITELIST_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    goal = 1 - float(wl.get("alpha", 0.10))
+    stall = set(wl.get("stalled") or ())
+    agg = {}
+    for e in wl.get("rejected") or []:
+        fam = e.get("family")
+        if not fam:
+            continue
+        a = agg.setdefault(fam, [0, -1, None, 0.0, None])
+        req = e.get("requests") or 0
+        a[0] += req
+        if req > a[1]:
+            a[1], a[2], a[3], a[4] = req, e.get("lb"), e.get("constant") or 0.0, e.get("reason")
+    out = {}
+    for fam, (req, _, lb, const, reason) in agg.items():
+        gap = 0.5 if lb is None else max(max(goal, const) - lb, 0.02)
+        out[fam] = 0.0 if fam in stall or const >= 1.0 or reason == "constant" else req / gap
+    return out or None
+
+
+def family_quotas(units, targets, budget, floor=None, weights=None):
+    """{題族: 上限}：非目標族各留 min(族大小, floor)，目標族各先拿 floor，剩下按 weights 比例分
+    （weights 缺或全 0 就均分）。目標族在語料裡一筆都沒有、或預算不夠底量，回 None（退回舊行為）。"""
+    floor = TARGET_FLOOR if floor is None else floor
+    sizes = {}
+    for u in units:
+        if not u.get("external"):
+            fam = _family(u["qid"])
+            sizes[fam] = sizes.get(fam, 0) + 1
+    present = sorted(t for t in (targets or ()) if sizes.get(t))
+    if not present or budget <= 0:
+        return None
+    quotas = {fam: min(n, floor) for fam, n in sizes.items() if fam not in present}
+    rest = budget - sum(quotas.values())
+    if rest // len(present) < floor:
+        return None
+    w = {t: (weights or {}).get(t, 0.0) for t in present}
+    if not sum(w.values()):
+        w = {t: 1.0 for t in present}
+    extra = rest - floor * len(present)
+    total = sum(w.values())
+    for t in present:
+        quotas[t] = min(sizes[t], floor + int(extra * w[t] / total))
+    return quotas
+
+
+# ------------------------------------------------- C3 固定答案題族不練
+# 老師硬答案幾乎只有一個值的題族沒有資訊量（10-19 量：compact result_t# 2,797 題 ≥.5 佔 0%、
+# route wrong_reading_costly 373 題 ≥.5 佔 0.8%）。正解是從請求裡拿掉（fix 10629），
+# 不是讓 Laya 學著答；留在教材裡只會占掉名額、把分類頭往常數拉。接手目標族一律不排除。
+# ponytail: 只看單一值占比，不看老師信心；占比門檻要調就設 JEV_LAYA_CONST_SHARE。
+CONST_SHARE = float(os.environ.get("JEV_LAYA_CONST_SHARE", "0.99"))
+CONST_MIN_N = int(os.environ.get("JEV_LAYA_CONST_MIN_N", "200"))
+
+
+def constant_families(units, share=None, min_n=None, keep=()):
+    """{題族: (多數值占比, 樣本數)}：硬答案單一值占比 ≥ share 且樣本 ≥ min_n。noul 以 0.5 切兩類。"""
+    share = CONST_SHARE if share is None else share
+    min_n = CONST_MIN_N if min_n is None else min_n
+    counts = {}
+    for u in units:
+        t = u.get("truth")
+        if u.get("external") or t is None:
+            continue
+        v = (t >= 0.5) if u.get("qtype") == "noul" else t
+        c = counts.setdefault(_family(u["qid"]), {})
+        c[v] = c.get(v, 0) + 1
+    out = {}
+    for fam, c in counts.items():
+        n = sum(c.values())
+        top = max(c.values()) / n
+        if fam not in set(keep or ()) and n >= min_n and top >= share:
+            out[fam] = (round(top, 4), n)
+    return out
+
+
 # ------------------------------------------------- D 每晚總量上限
 # ponytail: 逐族等比例縮，族內維持當下的難/易比，每族至少留 1 筆。單純隨機抽（--limit）
 # 會把罕見題族整個抽光，也會打壞 1:1。上限：budget 很小時「等比例」會讓大族仍佔多數；
 # 要每族等量再改成逐族固定配額。
-MAX_UNITS = int(os.environ.get("JEV_LAYA_MAX_UNITS", "0"))
+MAX_UNITS = int(os.environ.get("JEV_LAYA_MAX_UNITS", "600"))  # 預設＝夜訓值；0＝不封頂（啟動檢查會改回 600）
 
 
 def budget_units(units, budget=None, seed=SEED):
@@ -813,17 +947,50 @@ def dedup_exact(units):
     return kept, {"dropped": len(drop), "conflict_groups": conflicts, "tie_groups": ties}
 
 
+_M2V_CHILD = """import json, sys, numpy as np
+from model2vec import StaticModel
+m = StaticModel.from_pretrained(sys.argv[1])
+np.save(sys.argv[3], np.asarray(m.encode(json.load(open(sys.argv[2], encoding="utf-8")),
+                                         batch_size=64, max_length=256), dtype=np.float32))
+"""
+
+
 def m2v_embed(texts):
-    """model2vec 靜態向量（CPU、無 torch）。載入約 2.0GB、batch 64 編碼不再長；用完即丟。
+    """model2vec 靜態向量（CPU、無 torch），在子行程跑完就退出。
+    同行程 del＋gc 不會把記憶體還給 OS：10-21 實測去重後基線 1.9→4.6GB 一路留到 encoder 快取，
+    疊上 encoder 峰值 6.7GB（夜訓 10-20 8.1GB）。子行程退出才確定歸還。
     HF_HUB_OFFLINE=1 時模型必須已在快取，否則直接失敗（夜訓每晚都要經過去重，不靜默略過）。"""
-    from model2vec import StaticModel
-    m = StaticModel.from_pretrained(DEDUP_MODEL)
+    import subprocess
+    import tempfile
+    import numpy as np
+    with tempfile.TemporaryDirectory(prefix="laya-m2v-") as d:
+        src, out = Path(d) / "texts.json", Path(d) / "emb.npy"
+        src.write_text(json.dumps(list(texts), ensure_ascii=False), encoding="utf-8")
+        # 夜訓的 /usr/bin/time 只量父行程，子行程這 ~1.8GB 不入帳；輪詢父＋子同時刻 footprint，
+        # 最大值寫進 JEV_LAYA_TREE_PEAK_FILE，夜訓取它與 time 的較大者。
+        p = subprocess.Popen([sys.executable, "-c", _M2V_CHILD, DEDUP_MODEL, str(src), str(out)])
+        tree = 0
+        while p.poll() is None:
+            tree = max(tree, (phys_footprint() or 0) + (phys_footprint(p.pid) or 0))
+            time.sleep(0.5)
+        if p.returncode:
+            raise subprocess.CalledProcessError(p.returncode, p.args)
+        record_tree_peak(tree)
+        print(f"  m2v 子行程：父＋子 footprint 峰值 {tree >> 20}MB", flush=True)
+        return np.load(out)
+
+
+def record_tree_peak(nbytes, path=None):
+    """父＋子同時刻 footprint 峰值（bytes）寫進 JEV_LAYA_TREE_PEAK_FILE（MB 整數），只在變大時覆寫。"""
+    path = path or os.environ.get("JEV_LAYA_TREE_PEAK_FILE")
+    if not path:
+        return
+    f = Path(path)
     try:
-        return m.encode(texts, batch_size=64, max_length=256)
-    finally:
-        del m
-        import gc
-        gc.collect()
+        old = int(f.read_text().strip() or 0)
+    except (OSError, ValueError):
+        old = 0
+    f.write_text(str(max(old, nbytes >> 20)))
 
 
 def dedup_near(units, threshold, embed=m2v_embed):
@@ -1287,12 +1454,109 @@ def fit_temperature(logit_rows, target_rows, torch):
     return float(torch.clamp(log_t.exp(), 0.1, 10.0).item())
 
 
+# ------------------------------------------------- 低記憶體守門（10-20 WO-16）
+# 裸跑 laya-train.py＝RAM 快取＋5×8＋不封頂，cap600 吃到 11GB footprint、swap 停擺 4h（CPU 只算 39 分）。
+# 低記憶體設定以前只寫在 laya-nightly.sh 的指令列，別的呼叫端一漏帶就爆，所以搬進程式本身：
+#   啟動檢查：low_mem_fixes() 把偏離的設定就地改正並逐條印出（快取改磁碟、總量封頂、stdout 逐行）。
+#   執行看守：footprint 連兩次超過 FOOTPRINT_LIMIT_GB → 印原因、總量減半、execv 重啟自己（同 pid，
+#   heavy／timeout 照樣管得到）；已重啟過 MAX_RESTARTS 次還超 → exit 3，不靜默續跑。
+FOOTPRINT_LIMIT_GB = float(os.environ.get("JEV_LAYA_FOOTPRINT_LIMIT_GB", "8"))
+WATCH_SEC = float(os.environ.get("JEV_LAYA_WATCH_SEC", "15"))
+MAX_RESTARTS = 1
+EX_FOOTPRINT = 3
+
+
+def low_mem_fixes(args, env, max_units):
+    """回 (改正清單, 改正後 max_units)；就地改 args（cache_dir）。--lora 要反傳過 encoder、--limit 是量峰值，
+    都不動快取；JEV_LAYA_RAM_CACHE=1 是明示要 RAM 快取。"""
+    fixes = []
+    if not (args.cache_dir or args.lora or args.limit or env.get("JEV_LAYA_RAM_CACHE") == "1"):
+        args.cache_dir = env.get("JEV_LAYA_AUTO_HCACHE") or str(HOME / ".jevgate" / f"laya-hcache-auto-{os.getpid()}")
+        fixes.append(f"快取 RAM→磁碟 {args.cache_dir}")
+    if max_units <= 0:
+        max_units = 600
+        fixes.append("總量不封頂→600")
+    if env.get("PYTHONUNBUFFERED") != "1":
+        fixes.append("stdout→逐行")
+    return fixes, max_units
+
+
+def sweep_dead_auto_caches(root):
+    """刪掉建立者已不在的 laya-hcache-auto-<pid>（SIGKILL／斷電留下的）；回刪掉的路徑。"""
+    import shutil
+    gone = []
+    for d in Path(root).glob("laya-hcache-auto-*"):
+        pid = d.name.rsplit("-", 1)[-1]
+        if not pid.isdigit():
+            continue
+        try:
+            os.kill(int(pid), 0)
+            continue
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            continue
+        shutil.rmtree(d, True)
+        gone.append(d)
+    return gone
+
+
+def phys_footprint(pid=None):
+    """macOS proc_pid_rusage 的 ri_phys_footprint（Activity Monitor「記憶體」欄，含 MPS 統一記憶體）；拿不到回 None。"""
+    try:
+        import ctypes
+        buf = ctypes.create_string_buffer(512)
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib")
+        if lib.proc_pid_rusage(pid or os.getpid(), 2, buf) != 0:  # RUSAGE_INFO_V2
+            return None
+        return int.from_bytes(buf.raw[72:80], "little")  # uuid16＋7 個 u64 之後
+    except OSError:
+        return None
+
+
+def restart_argv_env(env, max_units, cache_dir):
+    """超量重啟用的 env：總量減半（下限 150）、重啟次數＋1、沿用同一個自動快取目錄。超過次數回 None。"""
+    n = int(env.get("JEV_LAYA_RESTARTS", "0"))
+    if n >= MAX_RESTARTS:
+        return None
+    new = dict(env, JEV_LAYA_RESTARTS=str(n + 1), JEV_LAYA_MAX_UNITS=str(max(150, max_units // 2)), PYTHONUNBUFFERED="1")
+    if cache_dir and Path(cache_dir).name.startswith("laya-hcache-auto-"):
+        new["JEV_LAYA_AUTO_HCACHE"] = cache_dir
+    return new
+
+
+def start_footprint_watch(max_units, cache_dir, limit_gb=FOOTPRINT_LIMIT_GB, every=WATCH_SEC):
+    import threading
+
+    def run():
+        over = 0
+        while True:
+            time.sleep(every)
+            fp = phys_footprint()
+            over = over + 1 if fp and fp > limit_gb * 2**30 else 0
+            if over < 2:
+                continue
+            env = restart_argv_env(dict(os.environ), max_units, cache_dir)
+            msg = f"footprint {fp / 2**30:.1f}GB > {limit_gb}GB 連兩次"
+            if env is None:
+                print(f"[laya-watch] {msg}，已重啟 {MAX_RESTARTS} 次仍超量 → exit {EX_FOOTPRINT}", file=sys.stderr, flush=True)
+                if cache_dir and Path(cache_dir).name.startswith("laya-hcache-auto-"):
+                    import shutil
+                    shutil.rmtree(cache_dir, True)
+                os._exit(EX_FOOTPRINT)
+            print(f"[laya-watch] {msg} → 總量 {max_units}→{env['JEV_LAYA_MAX_UNITS']} 重啟", file=sys.stderr, flush=True)
+            os.execve(sys.executable, [sys.executable, *sys.argv], env)
+
+    threading.Thread(target=run, daemon=True, name="laya-footprint-watch").start()
+
+
 def main():
+    global MAX_UNITS
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--selftest", action="store_true", help="只驗資料轉換，不載模型")
     ap.add_argument("--dry-run", action="store_true", help="建 items 報規模就停")
-    ap.add_argument("--folds", type=int, default=5)
-    ap.add_argument("--epochs", type=int, default=8)
+    ap.add_argument("--folds", type=int, default=3)  # 預設＝夜訓值（10-13 起 3×4；舊 5×8 一趟 1.6h）
+    ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--train-head", action=argparse.BooleanOptionalAction, default=True,
@@ -1316,9 +1580,22 @@ def main():
     if args.selftest:
         selftest()
         return 0
+    fixes, MAX_UNITS = low_mem_fixes(args, os.environ, MAX_UNITS)
+    sys.stdout.reconfigure(line_buffering=True)
+    if args.cache_dir and Path(args.cache_dir).name.startswith("laya-hcache-auto-"):
+        import atexit
+        import shutil
+        sweep_dead_auto_caches(Path(args.cache_dir).parent)
+        atexit.register(shutil.rmtree, args.cache_dir, True)  # 自動快取跑完就刪；execve 重啟不觸發 atexit，續用同目錄
+        for sig in (signal.SIGTERM, signal.SIGHUP):  # 預設處理不跑 atexit（timeout -s TERM 會留下快取，10-20 實測）
+            signal.signal(sig, lambda s, _f: sys.exit(128 + s))
+    print(f"[laya-start] cache={'disk' if args.cache_dir else 'ram'} folds={args.folds} epochs={args.epochs} "
+          f"max_units={MAX_UNITS} per_qid={MAX_PER_QID} footprint_limit={FOOTPRINT_LIMIT_GB}GB"
+          + (f"；已改正：{'；'.join(fixes)}" if fixes else ""), flush=True)
     heavy = Path.home() / ".local/bin/heavy"  # 全機重活閘（agent-tools/bin/heavy）：10-11 手動訓練與 TTS 併跑到 free 6%
     if os.environ.get("HEAVY_HELD") != "1" and heavy.exists():
         os.execv(str(heavy), [str(heavy), "--", sys.executable, *sys.argv])
+    start_footprint_watch(MAX_UNITS, args.cache_dir)
     if args.lora and args.promote:
         print("--lora 不支援 --promote（見檔頭 ponytail）", file=sys.stderr)
         return 2
@@ -1382,7 +1659,24 @@ def main():
           f"平票整組丟 {dedup_stats['tie_groups']}），cosine≥{DEDUP_COS} 同答案丟 "
           f"{dedup_stats['near_dropped']}（{time.time() - t0:.0f}s），剩 {len(units)} units")
     # C 答錯加權＋防遺忘。在去重之後：抽到的 retention 樣本才彼此不同。
-    units, hard_stats = hard_weights(units)
+    # C2 接手價值配額：名額集中給「練好就少打 Jev」的題族（需有總量上限才有意義）
+    targets = target_families()
+    consts = constant_families(units, keep=targets or ())
+    if consts:
+        before = len(units)
+        units = [u for u in units if u.get("external") or _family(u["qid"]) not in consts]
+        print(f"固定答案題族不練：{', '.join(f'{f}({s:.1%}/{n})' for f, (s, n) in sorted(consts.items()))}"
+              f"，丟 {before - len(units)} units")
+    weights = target_weights() if TARGETS == "auto" else None
+    quotas = family_quotas(units, targets, MAX_UNITS, weights=weights) if MAX_UNITS > 0 else None
+    if quotas:
+        print(f"接手目標 {sorted(t for t in targets if t in quotas)}："
+              + "、".join(f"{t}={quotas[t]}" for t in sorted(targets) if t in quotas)
+              + f"，其餘每族 ≤{TARGET_FLOOR}")
+    else:
+        print(f"接手目標：無（targets={sorted(targets) if targets else None}），沿用每族均分")
+    units, hard_stats = hard_weights(units, cap=quotas, targets=targets if quotas else ())
+    hard_stats["targets"] = sorted(targets) if quotas else None
     print(f"答錯加權（每族上限 {hard_stats['cap']}）：難題 {hard_stats['hard_n']}"
           f"（weight {hard_stats['hard_weight']}，封頂丟 {hard_stats['hard_dropped']}）、"
           f"防遺忘留 {hard_stats['easy_n']}（1:{hard_stats['easy_ratio']:g}，丟 "

@@ -93,7 +93,9 @@ fi
 HCACHE="${JEV_LAYA_HCACHE_DIR:-$HOME/.jevgate/laya-hcache}"
 rm -rf "$HCACHE"; mkdir -p "$HCACHE"
 TIMEF=$(mktemp)
-PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 JEV_LAYA_MAX_PER_QID="${JEV_LAYA_MAX_PER_QID:-150}" \
+# time 只量 python 本身；子行程（m2v 去重）的量由 laya-train 寫進這個檔，峰值取兩者較大（fix 11166）
+TREEF=$(mktemp)
+JEV_LAYA_TREE_PEAK_FILE="$TREEF" PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 JEV_LAYA_MAX_PER_QID="${JEV_LAYA_MAX_PER_QID:-150}" \
   JEV_LAYA_MAX_UNITS="${JEV_LAYA_MAX_UNITS:-600}" \
   timeout -s TERM "$TRAIN_TIMEOUT" \
   /usr/bin/time -l taskpolicy -b sh -c 'exec "$@" 2>&3' sh "$PY" "$DIR/scripts/laya-train.py" --promote \
@@ -102,16 +104,19 @@ PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 JEV_LAYA_MAX_PER_QID="${JEV_LAYA_MAX_PER_QID
 RC=$?
 rm -rf "$HCACHE"  # 1263 units 約 1.3GB，每晚整份重算，不留
 PEAK_MB=$(awk '/peak memory footprint/{print int($1/1048576)}' "$TIMEF")
-rm -f "$TIMEF"
-echo "$(date -u +%FT%TZ) train peak_fp=${PEAK_MB:-?}MB rc=${RC}"
+TREE_MB=$(cat "$TREEF" 2>/dev/null)
+rm -f "$TIMEF" "$TREEF"
+[ -n "$TREE_MB" ] && [ "$TREE_MB" -gt "${PEAK_MB:-0}" ] && PEAK_MB=$TREE_MB
+echo "$(date -u +%FT%TZ) train peak_fp=${PEAK_MB:-?}MB tree_fp=${TREE_MB:-?}MB rc=${RC}"
 # 10-08/09 MPS 快取囤到 15GB 被 ram_guard 砍（fix 10256），修後實測 8.2GB。超過門檻就是回歸。
 PEAK_WARN_MB="${JEV_LAYA_PEAK_WARN_MB:-6144}"  # 10-11 低強度模式實測 4.7GB
 if [ "${PEAK_MB:-0}" -ge "$PEAK_WARN_MB" ]; then
-  hpush "⚠️ Laya 訓練記憶體峰值 ${PEAK_MB}MB ≥ ${PEAK_WARN_MB}MB，MPS 快取可能又在囤（fix 10256）"
+  hpush "⚠️ Laya 訓練記憶體峰值 ${PEAK_MB}MB ≥ ${PEAK_WARN_MB}MB（含子行程的父＋子峰值 ${TREE_MB:-?}MB）。先分階段取樣父＋子 footprint 再歸因，別直接套 MPS 快取（fix 11166／10256）"
 fi
 if [ "$RC" != 0 ]; then
   HINT=""
   [ "$RC" = 124 ] && HINT="（訓練超過 ${TRAIN_TIMEOUT}s 硬時限，看 log 停在哪個 fold/epoch；調 JEV_LAYA_MAX_PER_QID）"
+  [ "$RC" = 3 ] && HINT="（footprint 看守：超過 JEV_LAYA_FOOTPRINT_LIMIT_GB，減半重啟後仍超；grep laya-watch 看量值）"
   [ "$RC" = 143 ] && HINT="（SIGTERM，多半是 ram_guard 砍：grep 'kill rule' ~/.omlx/logs/ram_guard.log）"
   hpush "⚠️ Laya 夜間訓練失敗 rc=${RC}${HINT}，看 ~/.jevgate/laya-nightly.log"
   exit "$RC"
@@ -208,11 +213,19 @@ if [ "$(jq -r '.promoted // false' "$REPORT" 2>/dev/null)" = true ]; then
   fi
 fi
 
+# route-judge hook 不走 Laya router，線上沒有它的 shadow 列：用現役 bundle 重答
+# champion 上線後的 route-judge corpus，寫成 replay shadow 列給下面的校準。
+# 必須在換權重之後（洩漏邊界跟著 promoted_at 走）；失敗只推播，不擋校準。
+# rc=134 同標註段：ORT teardown 競態，列已寫完，不算失敗。
+node "${JEV_LAYA_REPLAY_SCRIPT:-$DIR/scripts/laya-replay-routejudge.mjs}"
+RRC=$?
+[ "$RRC" = 0 ] || [ "$RRC" = 134 ] || hpush "⚠️ Laya route-judge 重放失敗 rc=${RRC}，看 ~/.jevgate/laya-nightly.log"
+
 # 接手白名單：用 shadow 樣本（上線流量旁跑的本機答案＋老師答案）逐 (caller, 題族) 重校門檻。
 # 零 token、秒級；router 只在 JEV_LAYA_WHITELIST=live 時讀，預設只產檔供人看。
 WL_SUM=""
 if "$PY" "$DIR/scripts/laya-calibrate.py" > /tmp/laya-calibrate.$$ 2>&1; then
-  WL_SUM=$(jq -r '"白名單 \(.entries | length) 族／未過 \(.rejected | length) 族"' \
+  WL_SUM=$(jq -r '"白名單 \(.entries | length) 族／未過 \(.rejected | length) 族" + (if (.stalled // []) | length > 0 then "／停滯 \(.stalled | join(","))" else "" end) + (if (.dark // []) | length > 0 then "／斷流 \(.dark | join(","))" else "" end)' \
     "${JEV_LAYA_WHITELIST_FILE:-$HOME/.jevgate/laya-whitelist.json}" 2>/dev/null)
 else
   hpush "⚠️ Laya 白名單校準失敗：$(tail -1 /tmp/laya-calibrate.$$)"

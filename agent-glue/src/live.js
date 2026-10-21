@@ -144,13 +144,17 @@ export function resetLive() {
 // `proxy`: a tailscaled in userspace-networking mode cannot route to tailnet IPs
 // directly; JEV_CASCADE_PROXY (its --outbound-http-proxy-listen) is used for
 // this fetch only. Bun's fetch honours `proxy`; Node ignores it.
-export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fetchImpl = fetch, proxy = process.env.JEV_CASCADE_PROXY } = {}) {
+// `laneQtypes: null` sends no lane header: the daemon then uses its own router
+// (state filter, whitelist lane, shadow) — route-judge, whose Laya lane is the
+// calibrated whitelist, not a fixed question-type list.
+export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fetchImpl = fetch, proxy = process.env.JEV_CASCADE_PROXY, laneQtypes = TRIAGE_LAYA_QTYPES } = {}) {
   const base = String(url).replace(/\/+$/, '');
   return {
     async evaluate(input) {
       const res = await fetchImpl(`${base}/v1/systemone`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-jev-caller': caller, 'x-jev-laya-qtypes': TRIAGE_LAYA_QTYPES.join(',') },
+        headers: { 'content-type': 'application/json', 'x-jev-caller': caller,
+          ...(laneQtypes ? { 'x-jev-laya-qtypes': laneQtypes.join(',') } : {}) },
         body: JSON.stringify({ state: input?.state, questions: input?.questions }),
         signal: AbortSignal.timeout(timeoutMs),
         ...(proxy && !base.startsWith('http://127.0.0.1') ? { proxy } : {}),

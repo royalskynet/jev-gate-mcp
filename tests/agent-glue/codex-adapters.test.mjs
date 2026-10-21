@@ -129,7 +129,8 @@ for (const [script, event] of CASES) {
   });
 }
 
-test('codex adapters: the advisory actually carries a Jev answer, not a fail-open stub', async () => {
+// Opt-in (JEV_RUN_SMOKE=1): the one real Jev call in this file must not run on every `npm test`.
+test('codex adapters: the advisory actually carries a Jev answer, not a fail-open stub', { skip: process.env.JEV_RUN_SMOKE !== '1' && 'live: set JEV_RUN_SMOKE=1' }, async () => {
   // No offline env: this is the one real Jev call in the file.
   const { stdout } = await fire('user_prompt_submit.mjs', {
     hook_event_name: 'UserPromptSubmit',

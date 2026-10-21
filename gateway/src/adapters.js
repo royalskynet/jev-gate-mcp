@@ -8,8 +8,9 @@ import path from 'node:path';
 import { readFileSync, statSync } from 'node:fs';
 import { JevDecisionModel } from 'jevwire';
 import { ERR, LIMITS } from './core.js';
-import { recordZenStatus, zenCoolingDown } from './zen-status.js';
+import { readZenStatus, recordZenStatus, zenCoolingDown } from './zen-status.js';
 import { groupByCrop } from './laya-state.js';
+import { makeZenDailyTake } from './budget.js';
 import { meteredFetch, callerName } from '../../agent-glue/src/usage-ledger.js';
 
 // `gateway:<script>` (jev-route, stdio = MCP, zen-free-probe…) unless
@@ -108,8 +109,14 @@ export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai
 // primary/backup state. Without a backup a Zen failure still fails closed.
 const ZEN_RETRY_COOLDOWN_MS = 5 * 60_000; // non-429 failures: stop paying the timeout on every call
 const ZEN_QUOTA_DEFAULT_MS = 60 * 60_000; // 429 without a usable retry-after
+// 403 FreeTierError: the egress IP is flagged as abusive (10-18, official client too).
+// Retrying every 5 min only feeds the flag; same 6h window as dc's ZEN_GATE_S.
+const ZEN_ABUSE_COOLDOWN_MS = 6 * 3600_000;
+// A ban that is still there after the window doubles it (6h→12h→24h→48h): a
+// fixed 6h retry is 4 hits a day of the very traffic the flag counts (10-19).
+const ZEN_ABUSE_COOLDOWN_MAX_MS = 48 * 3600_000;
 
-export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', model = 'jev-1.13-free', timeoutMs = LIMITS.deadlineMs, onStatus = recordZenStatus, backup = null, coolingDown = zenCoolingDown, fetch: fetchImpl = globalThis.fetch, now = Date.now }) {
+export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', model = 'jev-1.13-free', timeoutMs = LIMITS.deadlineMs, onStatus = recordZenStatus, readStatus = readZenStatus, backup = null, coolingDown = zenCoolingDown, takeZen = makeZenDailyTake(), fetch: fetchImpl = globalThis.fetch, now = Date.now }) {
   // Fail loud on a pasted OpenRouter/TypeSafe id (`typesafe/jev-1.13`,
   // `openrouter/…`): Zen's catalog is bare ids, and a silent 400 from the
   // provider would read as "the free model is broken" instead of "wrong id".
@@ -134,16 +141,31 @@ export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', mo
   const call = makeOpenrouterAdapter({ apiKey, baseUrl, model, timeoutMs, maxRetries: 0, fetch: peek });
   return async (state, questions, opts = {}) => {
     // The backup keeps the caller's model id: OpenRouter wants `typesafe/…`.
-    if (backup && coolingDown(now())) return backup(state, questions, opts);
+    // Cooling skips Zen for every caller: without a backup it fails closed with
+    // no network call — a ban fed by backup-less callers never lapses (fix 11052).
+    if (coolingDown(now())) {
+      if (backup) return backup(state, questions, opts);
+      throw ERR.provider(`zen ${model} cooling down; skipped without a network call`, false);
+    }
+    // Daily cap (JEV_ZEN_DAILY_MAX): over it the backup answers, so our volume never becomes the abuse signal.
+    if (backup && !takeZen()) return backup(state, questions, opts);
     try {
       const result = await call(state, questions, { ...opts, model });
       onStatus(true, { model: result.model ?? model });
       return result;
     } catch (e) {
       const quota = e?.status === 429 || e?.cause?.status === 429;
+      const abuse = (e?.body ?? e?.cause?.body)?.error?.type === 'FreeTierError';
       // Recorded even without a backup: the probe reports when Zen comes back.
-      const cooldown_until = now() + (quota ? (retryAfterS > 0 ? retryAfterS * 1000 : ZEN_QUOTA_DEFAULT_MS) : ZEN_RETRY_COOLDOWN_MS);
-      onStatus(false, { model, error: e?.message ?? String(e), error_class: e?.name ?? null, cooldown_until });
+      const prev = abuse ? readStatus() : null;
+      const block_streak = abuse ? (prev?.blocked ? (prev.block_streak || 1) + 1 : 1) : 0;
+      const cooldown_until = now() + (abuse ? Math.min(ZEN_ABUSE_COOLDOWN_MS * 2 ** (block_streak - 1), ZEN_ABUSE_COOLDOWN_MAX_MS)
+        : quota ? (retryAfterS > 0 ? retryAfterS * 1000 : ZEN_QUOTA_DEFAULT_MS) : ZEN_RETRY_COOLDOWN_MS);
+      // `blocked` tells the probe an IP ban (needs a human) from a quota swap (heals itself).
+      onStatus(false, {
+        model, error: e?.message ?? String(e), error_class: e?.name ?? null, cooldown_until, blocked: abuse, block_streak,
+        ...(abuse && { remediation: `Zen 免費層 403 FreeTierError：OpenCode 判本機出口 IP 濫用，官方客戶端同樣被擋。冷卻至 ${new Date(cooldown_until).toISOString()}，期間 Jev 走付費 OpenRouter；解封要等上游。` }),
+      });
       // No backup: abort, do not degrade — the gateway fails closed.
       if (!backup) throw e;
       return backup(state, questions, opts);

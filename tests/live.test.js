@@ -7,9 +7,11 @@ import { makeJudge, DEFAULT_CONFIG } from '../plugin/lib/judge.js';
 // ponytail: one live test, skipped without a key. The stubbed tests prove the
 // wiring; only this one proves the provider id and request shape are real.
 // It is the check that would have caught model "typesafe/jev-1.13.0" (404).
-const hasKey = existsSync(DEFAULT_CONFIG.apiKeyFile);
+// Real provider calls are opt-in (JEV_RUN_SMOKE=1, same switch as smoke-matrix): a
+// plain `npm test` with a key on disk used to spend Zen/OpenRouter quota (10-19).
+const hasKey = process.env.JEV_RUN_SMOKE === '1' && existsSync(DEFAULT_CONFIG.apiKeyFile);
 
-test('live: real Jev call actually prunes, keeps the signal line verbatim', { skip: !hasKey && 'no api key' }, async () => {
+test('live: real Jev call actually prunes, keeps the signal line verbatim', { skip: !hasKey && 'live: set JEV_RUN_SMOKE=1 (needs api key)' }, async () => {
   const SIGNAL = 'ERROR: config.yaml not found at /etc/app/config.yaml';
   const noise = Array.from({ length: 400 }, (_, i) => `debug heartbeat tick ${i} ok ok ok ok ok ok ok ok`);
   const output = [...noise.slice(0, 200), SIGNAL, ...noise.slice(200)].join('\n');

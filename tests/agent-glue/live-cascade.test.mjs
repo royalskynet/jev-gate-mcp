@@ -18,6 +18,14 @@ test('cascadeTransport sends the triage Laya lane and keys answers by question i
   assert.equal(r.answers.difficulty.score, 0.2);
 });
 
+test('cascadeTransport with laneQtypes null sends no lane header (daemon router decides)', async () => {
+  let headers;
+  const fetchImpl = async (u, init) => { headers = init.headers; return { ok: true, json: async () => ({ answers: {} }) }; };
+  await cascadeTransport('http://127.0.0.1:8793', { caller: 'route-judge', fetchImpl, laneQtypes: null }).evaluate({ questions: {} });
+  assert.equal(headers['x-jev-caller'], 'route-judge');
+  assert.equal('x-jev-laya-qtypes' in headers, false);
+});
+
 test('cascadeTransport throws on a non-2xx so the caller can fall back', async () => {
   const t = cascadeTransport('http://127.0.0.1:1', { fetchImpl: async () => ({ ok: false, status: 502 }) });
   await assert.rejects(() => t.evaluate({ questions: {} }), /cascade 502/);

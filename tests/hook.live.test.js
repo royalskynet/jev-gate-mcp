@@ -7,7 +7,9 @@ import { CONFIG, LEDGER, TARGETS, TARGET_NAMES, appendLedger, followZenCooldown,
 // share plugin/lib/judge.js). That duplicate is exactly where a wrong model id
 // or endpoint would hide behind fail-open, so it needs its own positive
 // assertion: a real call, and output that measurably shrinks.
-const hasKey = existsSync(CONFIG.apiKeyFile);
+// Real provider calls are opt-in (JEV_RUN_SMOKE=1, same switch as smoke-matrix): a
+// plain `npm test` with a key on disk used to spend Zen/OpenRouter quota (10-19).
+const hasKey = process.env.JEV_RUN_SMOKE === '1' && existsSync(CONFIG.apiKeyFile);
 
 /** A stand-in for the engine's `$`, backed by Node. */
 function makeHost(userText = 'Find why the app cannot load its config file.') {
@@ -50,7 +52,7 @@ test('every target tool gets its own tool.call hook', () => {
   assert.deepEqual(Object.keys(hooks).sort(), TARGET_NAMES.slice().sort(), 'a TARGETS entry has no hook (or vice versa)');
 });
 
-test('live: hook wire actually judges — a noise chunk comes back "drop"', { skip: !hasKey && 'no api key' }, async () => {
+test('live: hook wire actually judges — a noise chunk comes back "drop"', { skip: !hasKey && 'live: set JEV_RUN_SMOKE=1 (needs api key)' }, async () => {
   const $ = makeHost();
   // Same host choice as the hook: OpenRouter while Zen free is cooling down.
   await followZenCooldown($);
@@ -67,7 +69,7 @@ test('live: hook wire actually judges — a noise chunk comes back "drop"', { sk
   assert.equal(verdict, 'drop', 'judge returned keep — wire likely failed open');
 });
 
-test('live: Bash hook shrinks a long stdout', { skip: !hasKey && 'no api key' }, async () => {
+test('live: Bash hook shrinks a long stdout', { skip: !hasKey && 'live: set JEV_RUN_SMOKE=1 (needs api key)' }, async () => {
   const out = noisyLog();
   assert.ok(out.length > TARGETS.Bash.thresholdChars);
 
@@ -87,7 +89,7 @@ test('live: Bash hook shrinks a long stdout', { skip: !hasKey && 'no api key' },
   assert.ok($.logs.some((l) => l.startsWith('jev-prune(Bash):')), 'no prune log line');
 });
 
-test('live: Grep hook shrinks content-mode matches and fixes numLines', { skip: !hasKey && 'no api key' }, async () => {
+test('live: Grep hook shrinks content-mode matches and fixes numLines', { skip: !hasKey && 'live: set JEV_RUN_SMOKE=1 (needs api key)' }, async () => {
   const out = noisyLog();
   // ponytail: live judge is nondeterministic — retry the drop a bounded number
   // of times; the assertions below run against the attempt that shrank.
@@ -220,7 +222,7 @@ test('appendLedger never throws: a broken ledger cannot break its caller', async
   await assert.doesNotReject(appendLedger($, 'jev-prune(Grep): 100 → 100 chars, 0 lines dropped'));
 });
 
-test('live: a real drop writes a ledger-style line', { skip: !hasKey && 'no api key' }, async () => {
+test('live: a real drop writes a ledger-style line', { skip: !hasKey && 'live: set JEV_RUN_SMOKE=1 (needs api key)' }, async () => {
   // Same live Bash prune as above, but with a full host (clock + fs.write) so
   // the ledger path is exercised end to end, not just the prune logic. The
   // judge is a live, nondeterministic model, so retry the drop a bounded number

@@ -3,7 +3,7 @@
 // gateway: it must answer "is the free tier still free and alive?" on its own,
 // including when the gateway is the thing that is broken.
 //
-//   node scripts/zen-free-probe.mjs          # print verdict, exit 0 ok / 1 abort / 2 cooling, OpenRouter backs it
+//   node scripts/zen-free-probe.mjs          # print verdict, exit 0 ok / 1 abort / 2 cooling, OpenRouter backs it / 3 IP blocked
 //   node scripts/zen-free-probe.mjs --quiet  # exit code only (for launchd/cron)
 //
 // Exit 1 is the alarm a scheduler watches. It never notifies on its own — the
@@ -41,7 +41,13 @@ async function main() {
   }
   if (!key) return abort(`credential file empty: ${KEY_FILE}`);
 
-  const call = makeZenAdapter({ apiKey: key, model: MODEL });
+  // Inside a cooldown the answer is already in the status file. Calling Zen
+  // anyway was the only traffic during the 10-18 ban (hourly 403s, each
+  // re-arming the abuse flag): consumers skip Zen, the probe did not.
+  const until = readZenStatus()?.cooldown_until;
+  if (Number.isFinite(until) && until > Date.now()) return abort('cooldown active; probe skipped the network call');
+
+  const call = makeZenAdapter({ apiKey: key, model: MODEL, ...(process.env.JEV_ZEN_BASE_URL && { baseUrl: process.env.JEV_ZEN_BASE_URL }) });
   const started = Date.now();
   try {
     // A one-candidate question: the answer is irrelevant, the round trip is
@@ -62,12 +68,15 @@ function abort(reason) {
   const until = status?.cooldown_until;
   // A quota cooldown with an OpenRouter key is a planned swap, not an outage.
   const backed = Number.isFinite(until) && until > Date.now() && existsSync(BACKUP_KEY_FILE);
-  say(`${backed ? 'COOLING' : 'ABORT'}  ${reason}`);
+  // An IP ban also sets a cooldown, but it does not heal on its own: report it
+  // apart from a quota swap so the watcher alerts instead of staying quiet (10-18).
+  const blocked = status?.ok === false && status?.blocked === true;
+  say(`${blocked ? 'BLOCKED' : backed ? 'COOLING' : 'ABORT'}  ${reason}`);
   if (Number.isFinite(until)) say(`  cooldown_until=${new Date(until).toISOString()}  (${((until - Date.now()) / 3.6e6).toFixed(1)}h)`);
   say(`  judged_by=${backed ? 'openrouter (backup until the cooldown lapses)' : 'nothing (fail-closed; no backup key)'}`);
   if (status && !status.ok && status.error) say(`  last_error=${status.error}`);
   say(`  remediation=${status?.remediation ?? 'restore the free tier, or point JEV_PROVIDER / JEV_FALLBACK_PROVIDER elsewhere, then restart the session'}`);
-  return backed ? 2 : 1;
+  return blocked ? 3 : backed ? 2 : 1;
 }
 
 process.exitCode = await main();

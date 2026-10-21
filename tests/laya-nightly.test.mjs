@@ -42,6 +42,7 @@ function sandbox() {
   // Shadow node so the labelling step records the bundle it was pointed at, and
   // leaves the label.done the summary reads its deferred count from.
   fs.writeFileSync(at('bin/node'), `#!/bin/sh
+case "$1" in *laya-replay-routejudge.mjs) echo ran >> ${at('replayed.txt')}; exit \${FAKE_REPLAY_RC:-0} ;; esac
 echo "$JEV_LAYA_MODEL_DIR" > ${at('labelled-with.txt')}
 echo "{\\"deferred\\": \${FAKE_DEFERRED:-0}}" > "$JEV_LAYA_LABEL_DONE"
 `, { mode: 0o755 });
@@ -59,7 +60,7 @@ case "$1" in
   *laya_paired_gate.py) exec python3 "$@" ;;
   *laya-calibrate.py)
     [ -n "$FAKE_CALIB_FAIL" ] && { echo "boom: samples unreadable"; exit 1; }
-    echo '{"entries":[{"caller":"cascade:compact","family":"result_t#","threshold":0.9}],"rejected":[{},{}]}' > "$HOME/.jevgate/laya-whitelist.json" ;;
+    echo '{"entries":[{"caller":"cascade:compact","family":"result_t#","threshold":0.9}],"rejected":[{},{}],"dark":['\${FAKE_DARK:-}']}' > "$HOME/.jevgate/laya-whitelist.json" ;;
 esac
 exit 0
 `, { mode: 0o755 });
@@ -348,6 +349,28 @@ test('every finished night recalibrates the handoff whitelist and names its size
   fs.writeFileSync(at('next-report.json'), REPORT(false));
   run();
   assert.match(pushes().at(-1), /白名單 1 族／未過 2 族/);
+  assert.doesNotMatch(pushes().at(-1), /斷流/);
+});
+
+test('a caller whose traffic never reaches Laya is named in the summary', () => {
+  const { at, run, pushes } = sandbox();
+  fs.writeFileSync(at('next-report.json'), REPORT(false));
+  run({ FAKE_DARK: '"gateway:route-judge"' });
+  assert.match(pushes().at(-1), /白名單 1 族／未過 2 族／斷流 gateway:route-judge/);
+});
+
+test('route-judge replay runs every night; a failure is pushed but calibration still runs', () => {
+  const { at, run, pushes } = sandbox();
+  fs.writeFileSync(at('next-report.json'), REPORT(false));
+  run({ FAKE_REPLAY_RC: '1' });
+  assert.equal(fs.readFileSync(at('replayed.txt'), 'utf8').trim(), 'ran');
+  assert.ok(pushes().some(l => /route-judge 重放失敗 rc=1/.test(l)), pushes().join('\n'));
+  assert.match(pushes().at(-1), /白名單 1 族／未過 2 族/);
+  // 134＝ORT teardown 競態，不推播。
+  const s2 = sandbox();
+  fs.writeFileSync(s2.at('next-report.json'), REPORT(false));
+  s2.run({ FAKE_REPLAY_RC: '134' });
+  assert.ok(!s2.pushes().some(l => /重放失敗/.test(l)), s2.pushes().join('\n'));
 });
 
 test('a failed calibration is pushed, and the night still writes its summary', () => {

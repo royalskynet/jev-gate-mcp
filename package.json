@@ -7,7 +7,7 @@
     "node": "^22 || ^24"
   },
   "scripts": {
-    "test": "npm run -s validate:hooks && JEV_ROUTING_LOG=/dev/null JEV_TEACHER_CORPUS=/dev/null JEV_USAGE_LOG=off JEV_HANDOFF_LOG=off JEV_CLI_LEDGER=/dev/null node --test",
+    "test": "npm run -s validate:hooks && JEV_ROUTING_LOG=/dev/null JEV_TEACHER_CORPUS=/dev/null JEV_USAGE_LOG=off JEV_HANDOFF_LOG=off JEV_CLI_LEDGER=/dev/null NODE_OPTIONS=--import=./tests/_no-network.mjs node --test",
     "build": "node gateway/scripts/build-check.mjs",
     "gateway:acceptance": "node gateway/scripts/acceptance.mjs",
     "gateway:replay": "node gateway/scripts/replay.mjs gateway/fixtures/replay-baseline.json",

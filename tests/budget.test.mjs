@@ -57,6 +57,29 @@ test('withDailyBudget: 換日歸零', async () => {
   assert.equal(calls, 3);
 });
 
+test('withDailyBudget: 保留額度只給 compact，其他 caller 提早被擋', async () => {
+  const file = tmpFile('or-budget.json');
+  const notes = [];
+  let calls = 0;
+  const adapter = async () => { calls += 1; return 'ok'; };
+  const wrapped = withDailyBudget(adapter, {
+    max: 3, reserve: 2, file, notify: (m) => notes.push(m), now: () => NOON(8),
+  });
+  const gate = { caller: 'cascade:stop-gate' };
+  const compact = { caller: 'cascade:compact' };
+
+  assert.equal(await wrapped({}, [], gate), 'ok');
+  await assert.rejects(wrapped({}, [], gate), (err) => err.code === 'JEV_BUDGET_EXCEEDED');
+  await assert.rejects(wrapped({}, []), (err) => err.code === 'JEV_BUDGET_EXCEEDED');
+  assert.equal(notes.length, 0, '一般額度用完不算日上限，不通知');
+
+  assert.equal(await wrapped({}, [], compact), 'ok');
+  assert.equal(await wrapped({}, [], compact), 'ok');
+  await assert.rejects(wrapped({}, [], compact), (err) => err.code === 'JEV_BUDGET_EXCEEDED');
+  assert.equal(calls, 3);
+  assert.equal(notes.length, 1);
+});
+
 test('withPaymentStop: 402 後停用，第二次不碰 adapter', async () => {
   const file = tmpFile('or-status.json');
   const notes = [];

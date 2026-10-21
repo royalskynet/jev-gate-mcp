@@ -32,7 +32,8 @@ export function recordZenStatus(ok, detail = {}, file = ZEN_STATUS_FILE) {
   const error = ok ? null : String(detail.error ?? 'unknown');
   const cooldownUntil = ok ? null : (detail.cooldown_until ?? null);
   if (last && last.ok === ok && (last.error ?? null) === error
-    && (last.cooldown_until ?? null) === cooldownUntil) return false;
+    && (last.cooldown_until ?? null) === cooldownUntil
+    && Boolean(last.blocked) === Boolean(!ok && detail.blocked)) return false;
   const next = {
     ok,
     at: new Date().toISOString(),
@@ -42,6 +43,10 @@ export function recordZenStatus(ok, detail = {}, file = ZEN_STATUS_FILE) {
     model: detail.model ?? last?.model ?? null,
     error,
     error_class: ok ? null : (detail.error_class ?? null),
+    // 403 FreeTierError (IP flagged as abusive): unlike a quota cooldown it does not heal on its own.
+    blocked: ok ? false : Boolean(detail.blocked),
+    // Consecutive 403 FreeTierError hits; the adapter doubles the ban cooldown on each (10-19).
+    block_streak: ok ? 0 : (detail.block_streak ?? 0),
     // Spelled out here because the consumer of this file is a script, not a
     // reader with the context in front of them.
     // 429 only: seconds the provider asked us to wait, and the wall-clock it implies.
