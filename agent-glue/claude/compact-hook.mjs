@@ -53,6 +53,7 @@ export const CONFIG = {
   maxStateTokens: undefined,
   maxRequestTokens: undefined,
   truncateHeadChars: undefined,
+  askResult: false,
 };
 
 /**
@@ -112,6 +113,8 @@ export function refreshConfig(backup = false) {
   CONFIG.maxStateTokens = numOrUndef(ENV.JEV_COMPACT_MAX_STATE_TOKENS);
   CONFIG.maxRequestTokens = numOrUndef(ENV.JEV_COMPACT_MAX_REQUEST_TOKENS);
   CONFIG.truncateHeadChars = numOrUndef(ENV.JEV_COMPACT_TRUNCATE_HEAD);
+  // result_# is fixed at 0 unless this is set (fix 10629: never reached 0.5).
+  CONFIG.askResult = ENV.JEV_COMPACT_ASK_RESULT === '1';
   // 'auto' detects the shape per transcript; 'anthropic'/'openai' pin a backend.
   CONFIG.backend = ENV.JEV_COMPACT_BACKEND ?? 'auto';
   ENABLED = ENV.JEV_COMPACT_ENABLED !== '0';

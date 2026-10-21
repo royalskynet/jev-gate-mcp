@@ -14,6 +14,8 @@ export const DEFAULT_OPTIONS = {
     // estimated at 30k billed as 32.6k over 519 recorded compactions).
     maxRequestTokens: 54_000,
     truncateHeadChars: 300,
+    // `result_#` is not asked by default: see the comment in `compact`.
+    askResult: false,
 };
 /** Tokens the request envelope (`model`, `provider`, key names) adds around state and questions. */
 const REQUEST_OVERHEAD_TOKENS = 40;
@@ -34,6 +36,7 @@ export function resolveOptions(options = {}) {
         maxStateTokens: Math.min(MAX_STATE_TOKENS_CEILING, Math.max(1, finite(options.maxStateTokens, DEFAULT_OPTIONS.maxStateTokens))),
         maxRequestTokens: Math.max(1, finite(options.maxRequestTokens, DEFAULT_OPTIONS.maxRequestTokens)),
         truncateHeadChars: Math.max(0, Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars))),
+        askResult: options.askResult === true,
     };
 }
 /**
@@ -238,10 +241,15 @@ export async function compact(messages, asker, options = {}) {
         // threshold while its `call_#` does not: it used to be kept whole, now
         // it is dropped unasked. In 11,577 recorded teacher answers `result_#`
         // never once reached 0.5 (max .37), so that case has yet to happen.
+        //
+        // For the same reason `result_#` is not asked at all unless `askResult`
+        // is set: a fixed 0 decides every call the way Jev has, and a compaction
+        // costs `callBatches` requests instead of up to `callBatches + 1`.
         const callBatches = batchCalls(candidates, state.tokens, resolved, 'call');
         let pairBatches = null;
         try {
-            pairBatches = batchCalls(candidates, state.tokens, resolved, 'both');
+            if (resolved.askResult)
+                pairBatches = batchCalls(candidates, state.tokens, resolved, 'both');
         }
         catch {
             // The pair does not fit this state at all; two passes are the only way.
@@ -258,7 +266,9 @@ export async function compact(messages, asker, options = {}) {
             for (const map of asked)
                 for (const [id, answer] of map)
                     answers.set(id, { keepCall: answer.keepCall, keepResult: 0 });
-            const wanted = candidates.filter((call) => (answers.get(call.id)?.keepCall ?? 0) >= resolved.keepThreshold);
+            const wanted = resolved.askResult
+                ? candidates.filter((call) => (answers.get(call.id)?.keepCall ?? 0) >= resolved.keepThreshold)
+                : [];
             const resultBatches = wanted.length > 0 ? batchCalls(wanted, state.tokens, resolved, 'result') : [];
             const askedResults = await Promise.all(resultBatches.map((batch) => askBatch(asker, state.state, batch, 'result')));
             for (const map of askedResults)

@@ -81,6 +81,7 @@ export async function compactAnthropic({ messages, config, asker }) {
       maxStateTokens: config.maxStateTokens,
       maxRequestTokens: config.maxRequestTokens,
       truncateHeadChars: config.truncateHeadChars,
+      askResult: config.askResult,
     });
   } catch (error) {
     return { messages, compacted: false, reducedBy: 0, reason: `judge-failed: ${error?.message ?? error}` };

@@ -142,7 +142,7 @@ test('compactAnthropic forwards the core knobs', async () => {
   const lenient = [];
   const keptAt05 = await compactAnthropic({
     messages: anthropic, asker: asker(lenient),
-    config: { pinLast: 1, minReductionChars: 1, keepThreshold: 0.5, truncateHeadChars: 7 },
+    config: { pinLast: 1, minReductionChars: 1, keepThreshold: 0.5, truncateHeadChars: 7, askResult: true },
   });
   const strict = [];
   const droppedAt08 = await compactAnthropic({
@@ -208,6 +208,7 @@ test('compact asks call_# first and result_# only for the calls it keeps', async
     keepThreshold: 0.5,
     preserveRecentMessages: 6,
     maxRequestTokens: probe.stats.stateTokens + 40 + 130,
+    askResult: true,
   };
 
   const asked = [];
@@ -226,11 +227,30 @@ test('compact asks call_# first and result_# only for the calls it keeps', async
   for (const id of ['t1', 't2', 't4']) assert.equal(byId.get(id).action, 'drop_call', `${id} must go whole`);
 });
 
+// Why: result_# never reached 0.5 in 11,577 teacher answers (fix 10629), so by
+// default it is not asked: a fixed 0 gives the same decisions for one request
+// fewer whenever the pairs need more batches than the lone call_# questions.
+test('compact does not ask result_# by default and decides the same', async () => {
+  const probe = await compact(FOUR_CALLS, dropAsker, { preserveRecentMessages: 6 });
+  const asked = [];
+  const out = await compact(FOUR_CALLS, spyAsker(asked), {
+    keepThreshold: 0.5,
+    preserveRecentMessages: 6,
+    maxRequestTokens: probe.stats.stateTokens + 40 + 130,
+  });
+
+  assert.ok(asked.flat().every((k) => k.startsWith('call_')), 'no result_# question is sent');
+  assert.equal(out.stats.requests, 2, 'two requests, where asking result_# needs three');
+  const byId = new Map(out.decisions.map((d) => [d.id, d]));
+  assert.equal(byId.get(KEEP).action, 'drop_result', 'kept call, worthless result');
+  for (const id of ['t1', 't2', 't4']) assert.equal(byId.get(id).action, 'drop_call', `${id} must go whole`);
+});
+
 test('compact keeps asking the pair when splitting the passes would cost a request', async () => {
   // Default budget: all four pairs fit one request, so a second pass would be
   // one request more than the whole job needs.
   const asked = [];
-  const out = await compact(FOUR_CALLS, spyAsker(asked), { keepThreshold: 0.5, preserveRecentMessages: 6 });
+  const out = await compact(FOUR_CALLS, spyAsker(asked), { keepThreshold: 0.5, preserveRecentMessages: 6, askResult: true });
 
   assert.equal(out.stats.requests, 1, 'one request must stay one request');
   assert.deepEqual(asked.length, 1);
