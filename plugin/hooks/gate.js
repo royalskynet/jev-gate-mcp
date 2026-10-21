@@ -138,8 +138,15 @@ async function judgeStop(payload, c) {
     // Fail open, like every other guard in this hook.
   }
   // Atomic claims, not the whole reply: see lib/claims.js. A reply with no
-  // completion sentence falls back to the old single claim.
+  // completion sentence is not judged: 10-21 replay of 3,406 turn endings over
+  // 7 days found 801 (23.5%) with none, and the judge's answer on those is
+  // almost always `not_addressed`, which only nags. idcheck above still ran.
+  // skipNoClaim=false restores the old whole-reply fallback.
   const claims = c.splitClaims === false ? [] : atomicClaims(claim);
+  if (c.splitClaims !== false && c.skipNoClaim !== false && !claims.length) {
+    await logAsync(c, { event: 'no_claim_skip', gate: 'stop' });
+    return undefined;
+  }
   const result = await makeStopGate(c)({ claim, claims, evidence });
   if (result.shadow) return undefined;
   const judged = decisive(result.decided?.claims);

@@ -2476,3 +2476,7 @@ transcript 是 append-only，事後重讀和當時一字不差；git 狀態只�
 每天約 74 輪改檔（7 天 517 輪推算），收滿 100 輪約 1.5 天。之後兩臂重放（同模型同時段，
 舊證據 vs 舊證據＋state）100×2 次，照 `backtest-teacher.mjs` 單價約 $0.03，仍要先授權。
 `stateShadow` 在那之前維持 `true`。capture 檔沒有輪替，重放做完後再處理（`ponytail:` 已標）。
+
+## Stop gate：沒有完成宣告的回覆不送 judge（2026-10-21）
+
+重放 7 天 3,406 個回合結尾，`atomicClaims` 抽不出任何完成句的有 801 個（23.5%）。這類回覆原本整段當成單一宣告送 judge，回來幾乎都是 `not_addressed`，只變成「judge unsure」提醒。現在 idcheck 照跑，之後抽不到完成句就記 `no_claim_skip` 直接放行，不打 Jev。`skipNoClaim: false` 可回到舊行為。實際省下多少呼叫，要看之後 `gate.log` 的 `no_claim_skip` 筆數對照 judge 呼叫數，這次只有重放估計。

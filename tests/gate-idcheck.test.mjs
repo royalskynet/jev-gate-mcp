@@ -167,4 +167,19 @@ assert.deepEqual(unsupportedIds('session `83ed4d3d` 已接回', readEvidence(tpH
 // Per-round evidence (the Jev judge) stays tool output only.
 assert.doesNotMatch(readEvidence(tpHook), /83ed4d3d/);
 
+// A reply with no completion sentence never reaches the judge: 23.5% of 7 days
+// of turn endings had none, and judging them only produced `not_addressed`.
+{
+  const { readFileSync, existsSync } = await import('node:fs');
+  const logOf = () => (existsSync(DEFAULT_CONFIG.gateLog) ? readFileSync(DEFAULT_CONFIG.gateLog, 'utf8') : '');
+  const count = () => (logOf().match(/no_claim_skip/g) || []).length;
+  const tp = mkTranscript('no-claim.jsonl', [prompt('explain it'), round('README.md\npackage.json')]);
+  const before = count();
+  const out = await handleStop({ hook_event_name: 'Stop', last_assistant_message: '這是一個概念解釋，沒有動任何東西', transcript_path: tp, session_id: 'sess-noclaim' });
+  assert.equal(out, undefined);
+  assert.equal(count(), before + 1, 'a reply with no completion sentence is skipped before the judge');
+  await handleStop({ hook_event_name: 'Stop', last_assistant_message: '測試全過，已 commit。', transcript_path: tp, session_id: 'sess-claim' });
+  assert.equal(count(), before + 1, 'a reply with a completion sentence is not skipped');
+}
+
 console.log('ok: invented ids block, quoted ids pass, measured false-positive classes stay silent');
