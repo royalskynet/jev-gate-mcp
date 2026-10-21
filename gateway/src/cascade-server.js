@@ -71,7 +71,10 @@ export function tailnetBindAllowed({ allowCount, mode, cloudOptIn }) {
   return mode === 'laya-only' || cloudOptIn === '1';
 }
 
-export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsage, cacheMax = 2000, cacheTtlMs = 86400000, now = Date.now, allowFrom = null, mode: forcedMode = null }) {
+// cloudCallers: when set, only these callers (x-jev-caller's first segment,
+// e.g. 'compact') may reach the cloud judge; every other caller runs laya-only.
+// M2 keeps Jev for compaction and leaves stop-gate/route-judge/effort to Laya.
+export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsage, cacheMax = 2000, cacheTtlMs = 86400000, now = Date.now, allowFrom = null, mode: forcedMode = null, cloudCallers = null }) {
   const cache = new Map();
   const allowed = allowFrom ? new Set(allowFrom.map(normalizeIp)) : null;
   return createServer(async (req, res) => {
@@ -130,7 +133,9 @@ export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsag
         logReq(422, null);
         return;
       }
-      const mode = forcedMode === 'laya-only' || req.headers['x-jev-mode'] === 'laya-only' ? 'laya-only' : 'cascade';
+      const callerFamily = caller.replace(/^cascade:(tailnet:)?/, '').split(':')[0];
+      const cloudDenied = cloudCallers !== null && !cloudCallers.includes(callerFamily);
+      const mode = forcedMode === 'laya-only' || cloudDenied || req.headers['x-jev-mode'] === 'laya-only' ? 'laya-only' : 'cascade';
       const lane = mode === 'cascade' && cascadeFor ? parseQtypesHeader(req.headers['x-jev-laya-qtypes']) : null;
       const fn = mode === 'laya-only' ? layaOnly : lane ? cascadeFor(lane) : cascade;
       const key = createHash('sha256').update(mode + (lane ? lane.join(',') : '') + JSON.stringify({ state: body.state, questions })).digest('hex');
@@ -201,7 +206,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   // gate. With JEV_CASCADE_TAILNET_CLOUD=1 an allowed peer can spend cloud calls
   // (capped by withDailyBudget/withPaymentStop). Add a token if this ever binds
   // beyond the tailnet.
-  const server = makeCascadeServer({ cascade, layaOnly, cascadeFor, allowFrom, mode: process.env.JEV_CASCADE_MODE ?? null });
+  const cloudCallers = process.env.JEV_CASCADE_CLOUD_CALLERS
+    ? process.env.JEV_CASCADE_CLOUD_CALLERS.split(',').map((s) => s.trim()).filter(Boolean) : null;
+  const server = makeCascadeServer({ cascade, layaOnly, cascadeFor, allowFrom, mode: process.env.JEV_CASCADE_MODE ?? null, cloudCallers });
   const port = process.env.JEV_CASCADE_PORT ?? 8793;
   server.listen(port, host);
 }

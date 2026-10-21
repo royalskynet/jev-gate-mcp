@@ -3,13 +3,16 @@
 <!-- Shared Laya for M2: binds the tailnet IP only; source IP must be a
      JEV_CASCADE_ALLOW_NODES peer. JEV_CASCADE_TAILNET_CLOUD=1 lets that peer fall
      through to the paid cloud judge (unset it and set JEV_CASCADE_MODE=laya-only
-     to keep M2 on Laya only). Exits 78 and is retried while tailscale is not up yet. -->
+     to keep M2 on Laya only). JEV_CASCADE_CLOUD_CALLERS=compact limits cloud to
+     compaction; stop-gate/route-judge/effort from M2 run laya-only. Exits 78 and is retried while tailscale is not up yet. -->
 <plist version="1.0">
 <dict>
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>JEV_CASCADE_ALLOW_NODES</key>
 		<string>m2-userspace</string>
+		<key>JEV_CASCADE_CLOUD_CALLERS</key>
+		<string>compact</string>
 		<key>JEV_CASCADE_HOST</key>
 		<string>100.64.0.2</string>
 		<key>JEV_CASCADE_PORT</key>

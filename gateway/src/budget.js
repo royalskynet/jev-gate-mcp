@@ -32,7 +32,7 @@ function writeJson(file, data) {
 export function withDailyBudget(adapter, {
   max = Number(process.env.JEV_OR_DAILY_MAX ?? 200),
   reserve = Number(process.env.JEV_OR_RESERVE ?? Math.floor(max / 4)),
-  reservedFor = ['cascade:compact'],
+  reservedFor = ['cascade:compact', 'cascade:tailnet:compact'],
   file = join(homedir(), '.jevgate', 'or-budget.json'),
   notify = defaultNotify,
   now = Date.now,

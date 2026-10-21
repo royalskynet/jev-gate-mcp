@@ -184,6 +184,19 @@ describe('cascade-server', () => {
     assert.deepEqual(resolveTailnetIps(null, ['m2-userspace']), []);
   });
 
+  test('cloudCallers: listed caller reaches cascade, others run laya-only', async () => {
+    await start({ serverOpts: { cloudCallers: ['compact'] } });
+    const body = { questions: { q1: { type: 'noul' } } };
+    assert.equal((await post({ ...body, state: 'a' }, { 'x-jev-caller': 'compact' })).status, 200);
+    assert.equal(cascadeCalls, 1);
+    assert.equal(layaOnlyCalls, 0);
+    assert.equal((await post({ ...body, state: 'b' }, { 'x-jev-caller': 'stop-gate' })).status, 200);
+    assert.equal((await post({ ...body, state: 'c' }, { 'x-jev-caller': 'effort:opencode' })).status, 200);
+    assert.equal((await post({ ...body, state: 'd' })).status, 200);
+    assert.equal(cascadeCalls, 1);
+    assert.equal(layaOnlyCalls, 3);
+  });
+
   test('x-jev-laya-qtypes is ignored in laya-only mode', async () => {
     await start({ serverOpts: { cascadeFor: () => { throw new Error('must not be called'); } } });
     const r = await post({ questions: { q1: { type: 'score' } } }, { 'x-jev-mode': 'laya-only', 'x-jev-laya-qtypes': 'score' });

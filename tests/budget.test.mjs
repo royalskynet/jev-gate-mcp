@@ -67,6 +67,7 @@ test('withDailyBudget: 保留額度只給 compact，其他 caller 提早被擋',
   });
   const gate = { caller: 'cascade:stop-gate' };
   const compact = { caller: 'cascade:compact' };
+  const remoteCompact = { caller: 'cascade:tailnet:compact' };
 
   assert.equal(await wrapped({}, [], gate), 'ok');
   await assert.rejects(wrapped({}, [], gate), (err) => err.code === 'JEV_BUDGET_EXCEEDED');
@@ -74,7 +75,7 @@ test('withDailyBudget: 保留額度只給 compact，其他 caller 提早被擋',
   assert.equal(notes.length, 0, '一般額度用完不算日上限，不通知');
 
   assert.equal(await wrapped({}, [], compact), 'ok');
-  assert.equal(await wrapped({}, [], compact), 'ok');
+  assert.equal(await wrapped({}, [], remoteCompact), 'ok', 'M2 的 compact 也用保留額度');
   await assert.rejects(wrapped({}, [], compact), (err) => err.code === 'JEV_BUDGET_EXCEEDED');
   assert.equal(calls, 3);
   assert.equal(notes.length, 1);
