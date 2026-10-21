@@ -8,11 +8,11 @@ import { callerName } from '../agent-glue/src/usage-ledger.js';
 
 const JevLaya = (...args) => JevLayaModule.server(...args);
 
-test('module exports one { id, server } plugin (opencode 1.19 rejects { id, setup })', () => {
+test('module exports one { id, server, setup } plugin (1.x calls server, 2.x calls setup)', () => {
   assert.deepEqual(Object.keys(plugin), ['default']);
   assert.equal(JevLayaModule.id, 'jev-laya');
   assert.equal(typeof JevLayaModule.server, 'function');
-  assert.equal(JevLayaModule.setup, undefined);
+  assert.equal(typeof JevLayaModule.setup, 'function');
 });
 
 test('usage ledger labels plugin calls prune:opencode (ledger adds the prune: base itself)', async () => {
