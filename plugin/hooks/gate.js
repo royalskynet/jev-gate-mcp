@@ -1,6 +1,7 @@
 import { readFileSync, statSync, existsSync, unlinkSync, mkdirSync, writeFileSync, promises as fsP } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { homedir } from 'node:os';
 import { makeStopGate, makeNextGate, logAsync } from '../lib/gate.js';
 import { readEvidence } from '../lib/transcript.js';
 import { stateEvidence } from '../lib/state.js';
@@ -68,6 +69,10 @@ export async function handleStop(payload, c = cfg) {
     }
   } else if (payload?.stop_hook_active) return undefined;
   const out = await judgeStop(payload, c);
+  // 10-22: a block or an additionalContext at Stop both add a round the user
+  // sees. Park the note instead; ~/.claude/hooks/deferred-notes.sh hands it to
+  // the model on the next UserPromptSubmit. `deferStop: false` restores blocking.
+  if (out && c.deferStop !== false && deferStop(out, payload?.session_id)) return undefined;
   if (out && mark) {
     try {
       mkdirSync(dirname(mark), { recursive: true });
@@ -75,6 +80,27 @@ export async function handleStop(payload, c = cfg) {
     } catch { /* fail open: worst case one more judged round */ }
   }
   return out;
+}
+
+/**
+ * Write a Stop verdict as a sidecar for the next turn instead of answering the
+ * hook. True when stored; false (caller answers the hook as before) without a
+ * session id or when the write fails.
+ */
+let deferSeq = 0;
+export function deferStop(out, sessionId, dir = process.env.CLAUDE_DEFERRED_DIR) {
+  const text = out?.reason ?? out?.hookSpecificOutput?.additionalContext;
+  const id = String(sessionId ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+  if (!text || !id) return false;
+  const d = join(dir || join(homedir(), '.cache', 'claude-deferred'), id);
+  try {
+    mkdirSync(d, { recursive: true });
+    // Two verdicts in one millisecond would share a Date.now() name; the counter keeps both.
+    writeFileSync(join(d, `jev-${Date.now()}-${process.pid}-${deferSeq++}.txt`), `[jev-gate] ${text}\n`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Per-session flag: "this gate spoke on the last Stop". */
