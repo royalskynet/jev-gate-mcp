@@ -117,8 +117,10 @@ const tpLive = mkTranscript('fp-live.jsonl', [
 ]);
 const savedShadow = DEFAULT_CONFIG.shadow;
 const savedIdcheckShadow = DEFAULT_CONFIG.idcheckShadow;
+const savedDeferStop = DEFAULT_CONFIG.deferStop;
 DEFAULT_CONFIG.shadow = false;
 DEFAULT_CONFIG.idcheckShadow = false;
+DEFAULT_CONFIG.deferStop = false; // this test checks the block path itself; deferral has its own test
 try {
   const honest = await handleStop({
     hook_event_name: 'Stop',
@@ -146,6 +148,7 @@ try {
 } finally {
   DEFAULT_CONFIG.shadow = savedShadow;
   DEFAULT_CONFIG.idcheckShadow = savedIdcheckShadow;
+  DEFAULT_CONFIG.deferStop = savedDeferStop;
 }
 
 // Issue #12 shadow log, 2026-09-30..10-02: 5 hits, 4 false. Each shape below
