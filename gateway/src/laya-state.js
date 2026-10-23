@@ -3,7 +3,7 @@
 // history (oldest first) is cut long before the call a question asks about:
 // 12 real compact requests kept 7.4% of their state tokens (fix 10632).
 // The teacher still sees the whole state; only Laya's input is cropped, and
-// training (scripts/laya_state.py) must crop the same way or it learns from
+// training (laya-train/scripts/laya_state.py) must crop the same way or it learns from
 // inputs the live lane never sends. tests/fixtures/laya-crop-golden.json pins
 // both implementations to the same output.
 //

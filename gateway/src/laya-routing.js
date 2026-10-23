@@ -6,7 +6,7 @@
 // own post-temperature max-softmax. Still not caller-supplied — the caller
 // cannot name a type or hand us a confidence; the allowlist and the threshold
 // are both server-side, and anything under the threshold falls back to cloud.
-// Calibration (scripts/laya-train.py, cross-fit OOF; never in-sample) is the
+// Calibration (laya-train/scripts/laya-train.py, cross-fit OOF; never in-sample) is the
 // only thing that may move these defaults, per AGENTS.md
 // "不把 confidence 當正確率；所有自動化門檻必須經目標資料校準".
 import { isDeepStrictEqual } from 'node:util';
@@ -71,7 +71,7 @@ function shortStandaloneState(state) {
 }
 
 // Third lane (JEV_LAYA_WHITELIST=live): (caller, question family) pairs that
-// scripts/laya-calibrate.py certified on shadow traffic — strict fixed-sequence
+// laya-train/scripts/laya-calibrate.py certified on shadow traffic — strict fixed-sequence
 // over thresholds, Clopper–Pearson lower bound ≥ 0.90. It replaces the state
 // filter for those pairs: the filter was a proxy for "which caller is this"
 // (ADR-0002), and the caller is known here. Default 'off': the file is written

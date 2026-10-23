@@ -102,6 +102,10 @@ export function refreshConfig(backup = false) {
   // own compaction runs instead.
   CONFIG.minReductionChars = Number(ENV.JEV_COMPACT_MIN_REDUCTION ?? 4000);
   CONFIG.pinLast = Number(ENV.JEV_COMPACT_PIN_LAST ?? 6);
+  // Verbatim residue grows each pass (prose is never dropped); past this many
+  // real tokens after the last Jev pass, the next compaction is the host's
+  // summary instead, then Jev resumes. 0 turns the reset off.
+  CONFIG.resetAbove = Number(ENV.JEV_COMPACT_RESET_ABOVE ?? 60000);
   // How much of one call/result pair the judge is shown. The judgment is
   // "is this still needed", which the head of a payload answers.
   CONFIG.askChars = Number(ENV.JEV_COMPACT_ASK_CHARS ?? 1200);
@@ -144,6 +148,7 @@ function hydrate($) {
         JEV_COMPACT_AT_TOKENS: await $.env.get('JEV_COMPACT_AT_TOKENS'),
         JEV_COMPACT_MIN_REDUCTION: await $.env.get('JEV_COMPACT_MIN_REDUCTION'),
         JEV_COMPACT_PIN_LAST: await $.env.get('JEV_COMPACT_PIN_LAST'),
+        JEV_COMPACT_RESET_ABOVE: await $.env.get('JEV_COMPACT_RESET_ABOVE'),
         JEV_COMPACT_ASK_CHARS: await $.env.get('JEV_COMPACT_ASK_CHARS'),
         JEV_COMPACT_BACKEND: await $.env.get('JEV_COMPACT_BACKEND'),
         JEV_COMPACT_KEEP_THRESHOLD: await $.env.get('JEV_COMPACT_KEEP_THRESHOLD'),
@@ -402,10 +407,18 @@ export function shouldCompact(context = {}) {
   return CONFIG.compactAtTokens > 0 && (context?.tokens ?? 0) >= CONFIG.compactAtTokens;
 }
 
+/** Did the last Jev pass leave too much? `residual` is real API tokens, or null if unmeasured. */
+export function resetDue(residual) {
+  return CONFIG.resetAbove > 0 && typeof residual === 'number' && residual > CONFIG.resetAbove;
+}
+
 /** @type {import('claude-code').Register} */
 export const register = (on, options = {}) => {
   let compacting = false;
   let standDown = false;
+  // Per process: a resumed session starts unmeasured and gets a Jev pass first.
+  let jevResidual = null;
+  let measureNext = false;
 
   // Heartbeat: one line proves the module registered in this session, so a
   // missing compact line means the event never arrived — not that the hook is
@@ -438,6 +451,14 @@ export const register = (on, options = {}) => {
       await appendLedger($, `jev-compact: session.compact arrived, not handling it (enabled=${ENABLED}, standDown=${standDown})`);
       return next(e);
     }
+    if (resetDue(jevResidual)) {
+      await appendLedger($, `jev-compact: reset via built-in (last jev pass left ${jevResidual} tokens > ${CONFIG.resetAbove}), trigger=${e?.trigger ?? '?'}`);
+      jevResidual = null;
+      measureNext = false;
+      return next(e);
+    }
+    jevResidual = null;
+    measureNext = false;
     const messages = e?.messages ?? [];
     // Zen free in its quota cooldown: OpenRouter answers until it lapses.
     if (followsZen()) {
@@ -472,6 +493,7 @@ export const register = (on, options = {}) => {
     // ponytail: SDK hosts (Happy) turn every ui.log into a visible message; the ledger already has it.
     if (ENV.JEV_UI_LOG === '1') $.ui.log(line);
     await appendLedger($, line);
+    measureNext = true;
     return { messages: out.messages };
   });
 
@@ -482,6 +504,11 @@ export const register = (on, options = {}) => {
     if (!ENABLED || standDown || compacting) return next(e);
     try {
       const { context } = await $.session.usage();
+      if (measureNext && (context?.tokens ?? 0) > 0) {
+        jevResidual = context.tokens;
+        measureNext = false;
+        await appendLedger($, `jev-compact: after jev pass, live ${jevResidual} tokens (reset above ${CONFIG.resetAbove})`);
+      }
       if (!shouldCompact(context)) return next(e);
       compacting = true;
       await $.session.compact();

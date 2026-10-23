@@ -43,6 +43,17 @@ were removed on 2026-09-21 because a single local caller needs none of them.
 Re-introducing a remote transport re-introduces every control that layer carried
 (auth, bind policy, body caps, rate limiting) — it is not a drop-in.
 
+## Laya training lives elsewhere
+
+This repo holds the Laya **runtime**: the loader, cascade routing, shadow
+records, the teacher corpus, and the JS label/replay tools. The training
+pipeline (`laya-train.py`, calibration, ONNX export, the paired gate,
+`laya-nightly.sh`) moved on 2026-10-22 to the private repo `~/dev/laya-train`.
+It reads `JEV_GATE_DIR` (default `~/dev/jev-gate-mcp`) to reach the runtime.
+Two mirrors must not drift, and the tests pin them: `laya-state.js` against
+`laya_state.py` (golden fixture `tests/fixtures/laya-crop-golden.json`), and
+`shortStandaloneState` against laya-train's selftest.
+
 ## Context cost of mounting the gateway
 
 Mounting an MCP server costs context on every session, before any tool is

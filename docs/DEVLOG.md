@@ -2480,3 +2480,40 @@ transcript 是 append-only，事後重讀和當時一字不差；git 狀態只�
 ## Stop gate：沒有完成宣告的回覆不送 judge（2026-10-21）
 
 重放 7 天 3,406 個回合結尾，`atomicClaims` 抽不出任何完成句的有 801 個（23.5%）。這類回覆原本整段當成單一宣告送 judge，回來幾乎都是 `not_addressed`，只變成「judge unsure」提醒。現在 idcheck 照跑，之後抽不到完成句就記 `no_claim_skip` 直接放行，不打 Jev。`skipNoClaim: false` 可回到舊行為。實際省下多少呼叫，要看之後 `gate.log` 的 `no_claim_skip` 筆數對照 judge 呼叫數，這次只有重放估計。
+
+## Laya 訓練管線拆出成 laya-train；cascade 實際用量盤點（2026-10-22）
+
+### 為什麼拆
+
+Laya 的訓練碼（train／calibrate／export／eval／paired gate／nightly，12 支 script 加 2 支測試）
+佔了 `scripts/` 的一大半。它每週還會跟著 publish-sync 推到公開版。內閣分工上 Laya 屬 LAB，
+不屬 MCP 本體。所以訓練管線搬到私有 repo `~/dev/laya-train`（filter-repo 保留 59 個 commit
+歷史，ether-projects 子目錄、不公開）。這裡只留執行期：loader、cascade 路由、shadow 列、
+teacher-corpus，以及 label／replay／agree／smoke 這些直接用 adapter 的 JS 工具。
+
+### 改了什麼（d1841dd）
+
+- 刪掉搬走的 14 個檔。`tests/laya-external.test.mjs`、`tests/laya-replay-routejudge.test.mjs`
+  是跟 Python 端的契約測試，改讀 `LAYA_TRAIN_DIR`（預設 `~/dev/laya-train`），沒有 checkout 才 skip，
+  所以公開版 clone 照樣跑得動。
+- gateway 註解裡的 `scripts/laya_*.py` 改寫成 `laya-train/scripts/…`。`CONTEXT.md` 加一節說明分家和兩份鏡像，
+  鏡像有 `laya-state.js`↔`laya_state.py` 走 golden fixture，以及 `shortStandaloneState`↔laya-train selftest。
+- launchd `com.host.laya-nightly` 改指 `~/dev/laya-train/scripts/laya-nightly.sh`。
+
+### cascade 用量實測（`~/.jevgate/laya-handoff.jsonl` 的 `q_cloud` 題數）
+
+- 10-18 約 17,400 題、10-20 約 10,000、10-21 約 5,100。compact 佔大宗（10-21 有 4,032 題），
+  stop-gate 次之。`or-budget.json` 的 155 次只計 cascade-server 打 OR 的 HTTP 請求，
+  一次請求帶多題，兩個數字不能互相比。
+- `q_local` 從 10-19 起每天幾乎都是 0：Laya 在 shadow 陪跑，白名單 0 族，等於全部走 Jev。
+- `result_#` 已經由 1138a0e（compact `askResult:false`）拿掉，10-21 13:08 之後就不再出現。
+
+### 驗證
+
+- `npm test`：492 tests / 484 pass / 0 fail / 8 skipped。
+- 契約測試 13 條實際跑到 laya-train，0 skip。
+
+### 下一步從哪接
+
+訓練與閘門的細節看 `~/dev/laya-train/docs/DEVLOG.md`。最快 10-28（7 天校準凍結到期）
+才可能換上新權重，之後 call_t# 要在新的漏判閘下累積到 20 個請求才有機會接手。

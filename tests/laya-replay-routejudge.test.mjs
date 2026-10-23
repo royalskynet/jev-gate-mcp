@@ -10,6 +10,7 @@ import { CALLER, MARK, doneIds, pickRows, replay } from '../scripts/laya-replay-
 import { recordRoutingSample } from '../gateway/src/routing-corpus.js';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const LAYA = process.env.LAYA_TRAIN_DIR ?? path.join(os.homedir(), 'dev/laya-train');  // 訓練管線在私有 repo laya-train
 const CHAMP = '2026-10-14T02:02:15Z';
 
 const corpusRow = (id, ts, extra = {}) => JSON.stringify({
@@ -67,14 +68,14 @@ test('dedup: running twice under the same champion appends nothing the second ti
   assert.equal(row.request_id, 'a');
 });
 
-test('calibrate picks up replay rows as gateway:route-judge families', async () => {
+test('calibrate picks up replay rows as gateway:route-judge families', { skip: !fs.existsSync(LAYA) && 'no laya-train checkout' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-cal-'));
   const samples = path.join(dir, 'routing-samples.jsonl');
   const corpus = Array.from({ length: 25 }, (_, i) => corpusRow(`r${i}`, '2026-10-15T00:00:00Z')).join('\n');
   await replay(pickRows(corpus, CHAMP, new Set()), fakeLaya, (x) => recordRoutingSample(x, samples), CHAMP);
   fs.writeFileSync(path.join(dir, 'champ.json'), JSON.stringify({ promoted_at: CHAMP }));
   const out = path.join(dir, 'wl.json');
-  execFileSync('python3', [path.join(ROOT, 'scripts/laya-calibrate.py'), '--samples', samples, '--out', out], {
+  execFileSync('python3', [path.join(LAYA, 'scripts/laya-calibrate.py'), '--samples', samples, '--out', out], {
     env: { ...process.env, JEV_LAYA_CHAMPION: path.join(dir, 'champ.json'), JEV_LAYA_LB_HISTORY: path.join(dir, 'h.jsonl'),
       JEV_USAGE_LOG: path.join(dir, 'none.jsonl') }, encoding: 'utf8' });
   const wl = JSON.parse(fs.readFileSync(out, 'utf8'));

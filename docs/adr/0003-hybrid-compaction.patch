@@ -1,0 +1,298 @@
+diff --git a/agent-glue/claude/compact-hook.mjs b/agent-glue/claude/compact-hook.mjs
+index 37ed11c..e35905a 100644
+--- a/agent-glue/claude/compact-hook.mjs
++++ b/agent-glue/claude/compact-hook.mjs
+@@ -24,12 +24,18 @@
+  *     ORIGINAL messages back and lets built-in compaction run. Fail-open here
+  *     means "keep the context", which is the safe direction.
+  *
++ * Stage two (docs/adr/0003-hybrid-compaction.md): when the verbatim pass still
++ * leaves more than JEV_COMPACT_SUMMARIZE_ABOVE estimated tokens, the middle
++ * goes to the engine's summarizer and head + tail stay verbatim. The rules
++ * above bind the Jev pass; stage two is the one place prose is summarized.
++ *
+  * Do not run this and the standalone fast-jev-compaction plugin at once: two
+  * `session.compact` registrations both answering the same event is undefined.
+  * Disable one. `JEV_COMPACT_ENABLED=0` turns this one off.
+  */
+ import { compactMessages } from '../src/compact.js';
+ import { askerFor, backendFor, compactAnthropic } from './compact-anthropic.mjs';
++import { estimateTokens, splitForSummary, assemble } from './compact-hybrid.mjs';
+ import { ENV, fillEnv, ZEN_PRIMARY, ZEN_BACKUP, zenCooling, followsZen } from './env.mjs';
+ import { usageRecord, tokensOf, modelOf, hookUsageFile } from './usage-line.mjs';
+ 
+@@ -45,6 +51,7 @@ export const CONFIG = {
+   pinFirst: 1,
+   pinLast: 6,
+   minReductionChars: 4000,
++  summarizeAboveTokens: 50000,
+   askChars: 1200,
+   backend: 'auto',
+   // Undefined on purpose: the vendored core owns these defaults (0.5, 25000,
+@@ -102,6 +109,9 @@ export function refreshConfig(backup = false) {
+   // own compaction runs instead.
+   CONFIG.minReductionChars = Number(ENV.JEV_COMPACT_MIN_REDUCTION ?? 4000);
+   CONFIG.pinLast = Number(ENV.JEV_COMPACT_PIN_LAST ?? 6);
++  // Stage two (ADR 0003): above this many estimated tokens after the verbatim
++  // pass, the middle goes to the engine's summarizer. 0 turns stage two off.
++  CONFIG.summarizeAboveTokens = numOrUndef(ENV.JEV_COMPACT_SUMMARIZE_ABOVE) ?? 50000;
+   // How much of one call/result pair the judge is shown. The judgment is
+   // "is this still needed", which the head of a payload answers.
+   CONFIG.askChars = Number(ENV.JEV_COMPACT_ASK_CHARS ?? 1200);
+@@ -144,6 +154,7 @@ function hydrate($) {
+         JEV_COMPACT_AT_TOKENS: await $.env.get('JEV_COMPACT_AT_TOKENS'),
+         JEV_COMPACT_MIN_REDUCTION: await $.env.get('JEV_COMPACT_MIN_REDUCTION'),
+         JEV_COMPACT_PIN_LAST: await $.env.get('JEV_COMPACT_PIN_LAST'),
++        JEV_COMPACT_SUMMARIZE_ABOVE: await $.env.get('JEV_COMPACT_SUMMARIZE_ABOVE'),
+         JEV_COMPACT_ASK_CHARS: await $.env.get('JEV_COMPACT_ASK_CHARS'),
+         JEV_COMPACT_BACKEND: await $.env.get('JEV_COMPACT_BACKEND'),
+         JEV_COMPACT_KEEP_THRESHOLD: await $.env.get('JEV_COMPACT_KEEP_THRESHOLD'),
+@@ -464,11 +475,45 @@ export const register = (on, options = {}) => {
+         judge: (pair) => judgePair({ http: { fetch: metered } }, key, request, pair),
+       });
+     const before = JSON.stringify(messages).length;
++    // Stage two (ADR 0003): prose accumulates, so the verbatim residue grows
++    // pass after pass. Past the threshold only the middle is summarized.
++    const base = out.compacted ? out.messages : messages;
++    const verbatimTokens = estimateTokens(base);
++    // SessionMessage omits thinking, images and the system prompt, so its
++    // estimate runs far under the real fill (4k est vs 142k live, 2026-10-23).
++    // Anchor on the live count less what the Jev pass removed; estimate only
++    // when the host has no usage to give.
++    let liveTokens;
++    try {
++      liveTokens = (await $.session.usage())?.context?.tokens;
++    } catch {
++      liveTokens = undefined;
++    }
++    const afterTokens = Number.isFinite(liveTokens)
++      ? liveTokens - (estimateTokens(messages) - verbatimTokens)
++      : verbatimTokens;
++    const parts = CONFIG.summarizeAboveTokens > 0 && afterTokens > CONFIG.summarizeAboveTokens
++      ? splitForSummary(base, { pinFirst: CONFIG.pinFirst, pinLast: CONFIG.pinLast })
++      : null;
++    if (parts) {
++      try {
++        const r = await next({ ...e, messages: parts.middle });
++        if (r?.messages) {
++          const merged = assemble(parts, r.messages);
++          await appendLedger($, `jev-compact: hybrid, verbatim=${out.compacted ? 'jev' : 'none'}, live ${liveTokens ?? '?'}, ~${afterTokens} after verbatim, est ${estimateTokens(messages)} → ${estimateTokens(merged)}, head ${parts.head.length} + summary of ${parts.middle.length} as ${r.messages.length} + tail ${parts.tail.length}, trigger=${e?.trigger ?? '?'}`);
++          return { messages: merged };
++        }
++        await appendLedger($, `jev-compact: hybrid summary skipped (${r?.skip ?? 'no messages'})`);
++        if (!out.compacted) return r;
++      } catch (error) {
++        await appendLedger($, `jev-compact: hybrid summary failed (${error instanceof Error ? error.message : String(error)})`);
++      }
++    }
+     if (!out.compacted) {
+       await appendLedger($, `jev-compact: fell back to built-in (backend=${backend}, reducedBy ${out.reducedBy ?? 0} of ${before} chars, floor ${CONFIG.minReductionChars}${out.reason ? `, ${out.reason}` : ''})`);
+       return next(e);
+     }
+-    const line = `jev-compact: backend=${backend}, ${before} → ${before - (out.reducedBy ?? 0)} chars, ${out.reducedBy} dropped, ${out.messages.length}/${messages.length} messages, verbatim, trigger=${e?.trigger ?? '?'}`;
++    const line = `jev-compact: backend=${backend}, ${before} → ${before - (out.reducedBy ?? 0)} chars, ${out.reducedBy} dropped, ${out.messages.length}/${messages.length} messages, live ${liveTokens ?? '?'}, ~${afterTokens} after, verbatim, trigger=${e?.trigger ?? '?'}`;
+     // ponytail: SDK hosts (Happy) turn every ui.log into a visible message; the ledger already has it.
+     if (ENV.JEV_UI_LOG === '1') $.ui.log(line);
+     await appendLedger($, line);
+diff --git a/agent-glue/claude/compact-hybrid.mjs b/agent-glue/claude/compact-hybrid.mjs
+new file mode 100644
+index 0000000..86289ee
+--- /dev/null
++++ b/agent-glue/claude/compact-hybrid.mjs
+@@ -0,0 +1,69 @@
++/**
++ * Stage two of `compact-hook.mjs`: when the verbatim Jev pass still leaves too
++ * much, summarize only the middle and keep head and tail byte-for-byte.
++ *
++ * Pure helpers over `SessionMessage` ({role, text, toolUses[], toolResults?[],
++ * handle?}); the hook itself calls `next({ ...e, messages: middle })` so the
++ * engine's own summarizer, model and credential do the summary. See
++ * docs/adr/0003-hybrid-compaction.md for why and where the threshold comes from.
++ */
++
++/**
++ * Tokens the model reads from a transcript, estimated. Counts `text`, tool
++ * `input` and `toolResults[].text` only: `result` is the stored record (it can
++ * carry base64 and duplicates `text`), which is what made char ratios misread
++ * the cut (fix 11263).
++ *
++ * ponytail: ASCII ~4 chars/token, any other char ~1 token; no tokenizer. If the
++ * threshold proves off, anchor on `$.session.usage().context.tokens` instead.
++ */
++export function estimateTokens(messages = []) {
++  let ascii = 0;
++  let other = 0;
++  const add = (s) => {
++    if (typeof s !== 'string') return;
++    for (let i = 0; i < s.length; i++) {
++      if (s.charCodeAt(i) < 128) ascii++;
++      else other++;
++    }
++  };
++  // A result can sit on the user's toolResults, on the call's toolUses[].text,
++  // or both; count each tool_use_id once, whichever side carries it.
++  const counted = new Set();
++  for (const m of messages) {
++    for (const r of m?.toolResults ?? []) {
++      add(r?.text);
++      counted.add(r?.tool_use_id);
++    }
++  }
++  for (const m of messages) {
++    add(m?.text);
++    for (const u of m?.toolUses ?? []) {
++      add(JSON.stringify(u?.input ?? {}));
++      if (!counted.has(u?.tool_use_id)) add(u?.text);
++    }
++  }
++  return Math.ceil(ascii / 4) + other;
++}
++
++const isResult = (m) => Array.isArray(m?.toolResults) && m.toolResults.length > 0;
++
++/**
++ * Cut `messages` into head / middle / tail at boundaries that never open with
++ * a tool_result, so no tool_use is separated from its result: the head grows
++ * forward past results, the tail start moves back to the call that owns them.
++ * Returns null when no middle of at least `minMiddle` messages is left.
++ */
++export function splitForSummary(messages = [], { pinFirst = 1, pinLast = 6, minMiddle = 2 } = {}) {
++  let h = Math.max(1, pinFirst);
++  while (h < messages.length && isResult(messages[h])) h++;
++  let t = messages.length - Math.max(1, pinLast);
++  while (t > h && isResult(messages[t])) t--;
++  if (t - h < minMiddle) return null;
++  return { head: messages.slice(0, h), middle: messages.slice(h, t), tail: messages.slice(t) };
++}
++
++/** Head, the engine's summary of the middle (and whatever it kept), tail. */
++export function assemble({ head, tail }, summarized = []) {
++  return [...head, ...summarized, ...tail];
++}
+diff --git a/tests/agent-glue/compact-hybrid.test.mjs b/tests/agent-glue/compact-hybrid.test.mjs
+new file mode 100644
+index 0000000..450e6c7
+--- /dev/null
++++ b/tests/agent-glue/compact-hybrid.test.mjs
+@@ -0,0 +1,121 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import { estimateTokens, splitForSummary, assemble } from '../../agent-glue/claude/compact-hybrid.mjs';
++import { register, CONFIG, refreshConfig } from '../../agent-glue/claude/compact-hook.mjs';
++import { ENV } from '../../agent-glue/claude/env.mjs';
++
++const user = (text) => ({ role: 'user', text, toolUses: [] });
++const asst = (text, id) => ({ role: 'assistant', text, toolUses: id ? [{ tool_use_id: id, tool: 'Bash', input: { command: 'ls' } }] : [] });
++const res = (id, text = 'out') => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }] });
++
++test('estimateTokens: counts what the model reads, not the stored record', () => {
++  const base64 = 'A'.repeat(400_000);
++  const m = [{ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'x'.repeat(400), isError: false, result: base64 }] }];
++  assert.equal(estimateTokens(m), 100);
++  assert.equal(estimateTokens([user('壓縮測試')]), 4, 'a CJK char is about one token');
++  // result carried only on the call side still counts; carried on both, once
++  const call = { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: {}, text: 'y'.repeat(4000) }] };
++  assert.equal(estimateTokens([call]), 1 + 1000);
++  assert.equal(estimateTokens([call, { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'b', text: 'y'.repeat(4000), isError: false }] }]), 1 + 1000);
++});
++
++test('splitForSummary: no boundary separates a tool_use from its result', () => {
++  // 0 user, 1 asst(call a), 2 res a, ..., the pinLast cut lands on a result.
++  const m = [user('goal'), asst('look', 'a'), res('a'), asst('more', 'b'), res('b'), asst('again', 'c'), res('c'), user('next'), asst('ok')];
++  const p = splitForSummary(m, { pinFirst: 1, pinLast: 3 });
++  // tail would start at index 6 (res c): moved back to 5, the call that owns it
++  assert.equal(p.tail[0], m[5]);
++  assert.ok(!p.tail[0].toolResults, 'tail does not open with a tool_result');
++  assert.ok(!p.middle[0].toolResults, 'middle does not open with a tool_result');
++  assert.deepEqual(assemble(p, ['S']).length, p.head.length + 1 + p.tail.length);
++  // head pinned on a call grows forward past its result
++  const q = splitForSummary([asst('x', 'z'), res('z'), user('a'), asst('b'), user('c'), asst('d'), user('e')], { pinFirst: 1, pinLast: 1 });
++  assert.equal(q.head.length, 2);
++  assert.equal(splitForSummary([user('a'), asst('b'), user('c')], { pinFirst: 1, pinLast: 1 }), null, 'no middle worth summarizing');
++});
++
++function fakeHost() {
++  const files = {};
++  return {
++    files,
++    env: { async get() { return undefined; } },
++    fs: {
++      async read(p) { if (p in files) return files[p]; throw new Error('ENOENT'); },
++      async write(p, v) { files[p] = v; },
++    },
++    // judge unreachable: the Jev pass fails open and returns the original messages
++    http: { async fetch() { throw new Error('offline'); } },
++    clock: { async now() { return 0; } },
++    ui: { log() {} },
++  };
++}
++
++async function compactHandler() {
++  const handlers = {};
++  register((name, fn) => { handlers[name] = fn; }, { apiKey: 'k' });
++  return handlers['session.compact'];
++}
++
++const big = () => {
++  const m = [user('the original goal')];
++  for (let i = 0; i < 20; i++) m.push(asst(`step ${i} `.padEnd(20_000, 'p')), user(`reply ${i}`));
++  m.push(user('latest ask'), asst('latest answer'));
++  return m;
++};
++
++test('hybrid: over the threshold only the middle reaches the summarizer; head and tail are the same objects', async () => {
++  const handler = await compactHandler();
++  const messages = big();
++  let seen = null;
++  const summary = { role: 'user', text: 'SUMMARY' };
++  const next = async (e) => { seen = e.messages; return { messages: [summary] }; };
++  const out = await handler(fakeHost(), { trigger: 'auto', messages }, next);
++  assert.ok(seen, 'summarizer called');
++  assert.ok(!seen.includes(messages[0]) && !seen.includes(messages.at(-1)), 'head/tail not summarized');
++  assert.equal(out.messages[0], messages[0]);
++  assert.equal(out.messages.at(-1), messages.at(-1));
++  assert.ok(out.messages.includes(summary));
++  assert.equal(out.messages.length, 1 + 1 + CONFIG.pinLast);
++});
++
++test('hybrid: under the threshold, or with it set to 0, the whole transcript goes to next as before', async () => {
++  const handler = await compactHandler();
++  const small = [user('a'), asst('b'), user('c'), asst('d'), user('e'), asst('f'), user('g'), asst('h'), user('i')];
++  let seen = null;
++  const next = async (e) => { seen = e.messages; return { messages: [] }; };
++  await handler(fakeHost(), { trigger: 'auto', messages: small }, next);
++  assert.equal(seen, small);
++  // via ENV: the handler re-reads config each pass, so a CONFIG poke would not stick
++  const saved = ENV.JEV_COMPACT_SUMMARIZE_ABOVE;
++  ENV.JEV_COMPACT_SUMMARIZE_ABOVE = '0';
++  refreshConfig();
++  try {
++    const messages = big();
++    await handler(fakeHost(), { trigger: 'auto', messages }, next);
++    assert.equal(seen, messages, '0 turns stage two off');
++  } finally {
++    if (saved === undefined) delete ENV.JEV_COMPACT_SUMMARIZE_ABOVE;
++    else ENV.JEV_COMPACT_SUMMARIZE_ABOVE = saved;
++    refreshConfig();
++  }
++});
++
++test('hybrid: the live context count decides, not the SessionMessage estimate', async () => {
++  const handler = await compactHandler();
++  const small = [user('a'), asst('b'), user('c'), asst('d'), user('e'), asst('f'), user('g'), asst('h'), user('i'), asst('j')];
++  const host = (tokens) => ({ ...fakeHost(), session: { async usage() { return { context: { tokens } }; } } });
++  let called = 0;
++  const next = async (e) => { called++; return { messages: e.messages === small ? [] : [{ role: 'user', text: 'S' }] }; };
++  const out = await handler(host(142_000), { trigger: 'manual', messages: small }, next);
++  assert.equal(called, 1);
++  assert.ok(out.messages.some((m) => m.text === 'S'), 'stage two ran on a 142k live fill');
++  called = 0;
++  await handler(host(30_000), { trigger: 'manual', messages: small }, async (e) => { called++; assert.equal(e.messages, small); return { messages: [] }; });
++  assert.equal(called, 1, 'a 30k live fill stays on the old path');
++});
++
++test('hybrid: a summarizer veto is passed up when the Jev pass kept nothing', async () => {
++  const handler = await compactHandler();
++  const out = await handler(fakeHost(), { trigger: 'auto', messages: big() }, async () => ({ skip: 'blocked' }));
++  assert.deepEqual(out, { skip: 'blocked' });
++});

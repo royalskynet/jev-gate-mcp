@@ -263,3 +263,42 @@ test('compact-hook: cascade-callers.json routes the judge via the daemon, falls 
   assert.equal(calls[1].caller, undefined);
   await readCascadeUrl(host({}));
 });
+
+test('compact-hook: a Jev pass that leaves too much makes the next compaction the built-in, then Jev resumes', async () => {
+  const saved = { ...ENV };
+  Object.assign(ENV, { JEV_COMPACT_PIN_LAST: '1', JEV_COMPACT_MIN_REDUCTION: '1000', JEV_COMPACT_RESET_ABOVE: '60000', JEV_COMPACT_AT_PERCENT: '101', JEV_COMPACT_AT_TOKENS: '0', JEV_COMPACT_BACKEND: 'openai' });
+  refreshConfig();
+  try {
+    const on = {};
+    register((name, fn) => { on[name] = fn; }, { apiKey: 'k' });
+    let live = 0;
+    const host = { ...fakeHost({ choice: 'drop' }), session: { async usage() { return { context: { tokens: live, percent: 10 } }; }, async compact() {} } };
+    const bulk = 'x'.repeat(9000);
+    const messages = [
+      { role: 'user', content: 'find the slow step' },
+      { role: 'assistant', content: 'checking', tool_calls: [{ id: 'a', function: { name: 'Bash', arguments: bulk } }] },
+      { role: 'tool', tool_call_id: 'a', content: bulk },
+      { role: 'user', content: 'and now?' },
+    ];
+    const BUILTIN = Symbol('builtin');
+    const compact = () => on['session.compact'](host, { messages, trigger: 'auto' }, () => BUILTIN);
+    const turn = () => on['turn.complete'](host, {}, () => null);
+
+    assert.notEqual(await compact(), BUILTIN, 'unmeasured: Jev runs');
+    live = 50000; await turn();
+    assert.notEqual(await compact(), BUILTIN, 'Jev left 50k (under 60k): Jev again');
+    live = 70000; await turn();
+    live = 90000; await turn(); // only the first turn after a pass is the residual
+    assert.equal(await compact(), BUILTIN, 'Jev left 70k: built-in resets');
+    live = 40000; await turn(); // the built-in result is never measured as a Jev residual
+    assert.notEqual(await compact(), BUILTIN, 'after the reset: Jev resumes');
+
+    ENV.JEV_COMPACT_RESET_ABOVE = '0'; refreshConfig();
+    live = 99000; await turn();
+    assert.notEqual(await compact(), BUILTIN, 'reset off: always Jev');
+  } finally {
+    for (const k of Object.keys(ENV)) if (!(k in saved)) delete ENV[k];
+    Object.assign(ENV, saved);
+    refreshConfig();
+  }
+});

@@ -1,6 +1,6 @@
 // Laya sees a per-call crop of compact state (fix 10632: the head-kept 1024
 // tokens held 7.4% of the state, never the call being asked about).
-// scripts/laya_state.py reads the same golden file; the two must not drift.
+// laya-train/scripts/laya_state.py reads the same golden file; the two must not drift.
 import test from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';

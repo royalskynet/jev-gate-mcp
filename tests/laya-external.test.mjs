@@ -6,6 +6,8 @@
 // rows that the nightly's "do not export a regression" gate reads.
 import test from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
@@ -13,6 +15,7 @@ import {
 } from '../scripts/laya-external-corpus.mjs';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const LAYA = process.env.LAYA_TRAIN_DIR ?? path.join(os.homedir(), 'dev/laya-train');  // 訓練管線在私有 repo laya-train
 
 const DIFF = { type: 'score', instructions: 'Rate the difficulty…', criteria: ['trivial', 'simple', 'moderate', 'hard'] };
 const TRIAGE = { difficulty: DIFF, kind: { type: 'choice', instructions: 'k', criteria: { a: 'a' } } };
@@ -101,8 +104,8 @@ function python() {
   return null;
 }
 
-test('external rows train every fold at low weight and never reach the out-of-fold rows', { skip: !python() && 'no python' }, () => {
-  const out = JSON.parse(execFileSync(python(), ['-c', PY, path.join(ROOT, 'scripts/laya-train.py')], { encoding: 'utf8' }));
+test('external rows train every fold at low weight and never reach the out-of-fold rows', { skip: (!python() && 'no python') || (!fs.existsSync(LAYA) && 'no laya-train checkout') }, () => {
+  const out = JSON.parse(execFileSync(python(), ['-c', PY, path.join(LAYA, 'scripts/laya-train.py')], { encoding: 'utf8' }));
   // Only split=train external:* rows load; the exam is filtered even when globbed.
   assert.equal(out.loaded, 6, 'exam rows (split=eval) or own rows were loaded as external training data');
   assert.equal(out.off, 0, 'weight 0 must switch external data off');

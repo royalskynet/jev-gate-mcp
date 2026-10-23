@@ -72,6 +72,12 @@ export function liveRecords(lines) {
  */
 export function evidenceFromLines(lines, maxChars = 8000, { allRounds = false } = {}) {
   const recs = liveRecords(lines);
+  // tool_use_id -> what ran, so a silent success can be named in the evidence.
+  const uses = new Map();
+  for (const rec of recs) {
+    if (rec.type !== 'assistant' || !Array.isArray(rec.message?.content)) continue;
+    for (const b of rec.message.content) if (b?.type === 'tool_use' && b.id) uses.set(b.id, b);
+  }
   const parts = [];
   let total = 0;
   for (let i = recs.length - 1; i >= 0 && total < maxChars; i--) {
@@ -106,7 +112,20 @@ export function evidenceFromLines(lines, maxChars = 8000, { allRounds = false } 
         : Array.isArray(r.content)
           ? r.content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n')
           : '';
-      if (!text) continue;
+      if (!text) {
+        // A write-type command that succeeds prints nothing (`wheel_registry.py
+        // add`, `cat >> f`), and an empty result used to leave the claim "card
+        // registered" with no evidence at all. 10-22 sample: ~40% of deferred
+        // not-supported notes were such claims. Say that the call ran and did
+        // not fail; weaker than output, stronger than nothing.
+        const use = uses.get(r.tool_use_id);
+        if (allRounds || r.is_error || !use) continue;
+        const what = String(use.input?.command ?? use.input?.file_path ?? '').slice(0, 200);
+        const note = `[${use.name} completed with no output and no error${what ? `: ${what}` : ''}]`;
+        parts.unshift(note);
+        total += note.length;
+        continue;
+      }
       parts.unshift(text);
       total += text.length;
     }
