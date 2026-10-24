@@ -302,3 +302,51 @@ test('compact-hook: a Jev pass that leaves too much makes the next compaction th
     refreshConfig();
   }
 });
+
+// issue H8 / fix 11265: a kept tool-result message handed back WITH its engine
+// handle is written as the engine's own row, and the transcript writer links its
+// parentUuid to the ORIGINAL pre-compaction assistant (sourceToolAssistantUUID).
+// `--resume` then walks back over the compact_boundary and reloads everything.
+test('compact-hook: kept tool-result messages go back without a handle (resume keeps the pass)', async () => {
+  const saved = { ...ENV };
+  Object.assign(ENV, { JEV_COMPACT_PIN_LAST: '3', JEV_COMPACT_MIN_REDUCTION: '1000', JEV_COMPACT_RESET_ABOVE: '0', JEV_COMPACT_BACKEND: 'anthropic' });
+  refreshConfig();
+  try {
+    const on = {};
+    register((name, fn) => { on[name] = fn; }, { apiKey: 'k' });
+    const host = {
+      ...fakeHost(),
+      http: {
+        async fetch(_url, init) {
+          const { questions } = JSON.parse(init.body);
+          const answers = Object.fromEntries(Object.keys(questions).map((k) => [k, { noul: 0 }]));
+          return { status: 200, ok: true, text: JSON.stringify({ answers }) };
+        },
+      },
+    };
+    const BIG = 'y'.repeat(9000);
+    const use = (id) => ({ role: 'assistant', text: '', handle: `a-${id}`, toolUses: [{ tool_use_id: id, tool: 'Bash', input: { command: 'ls' }, text: BIG }] });
+    const res = (id) => ({ role: 'user', text: '', toolUses: [], handle: `r-${id}`, toolResults: [{ tool_use_id: id, text: BIG }] });
+    const messages = [
+      { role: 'user', text: 'list things', toolUses: [], handle: 'u0' },
+      use('t1'), res('t1'),
+      use('t2'), res('t2'),
+      use('t3'), res('t3'),
+      { role: 'assistant', text: 'done', toolUses: [], handle: 'a-done' },
+    ];
+    const out = await on['session.compact'](host, { messages, trigger: 'manual' }, () => { throw new Error(`built-in ran: ${JSON.stringify(host.written)}`); });
+    assert.ok(Array.isArray(out?.messages), 'the Jev pass answered');
+    const keptResults = out.messages.filter((m) => m.role === 'user' && m.toolResults?.length);
+    assert.ok(keptResults.length > 0, 'the pinned tool result is still there');
+    for (const m of keptResults) {
+      assert.equal(m.handle, undefined, 'a tool-result message must be rebuilt, never the engine row');
+      assert.equal(m.toolResults[0].text.length > 0, true, 'its result text survives the rebuild');
+    }
+    assert.equal(out.messages[0], messages[0], 'a plain prompt keeps its handle (same object)');
+    assert.ok(out.messages.some((m) => m.handle === 'a-t3'), 'a kept assistant keeps its handle (thinking intact)');
+  } finally {
+    for (const k of Object.keys(ENV)) if (!(k in saved)) delete ENV[k];
+    Object.assign(ENV, saved);
+    refreshConfig();
+  }
+});

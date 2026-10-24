@@ -412,6 +412,32 @@ export function resetDue(residual) {
   return CONFIG.resetAbove > 0 && typeof residual === 'number' && residual > CONFIG.resetAbove;
 }
 
+/**
+ * Hand kept tool-result messages back WITHOUT the engine's `handle`, so the
+ * engine rebuilds them from `text` and `toolResults` (issue H8, fix 11265).
+ *
+ * Why: a message with a handle is written to the transcript as the engine's own
+ * row, `sourceToolAssistantUUID` included, and the transcript writer
+ * (`insertMessageChain`, 2.1.309) makes such a row's `parentUuid` that
+ * sourceToolAssistantUUID: the ORIGINAL pre-compaction assistant row, not its
+ * copy after the compact_boundary. The live process is fine (it holds the
+ * array), but `--resume` walks parentUuid from the leaf, crosses back over the
+ * boundary through that link and loads the whole uncompacted history (150,845
+ * tokens where the pass left 50,468). A rebuilt message has no
+ * sourceToolAssistantUUID, so it chains to the row before it and the walk stops
+ * at the boundary, as it does after the built-in /compact. Only tool-result
+ * messages carry the field; every other message keeps its handle (thinking and
+ * signatures intact). Cost: a rebuilt result keeps text only — an image in a
+ * kept result is lost, the same as a result the core already rebuilt.
+ */
+export function detachToolResultHandles(messages = []) {
+  return messages.map((m) => {
+    if (m?.role !== 'user' || m.handle === undefined || !Array.isArray(m.toolResults) || m.toolResults.length === 0) return m;
+    const { handle: _handle, ...rebuilt } = m;
+    return rebuilt;
+  });
+}
+
 /** @type {import('claude-code').Register} */
 export const register = (on, options = {}) => {
   let compacting = false;
@@ -494,7 +520,7 @@ export const register = (on, options = {}) => {
     if (ENV.JEV_UI_LOG === '1') $.ui.log(line);
     await appendLedger($, line);
     measureNext = true;
-    return { messages: out.messages };
+    return { messages: detachToolResultHandles(out.messages) };
   });
 
   // The "fast" trigger: compact on a context percentage rather than waiting
