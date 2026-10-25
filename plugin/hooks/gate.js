@@ -2,10 +2,9 @@ import { readFileSync, statSync, existsSync, unlinkSync, mkdirSync, writeFileSyn
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
-import { makeStopGate, makeNextGate, logAsync } from '../lib/gate.js';
+import { makeStopGate, makeNextGate, logAsync, RESULT_LEVEL } from '../lib/gate.js';
 import { readEvidence } from '../lib/transcript.js';
 import { stateEvidence } from '../lib/state.js';
-import { unsupportedIds, idBlock } from '../lib/idcheck.js';
 import { atomicClaims, decisive } from '../lib/claims.js';
 import { DEFAULT_CONFIG } from '../lib/judge.js';
 
@@ -139,34 +138,12 @@ async function judgeStop(payload, c) {
   const evidence = composeEvidence(toolOutput, state.text, c.stateShadow !== false);
   // A turn that ran no tools has nothing to verify against; let it end.
   if (!evidence.trim()) return undefined;
-  // Deterministic first: an invented id reads as `not_addressed` to the judge,
-  // which is advisory, so the clearest case would otherwise pass. Widened to
-  // the whole transcript because quoting a hash from an earlier round is honest.
-  try {
-    const ids = unsupportedIds(claim, readEvidence(payload?.transcript_path, 400000, { allRounds: true }) || evidence);
-    if (ids.length) {
-      // Every hit is recorded whether or not it acts. Staged rollouts stop
-      // checking the moment the rollout ends; a permanent ledger is what makes
-      // the false-positive rate knowable next month instead of during a window.
-      // The denominator is already there: the judge below logs every Stop.
-      // idcheckShadow (issue #12) kept this observe-only while the rate was
-      // measured: 4/5 shadow hits were evidence-side misses, now fixed; replay of
-      // 666 Stops (278 with ids) flags only the one real fabrication. Default
-      // off; set true to go back to observe-only. c.shadow still gates both.
-      await logAsync(c, {
-        event: c.shadow || c.idcheckShadow ? 'idcheck_observe' : 'idcheck_block',
-        gate: 'stop',
-        ids,
-      });
-      if (!c.shadow && !c.idcheckShadow) return idBlock(ids);
-    }
-  } catch {
-    // Fail open, like every other guard in this hook.
-  }
+  // Invented commit/issue ids are Genie done_gate's job (invented_ids); the
+  // copy that lived here was removed 10-25 so one Stop is not blocked twice.
   // Atomic claims, not the whole reply: see lib/claims.js. A reply with no
   // completion sentence is not judged: 10-21 replay of 3,406 turn endings over
   // 7 days found 801 (23.5%) with none, and the judge's answer on those is
-  // almost always `not_addressed`, which only nags. idcheck above still ran.
+  // almost always `not_addressed`, which only nags.
   // skipNoClaim=false restores the old whole-reply fallback.
   const claims = c.splitClaims === false ? [] : atomicClaims(claim);
   if (c.splitClaims !== false && c.skipNoClaim !== false && !claims.length) {
@@ -238,7 +215,7 @@ export function blockDecision(judged) {
   if (!judged) return undefined;
   // Name the sentence: "a claim is off" without saying which one sends the
   // agent re-reading the whole reply and usually changing nothing.
-  const which = judged.claim ? ` Claim: "${String(judged.claim).slice(0, 200)}"` : '';
+  const which = judged.claim ? ` Claim: "${String(judged.claim).replace(RESULT_LEVEL, '').slice(0, 200)}"` : '';
   if (judged.verdict === 'contradicted') {
     if (judged.gate === 'auto') {
       return {
@@ -254,7 +231,7 @@ export function blockDecision(judged) {
   if (judged.gate === 'auto' && judged.verdict === 'not_addressed') {
     // Was `systemMessage`, which the Stop hook shows to the user only: 176
     // reminders in ten days that the agent never received (hooks docs, 10-13).
-    return feedback(`(jev-gate) this round's tool output does not support the completion claim. If something is still unproven, say so plainly.${which}`);
+    return feedback(`(jev-gate) this round's tool output does not support the completion claim: 證據只證明動作，未證明結果，請補上結果層驗證或明說未驗證。${which}`);
   }
   return undefined;
 }

@@ -17,7 +17,6 @@
   "pruneLog": "${HOME}/.jev-gate/prune.log",
   "gateLog": "${HOME}/.jev-gate/gate.log",
   "shadow": false,
-  "idcheckShadow": true,
   "skipNoClaim": true,
   "stateShadow": false,
   "stateCaptureLog": "${HOME}/.jev-gate/state-capture.jsonl",
