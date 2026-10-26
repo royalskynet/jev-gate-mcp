@@ -19,11 +19,11 @@ if [ "$RC" != "$PREV" ]; then
     # 例外：封 IP（3）解除要即時推，否則只有隔天日報看得到（10-19）
     0) if [ "$PREV" = 3 ]; then
          U=$(zen-gate until 2>/dev/null); case "$U" in ''|*[!0-9]*) U=不明 ;; *) U=$(date -r "$U" "+%m-%d %H:%M") ;; esac
-         hpush "✅ Jev Zen 免費層解封了，Jev 回到免費層。dc 的 Zen 閘到期才開（到 $U）"
+          printf '%s\n' "✅ Jev Zen 免費層解封了，Jev 回到免費層。dc 的 Zen 閘到期才開（到 ${U}）" | /Users/you/.hermes/profiles/coco/scripts/brief/notify "Jev Zen 免費層"
        fi ;;
     2) : ;;
-    3) hpush "⚠️ Jev Zen 免費層被 OpenCode 封 IP（403 FreeTierError），Jev 改走付費 OpenRouter，解封要等上游。看 ~/.jevgate/zen-free-status.json" ;;
-    *) hpush "⚠️ Jev zen free 失效且無 OpenRouter 備援：Jev 判斷已停。看 ~/.jevgate/zen-free-status.json" ;;
+     3) printf '%s\n' "⚠️ Jev Zen 免費層被 OpenCode 封 IP（403 FreeTierError），Jev 改走付費 OpenRouter，解封要等上游。看 ~/.jevgate/zen-free-status.json" | /Users/you/.hermes/profiles/coco/scripts/brief/notify "Jev Zen 免費層" ;;
+     *) printf '%s\n' "⚠️ Jev zen free 失效且無 OpenRouter 備援：Jev 判斷已停。看 ~/.jevgate/zen-free-status.json" | /Users/you/.hermes/profiles/coco/scripts/brief/notify "Jev Zen 免費層" ;;
   esac
 fi
 # Backstop for a failure kind the probe cannot name yet: a quota cooldown heals
@@ -32,7 +32,7 @@ STREAK_F="$HOME/.jevgate/zen-watch.streak"
 if [ "$RC" = 2 ]; then STREAK=$(( $(cat "$STREAK_F" 2>/dev/null || echo 0) + 1 )); else STREAK=0; fi
 echo "$STREAK" > "$STREAK_F"
 if [ "$STREAK" = "${ZEN_WATCH_STREAK_MAX:-24}" ]; then
-  hpush "⚠️ Jev Zen 免費層連續 ${STREAK} 次探測都在冷卻（rc=2），超過額度冷卻該有的長度，Jev 一直走付費 OpenRouter。看 ~/.jevgate/zen-free-status.json"
+  printf '%s\n' "⚠️ Jev Zen 免費層連續 ${STREAK} 次探測都在冷卻（rc=2），超過額度冷卻該有的長度，Jev 一直走付費 OpenRouter。看 ~/.jevgate/zen-free-status.json" | /Users/you/.hermes/profiles/coco/scripts/brief/notify "Jev Zen 免費層"
 fi
 rm -f "$HOME/.jevgate/zen-watch.down" # legacy marker from the rc-less version
 echo "$(date -u +%FT%TZ) rc=$RC"
