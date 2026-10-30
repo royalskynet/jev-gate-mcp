@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.1.2",
     "@modelcontextprotocol/server": "^2.0.0",
     "@prometheus-io/client": "^0.16.1",
     "@receptron/laya": "^0.1.2",
