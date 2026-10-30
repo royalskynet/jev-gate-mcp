@@ -24,7 +24,7 @@ notice() { # notice <key> <訊息>
 }
 
 REPO="${JEV_GATE_DIR:-$HOME/jev-gate-mcp}"
-[ -d "$REPO/.git" ] || { echo "找不到 repo：$REPO（可用 JEV_GATE_DIR 指定）" >&2; exit 1; }
+[ -d "$REPO/.git" ] || { echo "找不到 repo：${REPO}（可用 JEV_GATE_DIR 指定）" >&2; exit 1; }
 
 # 工作樹有未提交改動時 --ff-only 可能失敗：直接停，不替你 stash。
 git -C "$REPO" pull --ff-only

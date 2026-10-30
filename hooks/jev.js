@@ -435,6 +435,7 @@ function hydrate($) {
         JEV_TIMEOUT_MS: await $.env.get('JEV_TIMEOUT_MS'),
         JEV_UI_LOG: await $.env.get('JEV_UI_LOG'),
         JEV_USAGE_LOG: await $.env.get('JEV_USAGE_LOG'),
+        JEV_PRUNE_ENABLED: await $.env.get('JEV_PRUNE_ENABLED'),
       });
     } catch {
       /* no `$.env` (Node): ENV already came from process.env */
@@ -522,10 +523,18 @@ async function meteredFetch($, url, init) {
 }
 
 /** The body of every pruning hook; `tool` picks the row of TARGETS to use. */
+/**
+ * `JEV_PRUNE_ENABLED=0` keeps tool output off the judge entirely: prune sends
+ * raw chunks out, which a session holding PII must not do (compact can stay on
+ * with `JEV_COMPACT_ASK_CHARS=0`, which sends only tool names and sizes).
+ */
+export const pruneEnabled = (env = ENV) => env.JEV_PRUNE_ENABLED !== '0';
+
 async function prune(tool, $, e, next) {
   // The module's environment has no `process`; this is where `$.env` is first
   // reachable. Memoized, so only the session's first prune pays for it.
   await hydrate($);
+  if (!pruneEnabled()) return next(e);
   const target = TARGETS[tool];
   const r = await next(e);
   if (r?.isError) return r;

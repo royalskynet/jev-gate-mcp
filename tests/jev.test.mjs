@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { requestTerms, vetoOnTerms, verdictOf, CONFIG, TARGETS } from '../hooks/jev.js';
+import { requestTerms, vetoOnTerms, verdictOf, CONFIG, TARGETS, pruneEnabled } from '../hooks/jev.js';
 
 test('requestTerms keeps the searchable words only', () => {
   const t = requestTerms('Which commits touched prune? 有改到嗎');
@@ -54,4 +54,10 @@ test('every target only judges output at least one chunk long', () => {
       `${name}: thresholdChars ${t.thresholdChars} is under one chunk (${CONFIG.chunkChars})`,
     );
   }
+});
+
+test('JEV_PRUNE_ENABLED=0 turns prune off; unset or anything else keeps it on', () => {
+  assert.equal(pruneEnabled({ JEV_PRUNE_ENABLED: '0' }), false);
+  assert.equal(pruneEnabled({}), true);
+  assert.equal(pruneEnabled({ JEV_PRUNE_ENABLED: '1' }), true);
 });

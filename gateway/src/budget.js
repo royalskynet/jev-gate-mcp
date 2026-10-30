@@ -83,6 +83,12 @@ export function makeZenDailyTake({
   };
 }
 
+function isKeyLimit(e) {
+  const status = e?.status ?? e?.cause?.status;
+  const err = (e?.body ?? e?.cause?.body)?.error;
+  return status === 403 && (/key_limit/.test(err?.metadata?.limit_source ?? '') || /Key limit exceeded/i.test(err?.message ?? ''));
+}
+
 export function withPaymentStop(adapter, {
   file = join(homedir(), '.jevgate', 'or-status.json'),
   holdMs = 3600000,
@@ -105,6 +111,10 @@ export function withPaymentStop(adapter, {
       if (e && (e.status === 402 || e.cause?.status === 402)) {
         writeJson(file, { blocked_until: now() + holdMs });
         notify('Jev OpenRouter 回 402（額度不足），停用 1 小時');
+      } else if (isKeyLimit(e)) {
+        // 403 "Key limit exceeded": the key's own spend cap, never resets by itself (10-27).
+        writeJson(file, { blocked_until: now() + holdMs, reason: 'key-limit' });
+        notify('Jev OpenRouter key 達用量上限（403 Key limit exceeded），停用 1 小時');
       }
       throw e;
     }

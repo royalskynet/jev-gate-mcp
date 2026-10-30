@@ -27,10 +27,17 @@ function readKey(file) {
   }
 }
 
-function errorStatus(e) {
+// Upstream 400/404/409/422 mean the caller's request is malformed (e.g. a
+// score question with 0 levels), so they pass through; 401/403 are this
+// daemon's own key problem and stay 502.
+const CALLER_FAULT = new Set([400, 404, 409, 422]);
+
+export function errorStatus(e) {
   if (e.code === 'JEV_BUDGET_EXCEEDED' || e.code === 'JEV_PAYMENT_REQUIRED') return 402;
   if (e.code === 'LAYA_ABSTAIN') return 503;
-  if (e.status === 429) return 429;
+  const status = e.status ?? e.cause?.status;
+  if (status === 429) return 429;
+  if (CALLER_FAULT.has(status)) return status;
   return 502;
 }
 
@@ -160,6 +167,8 @@ export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsag
       } catch (e) {
         const status = errorStatus(e);
         send(status, { error: { type: e.code ?? 'upstream' } });
+        // 'upstream' alone hid an OpenRouter 403 key cap for 3 days (10-27).
+        console.error(`systemone ${status}: ${e?.status ?? e?.cause?.status ?? '-'} ${String(e?.message ?? e).slice(0, 200)}`);
         logReq(status, null);
       }
       return;
@@ -169,7 +178,7 @@ export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsag
   });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const local = makeLayaAdapter({});
   const orKey = readKey(DEFAULTS.zenBackupKeyFile);
   const zenKey = readKey(DEFAULTS.apiKeyFile);
