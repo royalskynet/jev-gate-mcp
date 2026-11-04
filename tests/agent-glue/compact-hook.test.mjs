@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  pairState, userRequestOf, judgePair, rivalCompactor, apiKey, CONFIG, shouldCompact, register,
+  pairState, userRequestOf, judgePair, rivalCompactor, apiKey, CONFIG, tooLittleFreed, shouldCompact, register,
   refreshConfig,
 } from '../../agent-glue/claude/compact-hook.mjs';
 import { ENV } from '../../agent-glue/claude/env.mjs';
@@ -349,4 +349,15 @@ test('compact-hook: kept tool-result messages go back without a handle (resume k
     Object.assign(ENV, saved);
     refreshConfig();
   }
+});
+
+test('tooLittleFreed: under the relative floor the host summary runs', () => {
+  const saved = CONFIG.minReductionPct;
+  CONFIG.minReductionPct = 30;
+  assert.equal(tooLittleFreed(253_304, 5_423_875), true); // M2: 4.7% freed
+  assert.equal(tooLittleFreed(243_455, 847_413), true); // M2: 28.7% freed
+  assert.equal(tooLittleFreed(187_175, 531_179), false); // M4: 35.2% freed
+  CONFIG.minReductionPct = 0;
+  assert.equal(tooLittleFreed(1, 5_423_875), false);
+  CONFIG.minReductionPct = saved;
 });

@@ -45,6 +45,7 @@ export const CONFIG = {
   pinFirst: 1,
   pinLast: 6,
   minReductionChars: 4000,
+  minReductionPct: 30,
   askChars: 1200,
   backend: 'auto',
   // Undefined on purpose: the vendored core owns these defaults (0.5, 25000,
@@ -101,6 +102,10 @@ export function refreshConfig(backup = false) {
   // Below this the pass is not worth replacing the history for; the host's
   // own compaction runs instead.
   CONFIG.minReductionChars = Number(ENV.JEV_COMPACT_MIN_REDUCTION ?? 4000);
+  // Relative floor: a pass that frees less than this share of the transcript
+  // leaves the session at the wall, so the host's summary runs instead. Seen on
+  // M2: two passes freed 4.7% each. 0 turns it off.
+  CONFIG.minReductionPct = Number(ENV.JEV_COMPACT_MIN_REDUCTION_PCT ?? 30);
   CONFIG.pinLast = Number(ENV.JEV_COMPACT_PIN_LAST ?? 6);
   // Verbatim residue grows each pass (prose is never dropped); past this many
   // real tokens after the last Jev pass, the next compaction is the host's
@@ -147,6 +152,7 @@ function hydrate($) {
         JEV_COMPACT_AT_PERCENT: await $.env.get('JEV_COMPACT_AT_PERCENT'),
         JEV_COMPACT_AT_TOKENS: await $.env.get('JEV_COMPACT_AT_TOKENS'),
         JEV_COMPACT_MIN_REDUCTION: await $.env.get('JEV_COMPACT_MIN_REDUCTION'),
+        JEV_COMPACT_MIN_REDUCTION_PCT: await $.env.get('JEV_COMPACT_MIN_REDUCTION_PCT'),
         JEV_COMPACT_PIN_LAST: await $.env.get('JEV_COMPACT_PIN_LAST'),
         JEV_COMPACT_RESET_ABOVE: await $.env.get('JEV_COMPACT_RESET_ABOVE'),
         JEV_COMPACT_ASK_CHARS: await $.env.get('JEV_COMPACT_ASK_CHARS'),
@@ -407,6 +413,14 @@ export function shouldCompact(context = {}) {
   return CONFIG.compactAtTokens > 0 && (context?.tokens ?? 0) >= CONFIG.compactAtTokens;
 }
 
+/**
+ * Did this pass free too small a share to be worth keeping? Chars, not tokens:
+ * the event carries no token count, and `-p` hosts cannot measure one after.
+ */
+export function tooLittleFreed(reducedBy, before) {
+  return CONFIG.minReductionPct > 0 && before > 0 && (reducedBy ?? 0) * 100 < before * CONFIG.minReductionPct;
+}
+
 /** Did the last Jev pass leave too much? `residual` is real API tokens, or null if unmeasured. */
 export function resetDue(residual) {
   return CONFIG.resetAbove > 0 && typeof residual === 'number' && residual > CONFIG.resetAbove;
@@ -511,8 +525,8 @@ export const register = (on, options = {}) => {
         judge: (pair) => judgePair({ http: { fetch: metered } }, key, request, pair),
       });
     const before = JSON.stringify(messages).length;
-    if (!out.compacted) {
-      await appendLedger($, `jev-compact: fell back to built-in (backend=${backend}, reducedBy ${out.reducedBy ?? 0} of ${before} chars, floor ${CONFIG.minReductionChars}${out.reason ? `, ${out.reason}` : ''})`);
+    if (!out.compacted || tooLittleFreed(out.reducedBy, before)) {
+      await appendLedger($, `jev-compact: fell back to built-in (backend=${backend}, reducedBy ${out.reducedBy ?? 0} of ${before} chars, floor ${CONFIG.minReductionChars} / ${CONFIG.minReductionPct}%${out.reason ? `, ${out.reason}` : ''})`);
       return next(e);
     }
     const line = `jev-compact: backend=${backend}, ${before} → ${before - (out.reducedBy ?? 0)} chars, ${out.reducedBy} dropped, ${out.messages.length}/${messages.length} messages, verbatim, trigger=${e?.trigger ?? '?'}`;

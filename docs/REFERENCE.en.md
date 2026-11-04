@@ -481,6 +481,7 @@ one System One judgment per tool call/result pair (~350 in / ~35 out tokens,
 | trigger point | `JEV_COMPACT_AT_PERCENT` | 60 (% of context) |
 | absolute ceiling (whichever first) | `JEV_COMPACT_AT_TOKENS` | 200000 tokens (0 = off) |
 | reduction floor | `JEV_COMPACT_MIN_REDUCTION` | 4,000 chars |
+| relative floor (below it the built-in summary runs) | `JEV_COMPACT_MIN_REDUCTION_PCT` | 30 (%, 0 = off) |
 | pinned recent turns | `JEV_COMPACT_PIN_LAST` | 6 |
 | payload head shown to the judge | `JEV_COMPACT_ASK_CHARS` | 1,200 |
 | off switch | `JEV_COMPACT_ENABLED=0` | on |

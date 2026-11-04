@@ -409,6 +409,7 @@ transport 任何失敗都保持現狀，絕不往上或往下猜。
 | 觸發點 | `JEV_COMPACT_AT_PERCENT` | 60（% context） |
 | 絕對上限（先到先觸發） | `JEV_COMPACT_AT_TOKENS` | 200000 tokens（0＝關） |
 | 縮減門檻 | `JEV_COMPACT_MIN_REDUCTION` | 4,000 字元 |
+| 縮減比例門檻（未達改用內建摘要） | `JEV_COMPACT_MIN_REDUCTION_PCT` | 30（%，0＝關） |
 | 釘住最近 turn | `JEV_COMPACT_PIN_LAST` | 6 |
 | 給 judge 看的 payload 開頭 | `JEV_COMPACT_ASK_CHARS` | 1,200 |
 | 關閉 | `JEV_COMPACT_ENABLED=0` | 預設開 |
