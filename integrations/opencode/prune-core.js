@@ -33,17 +33,24 @@ export function defaultJevEnv(env, exists) {
   return true;
 }
 
-/** Text of the newest user message in an opencode `session.messages` list. */
+/**
+ * Text of the newest user message. Three shapes: V1 `session.messages`
+ * (`{info:{role}, parts}`), V2 `ctx.session.context()` (`{type:'user', text}`)
+ * and the V2 context hook's model messages (`{role:'user', content:[…]}`).
+ */
 export function lastUserText(messages) {
   if (!Array.isArray(messages)) return '';
+  const textParts = (parts) => (Array.isArray(parts) ? parts : [])
+    .filter((p) => p?.type === 'text' && typeof p.text === 'string' && !p.synthetic)
+    .map((p) => p.text)
+    .join('\n');
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m?.info?.role !== 'user') continue;
-    const text = (m.parts ?? [])
-      .filter((p) => p?.type === 'text' && typeof p.text === 'string' && !p.synthetic)
-      .map((p) => p.text)
-      .join('\n')
-      .trim();
+    let text = '';
+    if (m?.info?.role === 'user') text = textParts(m.parts);
+    else if (m?.type === 'user' && typeof m.text === 'string') text = m.text;
+    else if (m?.role === 'user') text = typeof m.content === 'string' ? m.content : textParts(m.content);
+    text = text.trim();
     if (text) return text;
   }
   return '';
@@ -68,48 +75,81 @@ function completedTool(part) {
   return part?.type === 'tool' && part.state?.status === 'completed' && typeof part.state.output === 'string';
 }
 
+// V2 `tool-result.result`: only text-bearing results are measured and dropped.
+function resultText(result) {
+  if (result?.type === 'text' && typeof result.value === 'string') return result.value;
+  if (result?.type === 'content' && Array.isArray(result.value)) {
+    return result.value.filter((c) => c?.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('\n');
+  }
+  return null;
+}
+
 /**
- * Verbatim compaction over opencode's `experimental.chat.messages.transform`
- * payload: user/assistant text is never touched, only old tool outputs that
- * Jev judged `drop` are replaced by a marker. `decisions` (callID → verdict)
- * outlives the pass, so each output is judged once and a dropped one stays
- * dropped on every later turn — the prompt-cache prefix changes once per
- * pass, not once per turn. Mutates `messages` in place by swapping in copies
- * of the touched parts (opencode rebuilds the list from storage each turn).
+ * Tool outputs in either payload shape, as `{ id, tool, input, text, drop }`.
+ * V1 (`experimental.chat.messages.transform`): `parts[]` with
+ * `{type:'tool', callID, state:{output}}`. V2 (`ctx.session.hook('context')`):
+ * model messages whose `content[]` holds `{type:'tool-result', id, name,
+ * result}`, the call's input sitting on the matching `tool-call` part.
+ */
+function toolOutputs(messages, editable) {
+  const calls = new Map();
+  for (const m of messages) {
+    if (!Array.isArray(m?.content)) continue;
+    for (const p of m.content) if (p?.type === 'tool-call' && p.id) calls.set(p.id, p.input);
+  }
+  const out = [];
+  for (const m of editable) {
+    (Array.isArray(m?.parts) ? m.parts : []).forEach((p, i) => {
+      if (!completedTool(p) || p.state.time?.compacted) return;
+      out.push({ id: p.callID, tool: p.tool, input: p.state.input, text: p.state.output,
+        drop: (marker) => { m.parts[i] = { ...p, state: { ...p.state, output: marker } }; } });
+    });
+    (Array.isArray(m?.content) ? m.content : []).forEach((p, i) => {
+      if (p?.type !== 'tool-result') return;
+      const text = resultText(p.result);
+      if (text === null) return;
+      out.push({ id: p.id, tool: p.name, input: calls.get(p.id), text,
+        drop: (marker) => { m.content = m.content.map((q, k) => (k === i ? { ...p, result: { type: 'text', value: marker } } : q)); } });
+    });
+  }
+  return out;
+}
+
+/**
+ * Verbatim compaction over the plugin's message payload (V1 transform or V2
+ * context hook): user/assistant text is never touched, only old tool outputs
+ * that Jev judged `drop` are replaced by a marker. `decisions` (call id →
+ * verdict) outlives the pass, so each output is judged once and a dropped one
+ * stays dropped on every later turn — the prompt-cache prefix changes once
+ * per pass, not once per turn. Mutates `messages` in place by swapping in
+ * copies of the touched parts (opencode rebuilds the list each turn).
  */
 export async function compactParts(messages, { judge, decisions, opts = {} }) {
   const o = { ...COMPACT_DEFAULTS, ...opts };
   if (!Array.isArray(messages) || !decisions) return { dropped: 0, judged: 0, before: 0 };
   const editable = messages.slice(0, Math.max(0, messages.length - o.pinLast));
-  const sites = [];
-  let total = 0;
-  for (const m of editable) {
-    (m?.parts ?? []).forEach((p, i) => {
-      if (!completedTool(p) || p.state.time?.compacted) return;
-      total += p.state.output.length;
-      if (p.state.output.length >= o.minPartChars && p.callID) sites.push({ m, i, p });
-    });
-  }
+  const outputs = toolOutputs(messages, editable);
+  const total = outputs.reduce((n, t) => n + t.text.length, 0);
+  const sites = outputs.filter((t) => t.text.length >= o.minPartChars && t.id);
   let judged = 0;
-  const fresh = sites.filter((s) => !decisions.has(s.p.callID)).slice(0, o.maxPerPass);
+  const fresh = sites.filter((s) => !decisions.has(s.id)).slice(0, o.maxPerPass);
   if (total >= o.atChars && fresh.length && judge) {
     const request = lastUserText(messages);
-    const segments = fresh.map(({ p }) => {
-      const args = JSON.stringify(p.state.input ?? {}).slice(0, 300);
-      return `tool: ${p.tool}\nargs: ${args}\noutput (${p.state.output.length} chars):\n${p.state.output.slice(0, o.headChars)}`;
+    const segments = fresh.map((t) => {
+      const args = JSON.stringify(t.input ?? {}).slice(0, 300);
+      return `tool: ${t.tool}\nargs: ${args}\noutput (${t.text.length} chars):\n${t.text.slice(0, o.headChars)}`;
     });
     const verdicts = await judge({ request, segments, criteria: COMPACT_CRITERIA }).catch(() => null);
     if (Array.isArray(verdicts) && verdicts.length === fresh.length) {
-      fresh.forEach((s, k) => decisions.set(s.p.callID, verdicts[k] === 'drop' ? 'drop' : 'keep'));
+      fresh.forEach((s, k) => decisions.set(s.id, verdicts[k] === 'drop' ? 'drop' : 'keep'));
       judged = fresh.length;
     }
   }
   let dropped = 0;
-  for (const { m, i, p } of sites) {
-    if (decisions.get(p.callID) !== 'drop') continue;
-    const n = p.state.output.length;
-    m.parts[i] = { ...p, state: { ...p.state, output: `[jev-compact: dropped ${n} chars; rerun the tool if it is needed again]` } };
-    dropped += n;
+  for (const t of sites) {
+    if (decisions.get(t.id) !== 'drop') continue;
+    t.drop(`[jev-compact: dropped ${t.text.length} chars; rerun the tool if it is needed again]`);
+    dropped += t.text.length;
   }
   // `before` = tool-output chars in the editable span, for the savings ledger.
   return { dropped, judged, before: total };

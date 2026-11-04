@@ -273,3 +273,42 @@ test('V2 effort context hook leaves options alone when disabled', async () => {
     if (prev === undefined) delete process.env.JEV_EFFORT_ENABLED; else process.env.JEV_EFFORT_ENABLED = prev;
   }
 });
+
+// --- real V2 payload shapes (fix: V1-shaped fixtures hid that V2 never compacted) ---
+
+// ctx.session.hook('context') hands model messages: tool calls on the assistant
+// turn, outputs as `tool-result` parts on a `tool` turn.
+const v2Call = (id, cmd) => ({ role: 'assistant', content: [{ type: 'tool-call', id, name: 'bash', input: { command: cmd } }] });
+const v2Result = (id, value, type = 'text') => ({ role: 'tool', content: [{ type: 'tool-result', id, name: 'bash',
+  result: type === 'content' ? { type, value: [{ type: 'text', text: value }] } : { type, value } }] });
+const v2History = () => [
+  { role: 'user', content: [{ type: 'text', text: 'fix the login bug' }] },
+  v2Call('ls', 'ls'), v2Result('ls', 'x'.repeat(50000)),
+  v2Call('err', 'make'), v2Result('err', 'E'.repeat(40000), 'content'),
+  v2Call('j', 'cat x.json'), v2Result('j', { big: 'y'.repeat(9000) }, 'json'),
+  { role: 'user', content: [{ type: 'text', text: 'go on' }] },
+  v2Call('recent', 'r'), v2Result('recent', 'r'.repeat(90000)),
+  { role: 'assistant', content: [{ type: 'text', text: 'b' }] },
+];
+
+test('V2 context payload: tool-result outputs are judged with their call input and dropped', async () => {
+  const msgs = v2History();
+  const asked = [];
+  const judge = async ({ request, segments }) => { asked.push({ request, segments }); return segments.map((s) => (s.includes('args: {"command":"ls"}') ? 'drop' : 'keep')); };
+  const r = await compactParts(msgs, { judge, decisions: new Map() });
+  assert.equal(r.dropped, 50000);
+  assert.equal(r.before, 90000); // json result unmeasured, pinned tail excluded
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].request, 'go on');
+  assert.equal(asked[0].segments.length, 2);
+  assert.match(msgs[2].content[0].result.value, /^\[jev-compact: dropped 50000 chars/);
+  assert.equal(msgs[2].content[0].id, 'ls');
+  assert.equal(msgs[4].content[0].result.value[0].text.length, 40000);
+  assert.equal(msgs[9].content[0].result.value.length, 90000); // pinned
+});
+
+test('lastUserText reads V2 session.context() and V2 model messages', () => {
+  assert.equal(lastUserText([{ type: 'user', text: 'old' }, { type: 'assistant', content: [] }, { type: 'user', text: 'new ask' }]), 'new ask');
+  assert.equal(lastUserText(v2History()), 'go on');
+  assert.equal(lastUserText([{ role: 'user', content: 'plain string' }]), 'plain string');
+});

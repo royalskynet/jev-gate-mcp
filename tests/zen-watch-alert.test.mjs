@@ -17,7 +17,9 @@ function home(status) {
   writeFileSync(join(h, '.jevgate', 'zen-free-status.json'), JSON.stringify(status));
   writeFileSync(join(h, '.creds', 'kv', 'OPENROUTER_SECOND_API_KEY.txt'), 'x'); // backup present
   // no Zen key file: the probe aborts without touching the network
-  writeFileSync(join(h, 'bin', 'hpush'), `#!/bin/sh\necho "$1" >> ${h}/pushed\n`, { mode: 0o755 });
+  const brief = join(h, '.hermes', 'profiles', 'coco', 'scripts', 'brief');
+  mkdirSync(brief, { recursive: true });
+  writeFileSync(join(brief, 'notify'), `#!/bin/sh\ncat >> ${h}/pushed\n`, { mode: 0o755 }); // Scribe notify reads stdin
   return h;
 }
 const run = (h, extra = {}) => spawnSync('bash', [watch], {

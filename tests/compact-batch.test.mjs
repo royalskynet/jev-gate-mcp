@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, symlinkSync, readdirSync } from 'node:fs';
@@ -94,13 +95,15 @@ test('cli: runs main when invoked through a symlinked path', () => {
 test('cli: --cwd filters and --backup copies before compacting', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'cb-'));
   const line = (id, cwd) => usage(300000).replace('"s1"', `"${id}"`).replace('"/w"', `"${cwd}"`);
-  fakeClaude(root, 'keep', [line('keep', '/bots/a')], 60);
-  fakeClaude(root, 'skip', [line('skip', '/home/me')], 60);
+  // Random ids: `pgrep -f keep` matches any process whose command line says "keep" and skips it as running.
+  const keep = `k${randomUUID()}`, skip = `s${randomUUID()}`;
+  fakeClaude(root, keep, [line(keep, '/bots/a')], 60);
+  fakeClaude(root, skip, [line(skip, '/home/me')], 60);
   const bak = path.join(root, 'bak');
   // `false` as the claude binary: compaction fails, but the backup must already exist.
   const r = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/compact-batch.mjs', import.meta.url)),
     '--root', root, '--cwd', '/bots/', '--backup', bak, '--execute', '--claude', 'false'], { encoding: 'utf8' });
-  assert.match(r.stdout, /^keep\t/m);
-  assert.doesNotMatch(r.stdout, /^skip\t/m);
-  assert.deepEqual(readdirSync(bak), ['keep.jsonl']);
+  assert.match(r.stdout, new RegExp(`^${keep}\\t`, 'm'));
+  assert.doesNotMatch(r.stdout, new RegExp(`^${skip}\\t`, 'm'));
+  assert.deepEqual(readdirSync(bak), [`${keep}.jsonl`]);
 });
