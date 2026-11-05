@@ -1,0 +1,14 @@
+{
+  "name": "factcheck-claims",
+  "version": "0.1.0",
+  "description": "Pick the fact claims out of an LLM reply and check each one against the evidence the model actually saw.",
+  "type": "module",
+  "main": "index.js",
+  "exports": "./index.js",
+  "files": ["index.js", "claims.js"],
+  "scripts": { "test": "node --test factcheck.test.mjs" },
+  "engines": { "node": ">=20" },
+  "peerDependencies": { "jevwire": "*" },
+  "peerDependenciesMeta": { "jevwire": { "optional": true } },
+  "license": "MIT"
+}
