@@ -1,6 +1,6 @@
 // Opt-in, local-only smoke: no cloud adapter, no corpus, no model download.
 import { loadLaya } from '../gateway/src/laya-loader.js';
-import { makeLayaAdapter } from '../gateway/src/adapters.js';
+import { makeLayaAdapter } from '../gateway/src/laya-adapter.js';
 import { makeLayaRouter, TASK_KIND, MESSAGE_TOPIC } from '../gateway/src/laya-routing.js';
 
 const fixtures = [

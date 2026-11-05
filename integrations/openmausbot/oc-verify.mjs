@@ -77,9 +77,9 @@ export function grade(claims, answers, evidence) {
 
 // stdin must be closed: `opencode run` appends piped stdin to the message and
 // waits for EOF, so an open pipe hangs until the timeout.
-function runCli(bin, args, { timeoutMs, cwd }) {
+function runCli(bin, args, { timeoutMs, cwd, env = process.env }) {
   return new Promise((resolve, reject) => {
-    const p = spawn(bin, args, { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '', timedOut = false;
     p.stdout.on('data', (d) => { out += d; });
     p.stderr.on('data', (d) => { err += d; });
@@ -93,18 +93,29 @@ function runCli(bin, args, { timeoutMs, cwd }) {
   });
 }
 
-/** Older opencode builds reject --pure; probe once like dispatch-router's dc. */
-export function supportsPure(bin) {
+/** Flags this opencode build accepts; older builds reject --pure. Probe once like dispatch-router's dc. */
+export function runFlags(bin) {
   const r = spawnSync(bin, ['run', '--help'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000 });
-  return /--pure/.test(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+  const help = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  return { pure: /--pure/.test(help), standalone: /--standalone/.test(help) };
 }
 
-export function ocVerifier({ bin = defaultBin(), model = 'opencode-go/beam-free', timeoutMs = 180000, run = runCli, pure = run === runCli ? supportsPure(bin) : true } = {}) {
-  const flags = pure ? ['run', '--pure', '-m', model] : ['run', '-m', model];
+/** Env for the opencode child: route it through an HTTP CONNECT proxy (e.g. a region relay). */
+export function proxyEnv(proxy, base = process.env) {
+  if (!proxy) return base;
+  return { ...base, HTTPS_PROXY: proxy, HTTP_PROXY: proxy, NO_PROXY: '127.0.0.1,localhost' };
+}
+
+// opencode 2.x `run` hands the request to the background `opencode serve --service`,
+// which never sees our env; with a proxy we need --standalone (private server) for it to apply.
+export function ocVerifier({ bin = defaultBin(), model = 'opencode-go/beam-free', timeoutMs = 180000, run = runCli,
+  flags: probed = run === runCli ? runFlags(bin) : { pure: true, standalone: false }, proxy = process.env.OC_PROXY } = {}) {
+  const flags = ['run', ...(probed.pure ? ['--pure'] : []), ...(proxy && probed.standalone ? ['--standalone'] : []), '-m', model];
+  const env = proxyEnv(proxy);
   return async (_model, { claims, evidence }) => {
     const cwd = mkdtempSync(join(tmpdir(), 'claimcheck-oc-'));
     try {
-      const out = await run(bin, [...flags, buildPrompt(claims, evidence)], { timeoutMs, cwd });
+      const out = await run(bin, [...flags, buildPrompt(claims, evidence)], { timeoutMs, cwd, env });
       const answers = parseVerdicts(out);
       if (!answers) throw new Error(`opencode run: no JSON verdicts in output: ${String(out).slice(-200)}`);
       return { claims: grade(claims, answers, evidence), usage: { judge: model } };

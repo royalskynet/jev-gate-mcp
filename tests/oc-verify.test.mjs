@@ -62,9 +62,21 @@ test('watcher defaults to the oc judge and rejects unknown judges', () => {
 
 test('older opencode without --pure gets plain run flags', async () => {
   const calls = [];
-  const v = ocVerifier({ run: async (b, args) => { calls.push(args); return '[]'; }, pure: false });
+  const v = ocVerifier({ run: async (b, args) => { calls.push(args); return '[]'; }, flags: { pure: false, standalone: false }, proxy: '' });
   await v(null, { claims: ['x'], evidence: 'e' });
   assert.deepEqual(calls[0].slice(0, 3), ['run', '-m', 'opencode-go/beam-free']);
+});
+
+test('proxy goes to the child env and forces --standalone when supported', async () => {
+  const calls = [];
+  const run = async (b, args, opts) => { calls.push({ args, env: opts.env }); return '[]'; };
+  await ocVerifier({ run, flags: { pure: true, standalone: true }, proxy: 'http://127.0.0.1:18443' })(null, { claims: ['x'], evidence: 'e' });
+  assert.deepEqual(calls[0].args.slice(0, 5), ['run', '--pure', '--standalone', '-m', 'opencode-go/beam-free']);
+  assert.equal(calls[0].env.HTTPS_PROXY, 'http://127.0.0.1:18443');
+  assert.match(calls[0].env.NO_PROXY, /127\.0\.0\.1/);
+  await ocVerifier({ run, flags: { pure: true, standalone: true }, proxy: '' })(null, { claims: ['x'], evidence: 'e' });
+  assert.ok(!calls[1].args.includes('--standalone'));
+  assert.equal(calls[1].env.HTTPS_PROXY, process.env.HTTPS_PROXY);
 });
 
 test('basis passes through; prompt asks for user/inference/evidence', () => {

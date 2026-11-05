@@ -2,7 +2,7 @@
 // batch of a 190-question compact request reached 31GB (fix 10532).
 import test from 'node:test';
 import assert from 'node:assert';
-import { runChunked } from '../src/adapters.js';
+import { runChunked } from '../src/laya-adapter.js';
 
 function fakeLaya(delayMs = 0) {
   const sizes = [];

@@ -56,7 +56,7 @@ const CHUNK_TIMEOUT_MS = Math.max(1000, Number(process.env.JEV_LAYA_LABEL_TIMEOU
 // (10-18). Unlabelled questions stay in training's retention pool. 0 = all.
 const PER_FAMILY = Math.max(0, Number(process.env.JEV_LAYA_LABEL_PER_FAMILY ?? 4));
 // Tests substitute a stub adapter here; nothing else should.
-const ADAPTER_MODULE = process.env.JEV_LAYA_ADAPTER_MODULE ?? '../gateway/src/adapters.js';
+const ADAPTER_MODULE = process.env.JEV_LAYA_ADAPTER_MODULE ?? '../gateway/src/laya-adapter.js';
 
 if (!existsSync(FILE)) {
   process.stdout.write(`no teacher corpus at ${FILE} — run the gateway with JEV_PROVIDER=zen first\n`);

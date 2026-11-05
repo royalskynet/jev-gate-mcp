@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeLayaRouter, maxSoftmax, TASK_KIND, MESSAGE_TOPIC, LOCAL_BUDGET_MS } from '../src/laya-routing.js';
 import { buildGateway } from '../src/config.js';
-import { makeLayaAdapter } from '../src/adapters.js';
+import { makeLayaAdapter } from '../src/laya-adapter.js';
 import { ERR, LIMITS } from '../src/core.js';
 
 /**

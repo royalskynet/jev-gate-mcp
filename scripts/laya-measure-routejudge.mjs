@@ -1,7 +1,7 @@
 // 現役 Laya（laya-trained-onnx）重答 route-judge 的 teacher-corpus 列；不寫回 corpus。
 import { readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-const { makeLayaAdapter } = await import(`${homedir()}/dev/jev-gate-mcp/gateway/src/adapters.js`);
+const { makeLayaAdapter } = await import(`${homedir()}/dev/jev-gate-mcp/gateway/src/laya-adapter.js`);
 const N = Number(process.env.N ?? 300);
 const MARK = 'Classify the request for a coding agent';
 const rows = readFileSync(`${homedir()}/.jevgate/teacher-corpus.jsonl`, 'utf8').split('\n')

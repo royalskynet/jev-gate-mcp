@@ -13,7 +13,8 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { makeLayaAdapter, makeZenAdapter } from '../src/adapters.js';
+import { makeZenAdapter } from '../src/adapters.js';
+import { makeLayaAdapter } from '../src/laya-adapter.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const args = process.argv.slice(2);

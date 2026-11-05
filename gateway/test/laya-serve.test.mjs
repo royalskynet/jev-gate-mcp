@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import http from 'node:http';
-import { makeLayaAdapter } from '../src/adapters.js';
+import { makeLayaAdapter } from '../src/laya-adapter.js';
 
 test('JEV_LAYA_SERVE_URL routes to laya-serve and strips the action head', async () => {
   const seen = [];

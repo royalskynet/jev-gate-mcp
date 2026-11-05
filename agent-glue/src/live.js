@@ -114,7 +114,7 @@ let layaJudgeCache;
 export function localLayaJudge() {
   layaJudgeCache ??= (async () => {
     try {
-      const { makeLayaAdapter } = await import('../../gateway/src/adapters.js');
+      const { makeLayaAdapter } = await import('../../gateway/src/laya-adapter.js');
       const { makeLayaRouter } = await import('../../gateway/src/laya-routing.js');
       const run = makeLayaRouter({ local: makeLayaAdapter({ modelDir: ENV.JEV_LAYA_MODEL_DIR }), cloud: null });
       return async (state, questions) => {

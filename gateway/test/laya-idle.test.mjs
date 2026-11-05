@@ -2,7 +2,7 @@
 // released (close called) and reloaded on the next request.
 import test from 'node:test';
 import assert from 'node:assert';
-import { logLayaLoad, makeLayaAdapter } from '../src/adapters.js';
+import { logLayaLoad, makeLayaAdapter } from '../src/laya-adapter.js';
 
 function fakeLaya() {
   let closed = false;

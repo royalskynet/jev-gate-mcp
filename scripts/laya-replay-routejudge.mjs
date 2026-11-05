@@ -87,7 +87,7 @@ async function main() {
   const done = existsSync(samples) ? doneIds(readFileSync(samples, 'utf8'), promotedAt) : new Set();
   const rows = pickRows(readFileSync(corpus, 'utf8'), promotedAt, done, max);
   if (!rows.length) { console.log(`replay route-judge 0 列（已重放 ${done.size}，champion ${promotedAt}）`); return 0; }
-  const { makeLayaAdapter } = await import('../gateway/src/adapters.js');
+  const { makeLayaAdapter } = await import('../gateway/src/laya-adapter.js');
   const laya = makeLayaAdapter({ modelDir, timeoutMs: 120000, cropStates: true });
   const s = await replay(rows, laya, (x) => recordRoutingSample(x, samples), promotedAt);
   console.log(`replay route-judge ${s.rows} 列→${s.written} 題，失敗 ${s.errors}，${s.secs.toFixed(1)}s（champion ${promotedAt}）`);

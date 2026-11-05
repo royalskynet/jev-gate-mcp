@@ -20,6 +20,17 @@ Jev Gate 會判斷哪些內容與眼前工作有關，減少送進對話的無�
 Jev Gate 的目標是留下錯誤線索，讓 AI 少讀那些重複內容。
 它可能判錯，所以不能把它的意見當成操作授權。
 
+不需要本機模型的話，可以用精簡版 [jev-gate-lite](https://github.com/royalskynet/jev-gate-lite)：只用雲端 JEV，壓縮與裁剪功能相同。
+
+## 對話太長時怎麼壓縮？
+
+在 Claude Code 裡，對話用到 context 的 60%，或達到 200K token，哪個先到就自動壓縮：
+
+1. JEV 先刪舊的工具紀錄，對話文字原樣保留。
+2. 省不到 30%、上次壓完還剩超過 60K token，或 JEV 出錯時，改用 Claude Code 內建的摘要壓縮。
+
+這個「先刪工具紀錄、晚一點才摘要」的組合，依據的是 JetBrains Research 的論文 [The Complexity Trap](https://arxiv.org/abs/2508.21433)（arXiv 2508.21433）。論文發現只刪舊工具輸出，效果和 LLM 摘要差不多，成本少一半；兩者混用，成本比只刪再少 7%，比只摘要少 11%。門檻與實測數字見 [ADR 0004](docs/adr/0004-jev-then-builtin-reset.md)。
+
 ## LAYA 和 JEV 怎麼分工？
 
 LAYA 是跑在你電腦上的小模型，JEV 是雲端判斷服務。

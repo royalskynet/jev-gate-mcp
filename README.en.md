@@ -21,6 +21,17 @@ For example, a tool might return hundreds of repeated messages while you are
 looking for one error. Jev Gate aims to retain the useful clues and reduce the
 repetition. It can make mistakes, so its judgments cannot authorize actions.
 
+If you do not want the local model, use [jev-gate-lite](https://github.com/royalskynet/jev-gate-lite): cloud JEV only, with the same compaction and pruning.
+
+## How is a long conversation compacted?
+
+In Claude Code, compaction fires automatically at 60% of the context window or 200K tokens, whichever comes first:
+
+1. JEV drops old tool records first; conversation text stays verbatim.
+2. If that saves under 30%, more than 60K tokens remained after the last pass, or JEV fails, Claude Code's built-in summary compaction runs instead.
+
+This "drop tool records first, summarise late" hybrid follows the JetBrains Research paper [The Complexity Trap](https://arxiv.org/abs/2508.21433) (arXiv 2508.21433). It found that dropping old tool output alone matches LLM summarization at half the cost, and a hybrid cuts cost a further 7% against dropping alone and 11% against summarization alone. Thresholds and measurements are in [ADR 0004](docs/adr/0004-jev-then-builtin-reset.md).
+
 ## How do LAYA and JEV work together?
 
 LAYA is a small model running on your computer. JEV is a cloud judgment service.

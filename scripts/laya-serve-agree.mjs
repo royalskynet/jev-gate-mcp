@@ -5,7 +5,7 @@
 // 用法：JEV_LAYA_SERVE_URL=http://127.0.0.1:8019 node scripts/laya-serve-agree.mjs [--limit N] [--out file.json]
 import { readFileSync, writeFileSync } from 'node:fs';
 import { TEACHER_CORPUS_FILE } from '../gateway/src/teacher-corpus.js';
-import { makeLayaAdapter } from '../gateway/src/adapters.js';
+import { makeLayaAdapter } from '../gateway/src/laya-adapter.js';
 
 if (!process.env.JEV_LAYA_SERVE_URL) { console.error('需要 JEV_LAYA_SERVE_URL'); process.exit(2); }
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };

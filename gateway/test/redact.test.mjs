@@ -52,7 +52,10 @@ test('redact masks a short labelled sk- key', () => {
 // The incident: a pasted key in a hook prompt reached the cloud teacher and the
 // teacher corpus. Both sinks sit behind the adapter boundary and must see only
 // the masked state.
-test('gateway masks state before the cloud provider and the teacher corpus', async () => {
+// The public lite build ships without local-lane.js; this case drives the laya provider's injection seam.
+const noLocalLane = !fs.existsSync(new URL('../src/local-lane.js', import.meta.url)) && 'local lane not in this build';
+
+test('gateway masks state before the cloud provider and the teacher corpus', { skip: noLocalLane }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-redact-'));
   const keyFile = path.join(dir, 'TYPESAFE_API_KEY.txt');
   fs.writeFileSync(keyFile, 'x');

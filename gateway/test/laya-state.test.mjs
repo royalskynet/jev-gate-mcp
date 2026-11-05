@@ -8,7 +8,7 @@ import { cropKey, cropState, groupByCrop } from '../src/laya-state.js';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runChunked, bundleCrops } from '../src/adapters.js';
+import { runChunked, bundleCrops } from '../src/laya-adapter.js';
 
 const golden = JSON.parse(readFileSync(new URL('../../tests/fixtures/laya-crop-golden.json', import.meta.url)));
 const { state } = golden;
