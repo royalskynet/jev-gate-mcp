@@ -1,8 +1,9 @@
 import { appendFileSync } from 'node:fs';
 import { promises as fsP } from 'node:fs';
 import { dirname } from 'node:path';
-import { runVerify, runNextStep } from 'jevwire';
-import { getModel, getStopModel, DEFAULT_CONFIG } from './judge.js';
+import { runNextStep } from 'jevwire';
+import { getModel, DEFAULT_CONFIG } from './judge.js';
+import { judgeClaims, runConfig } from './claimcheck.js';
 
 /**
  * jev-gate: Stop completion check + PreToolUse ghost-loop gate.
@@ -58,44 +59,13 @@ export async function logAsync(cfg, event) {
   logLine(cfg, event);
 }
 
-/**
- * The config handed to jevwire's runners.
- *
- * `maxConcurrency` is NOT optional. jevwire's `mapWithConcurrency` computes
- * `Math.max(1, Math.min(Math.floor(limit), n))`, and `Math.floor(undefined)`
- * is NaN, so `Array.from({ length: NaN })` opens ZERO workers: every claim
- * comes back `not_addressed` with `usage: 0` and no request ever sent. That
- * reads like a judgment and is not one. Keep it a finite number.
- */
-export function runConfig(cfg = DEFAULT_CONFIG) {
-  return { thresholds: { auto: 0.85, review: 0.6 }, maxConcurrency: cfg.maxConcurrency ?? 2 };
-}
-
-/**
- * Stop completion check. Evidence is the current round's diff / test output;
- * a completion claim with no supporting evidence is treated as unsupported.
- * Uses jevwire runVerify against one claim. Fail-open -> neutral.
- */
-/**
- * Outcome claims ("fixed", "works", "passes") are only as good as evidence of
- * the outcome. The jevwire rubric is literal, so "edited the file" can read as
- * entailing "fixed it". The qualifier rides on the claim itself: an outcome
- * claim backed only by an action comes back not_addressed, not supported.
- */
-const OUTCOME = /修好|修復|修正了|生效|通過|可用|恢復|正常了|成功|搞定|\b(?:fixed|works|working|passes|passing|resolved|succeeded)\b/i;
-export const RESULT_LEVEL = ' [result-level claim: supported only if the evidence shows the result itself (command output, a passing test line, a health-check response, an exit code). Evidence that a file was edited or a request was sent is not_addressed.]';
-export function withResultLevel(claims) {
-  return claims.map((c) => (OUTCOME.test(c) && !c.includes(RESULT_LEVEL) ? c + RESULT_LEVEL : c));
-}
+// Claim judging lives in the host-neutral component (./claimcheck.js); the
+// Stop gate keeps only its Claude Code wiring (shadow ledger, block decision).
+export { runConfig, RESULT_LEVEL, withResultLevel } from './claimcheck.js';
 
 export function makeStopGate(cfg = DEFAULT_CONFIG) {
-  const stopGate = shadow(async ({ claim, claims, evidence }) => {
-    const model = getStopModel(cfg);
-    if (!model) throw new Error('no Jev model configured');
-    const cfgOut = runConfig(cfg);
-    const out = await runVerify(model, { claims: withResultLevel(claims?.length ? claims : [claim]), evidence }, cfgOut);
-    return out;
-  }, cfg, 'stop');
+  const stopGate = shadow(async ({ claim, claims, evidence }) =>
+    judgeClaims(claims?.length ? claims : [claim], evidence, cfg), cfg, 'stop');
   return stopGate;
 }
 
