@@ -17,7 +17,7 @@
  * @param {string} opts.claim        the claimed completion ("done", "fixed"…)
  * @param {object[]} opts.evidence   execution records; see shape below
  * @param {object}  [opts.judge]     optional injectable `(ctx)=>Promise<{verdict,confidence}>`
- * @param {boolean} [opts.layaNoul] legacy flag: now uses Jev, never local Laya
+ * @param {boolean} [opts.layaNoul] legacy flag: now uses Jev, never a local model
  * @param {function} [opts.noulJudge] injectable semantic judge for offline tests
  * @returns {{ verdict:'pass'|'fail'|'unknown', evidence:object[], note?, jev?:object, laya?:object }}
  *

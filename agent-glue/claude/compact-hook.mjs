@@ -386,10 +386,11 @@ export async function fetchVia($, url, init) {
   const path = url.match(/\/v1\/systemone$/) ? '/v1/systemone' : '';
   if (!cascadeUrl || !path) return $.http.fetch(url, init);
   try {
-    return await $.http.fetch(cascadeUrl + path, { ...init, headers: { ...init?.headers, 'x-jev-caller': 'compact' } });
-  } catch {
-    return $.http.fetch(url, init);
-  }
+    const res = await $.http.fetch(cascadeUrl + path, { ...init, headers: { ...init?.headers, 'x-jev-caller': 'compact' } });
+    // Daemon 5xx (its whole chain failed or timed out) falls back too; a 4xx is the request's own fault.
+    if (!(res?.status >= 500)) return res;
+  } catch { /* daemon down */ }
+  return $.http.fetch(url, init);
 }
 
 /**

@@ -5,7 +5,7 @@
 // and both private corpora keep a copy. A user who pastes a key into a prompt
 // would otherwise ship it to the provider and persist it on disk. Masking at the
 // adapter boundary covers every caller (MCP tools, the jev-route hook) and every
-// sink downstream of it (Laya, cloud, teacher corpus, routing corpus).
+// sink downstream of it (local model, cloud, teacher corpus, routing corpus).
 //
 // ponytail: high-confidence token shapes only; a bare high-entropy string with
 // no known prefix passes through. Add a shape here when a new provider key

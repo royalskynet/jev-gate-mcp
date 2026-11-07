@@ -113,11 +113,13 @@ export async function judgeSegments({ request, segments, criteria, per = 8 }, de
   const keepAll = (segments ?? []).map(() => 'keep');
   if (!keepAll.length || !String(request ?? '').trim()) return keepAll;
   try {
-    if (!deps.key) await followZenCooldown(deps.host ?? fetchHost);
-    const key = deps.key ?? (await pruneKey());
-    if (!key) return keepAll;
-    const judge = deps.judge
-      ?? ((batch) => judgeChunks(deps.host ?? fetchHost, key, request, batch, criteria));
+    let judge = deps.judge;
+    if (!judge) {
+      if (!deps.key) await followZenCooldown(deps.host ?? fetchHost);
+      const key = deps.key ?? (await pruneKey());
+      if (!key) return keepAll;
+      judge = (batch) => judgeChunks(deps.host ?? fetchHost, key, request, batch, criteria);
+    }
     const starts = [];
     for (let i = 0; i < segments.length; i += per) starts.push(i);
     const parts = await Promise.all(starts.map(async (s) => {
@@ -176,11 +178,13 @@ export async function pruneCommand(payload = {}, deps = {}) {
   // "mechanical bulk" criteria dropped every log and JSON dump, needle included.
   // Refusing costs the savings; guessing costs the answer.
   if (!String(payload.request ?? '').trim()) return out('no-request');
-  if (!deps.key) await followZenCooldown(deps.host ?? fetchHost);
-  const key = deps.key ?? (await pruneKey());
-  if (!key) return out('no-key');
-  const judge = deps.judge
-    ?? ((chunks) => judgeChunks(deps.host ?? fetchHost, key, payload.request, chunks, target.criteria));
+  let judge = deps.judge;
+  if (!judge) {
+    if (!deps.key) await followZenCooldown(deps.host ?? fetchHost);
+    const key = deps.key ?? (await pruneKey());
+    if (!key) return out('no-key');
+    judge = (chunks) => judgeChunks(deps.host ?? fetchHost, key, payload.request, chunks, target.criteria);
+  }
   try {
     const { kept, droppedLines, unsure } = await pruneText(text, judge);
     const r = out('judged', kept, droppedLines, true);

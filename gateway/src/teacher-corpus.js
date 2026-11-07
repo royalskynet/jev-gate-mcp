@@ -1,13 +1,13 @@
-// Teacher corpus: the free Jev tier's own answers, kept so the local Laya
-// weights can be distilled offline against a real teacher instead of against
+// Teacher corpus: the free Jev tier's own answers, kept so the local
+// model's weights (full build) can be distilled offline against a real teacher instead of against
 // the routing heuristic's guesses.
 //
 // This is the mirror of routing-corpus.js. That one records what the local
 // weights said (and only when the router actually used them); this one records
-// what the provider said, for every judgement the gateway makes. Laya never
+// what the provider said, for every judgement the gateway makes. The local model never
 // runs in this path — a hook process would cold-load a 540MB ONNX graph per
 // prompt and spend the caller's whole deadline on it — so the local answer is
-// filled in later, out of band, by scripts/laya-label-corpus.mjs.
+// filled in later, out of band, by the full build's labelling script.
 //
 // Same privacy contract as routing-corpus: private file, 0600, never telemetry,
 // never an automatic training feed. `training_eligible` stays false until a
@@ -40,15 +40,15 @@ export function recordTeacherSample({ state, questions, result, caller = null },
       ts: new Date().toISOString(),
       schema_version: 1,
       question_digest,
-      // Who asked: the local lane's whitelist is keyed on it (laya-calibrate.py).
+      // Who asked: the local lane's whitelist is keyed on it.
       caller,
       state,
       questions,
       teacher_model: result.model ?? null,
       teacher_answer: result.answers ?? null,
       usage: result.usage ?? null,
-      // Filled in later by scripts/laya-label-corpus.mjs; null means "Laya has
-      // not been asked yet", which is the normal state for a fresh record.
+      // Filled in later by the full build's labelling script; null means "the
+      // local model has not been asked yet", which is the normal state for a fresh record.
       local_model: null,
       local_answer: null,
       label: null,

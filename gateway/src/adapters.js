@@ -3,7 +3,11 @@
 // TypeSafe /v1/systemone shape). Fakes are deterministic and cover the failure
 // space the conformance suite exercises — valid, missing, foreign, malformed,
 // timeout, rate-limit, upstream failure — with zero provider cost.
+import { spawn as defaultSpawn } from 'node:child_process';
 import { JevDecisionModel } from 'jevwire';
+import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { ERR, LIMITS } from './core.js';
 import { readZenStatus, recordZenStatus, zenCoolingDown } from './zen-status.js';
 import { makeZenDailyTake } from './budget.js';
@@ -92,6 +96,143 @@ export function makeOpenrouterAdapter({ apiKey, baseUrl = 'https://openrouter.ai
   return async (state, questions, opts = {}) => m.evaluate({ state, questions, model: opts.model });
 }
 
+// --- Shared beam prompt / parse / validate (CLI and API paths) ---
+function buildBeamPrompt(state, questions) {
+  return [
+    'Answer the following system-one questions.',
+    'Return ONLY one JSON object: {"answers":{...}} where keys are question ids.',
+    'Each answer must match its question type schema (choice/score/noul) including required fields.',
+    '',
+    `state=${JSON.stringify(state)}`,
+    `questions=${JSON.stringify(questions)}`,
+  ].join('\n');
+}
+
+function parseAndValidateBeamAnswers(text, questions, model, source) {
+  const upstream = (msg) => Object.assign(new Error(msg), { code: 'upstream' });
+  let parsed;
+  try {
+    const matches = String(text).match(/\{[\s\S]*\}/g);
+    if (!matches?.length) throw new Error('no json');
+    parsed = JSON.parse(matches[matches.length - 1]);
+  } catch (e) {
+    throw upstream(`${source} invalid json: ${e.message}`);
+  }
+  const answers = parsed?.answers;
+  if (!answers || typeof answers !== 'object' || Array.isArray(answers)) {
+    throw upstream(`${source} response missing answers object`);
+  }
+  for (const [id, q] of Object.entries(questions || {})) {
+    const a = answers[id];
+    const checked = answerToSignal(q, a);
+    if (checked?.code && String(checked.code).startsWith('ERR_')) {
+      throw upstream(`${source} invalid answer for ${id}: ${checked.message}`);
+    }
+  }
+  return { model, answers, usage: { input_tokens: 0, output_tokens: 0 } };
+}
+
+// --- opencode CLI: local beam-free lane via `opencode run --pure` (no HTTP) ---
+// Returns the same `{ model, answers, usage }` shape as other adapters. The
+// CLI is spawned per call; `spawn` is injectable for tests. Any invalid
+// answer, parse failure, timeout, or non-zero exit throws `code 'upstream'`.
+// launchd's PATH has no /opt/homebrew/bin, so a bare `opencode` spawn fails ENOENT under the daemon.
+const OPENCODE_BIN = process.env.OPENCODE_BIN ?? (existsSync('/opt/homebrew/bin/opencode') ? '/opt/homebrew/bin/opencode' : 'opencode');
+
+export function makeOpencodeCliAdapter({ model = 'opencode-go/beam-free', bin = OPENCODE_BIN, timeoutMs = 60000, spawn = defaultSpawn } = {}) {
+  const upstream = (msg) => Object.assign(new Error(msg), { code: 'upstream' });
+  return async (state, questions) => {
+    const prompt = buildBeamPrompt(state, questions);
+    const stdout = await new Promise((resolve, reject) => {
+      let out = '';
+      let err = '';
+      let settled = false;
+      const child = spawn(bin, ['run', '--pure', '-m', model, prompt], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const finish = (fn, val) => { if (settled) return; settled = true; clearTimeout(timer); fn(val); };
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* ignore */ }
+        finish(reject, upstream(`opencode cli timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+      child.stdout?.on('data', (d) => { out += String(d); });
+      child.stderr?.on('data', (d) => { err += String(d); });
+      child.on('error', (e) => finish(reject, upstream(`opencode cli spawn error: ${e.message}`)));
+      child.on('close', (code) => {
+        if (code !== 0) finish(reject, upstream(`opencode cli exited ${code}: ${err.slice(0, 200)}`));
+        else finish(resolve, out);
+      });
+    });
+    return parseAndValidateBeamAnswers(stdout, questions, model, 'opencode cli');
+  };
+}
+
+// --- Beam (opencode-go/beam-free) via OpenAI-compatible API, CLI as backup ---
+// POSTs /chat/completions to the Zen Go endpoint (no retries). Shares prompt/
+// parse/validate with the CLI adapter. On failure or while in a 6h FreeTierError/
+// 429 cooldown, hands off to `backup` (typically the CLI adapter); without a
+// backup it throws. Cooldown persists in beam-api-status.json so every process
+// honours the ban window (never probe a flagged free tier repeatedly).
+const BEAM_API_COOLDOWN_MS = 6 * 3600_000;
+export const BEAM_API_STATUS_FILE = process.env.JEV_BEAM_API_STATUS_FILE
+  ?? join(homedir(), '.jevgate', 'beam-api-status.json');
+
+export function makeBeamApiAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen/go/v1', model = 'beam-free', timeoutMs = 60000, backup = null, fetch: fetchImpl = globalThis.fetch, now = Date.now, statusFile = BEAM_API_STATUS_FILE, readStatus, onStatus } = {}) {
+  const _readStatus = readStatus ?? (() => readZenStatus(statusFile));
+  const _onStatus = onStatus ?? ((ok, detail) => recordZenStatus(ok, detail, statusFile));
+  const upstream = (msg) => Object.assign(new Error(msg), { code: 'upstream' });
+  const fallback = async (state, questions, opts, err) => {
+    if (backup) return backup(state, questions, opts);
+    throw err;
+  };
+  return async (state, questions, opts = {}) => {
+    const cooling = (() => { const until = _readStatus()?.cooldown_until; return Number.isFinite(until) && until > now(); })();
+    if (cooling) {
+      if (backup) return backup(state, questions, opts);
+      throw upstream(`beam api ${model} cooling down; skipped without a network call`);
+    }
+    const prompt = buildBeamPrompt(state, questions);
+    const url = `${String(baseUrl).replace(/\/$/, '')}/chat/completions`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      return fallback(state, questions, opts, upstream(`beam api request failed: ${e?.message ?? e}`));
+    } finally {
+      clearTimeout(timer);
+    }
+
+    let bodyText = '';
+    let body = null;
+    try {
+      bodyText = await res.text();
+      body = bodyText ? JSON.parse(bodyText) : null;
+    } catch { /* body stays null/text */ }
+
+    const isBan = res.status === 403 && (body?.error?.type === 'FreeTierError' || body?.type === 'FreeTierError');
+    const isRate = res.status === 429;
+    if (isBan || isRate) {
+      _onStatus(false, { model, error: body?.error?.message ?? bodyText?.slice(0, 200) ?? String(res.status), cooldown_until: now() + BEAM_API_COOLDOWN_MS, blocked: isBan });
+      return fallback(state, questions, opts, upstream(`beam api ${model} cooling down after ${res.status}`));
+    }
+    if (!res.ok) {
+      return fallback(state, questions, opts, upstream(`beam api ${res.status}: ${bodyText?.slice(0, 200)}`));
+    }
+
+    const content = body?.choices?.[0]?.message?.content ?? '';
+    try {
+      return parseAndValidateBeamAnswers(content, questions, model, 'beam api');
+    } catch (e) {
+      return fallback(state, questions, opts, e);
+    }
+  };
+}
+
 // --- Zen: OpenCode Zen's hosted System One endpoint, free tier ---
 // Third System One host, same `/v1/systemone` contract as OpenRouter and the
 // same account key as the rest of OpenCode — only the base and the pinned
@@ -123,9 +264,11 @@ export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', mo
   // a JevTimeoutError — a quota 429 used to read as a timeout. So Zen gets no
   // retries, and this fetch keeps the header jevwire drops.
   let retryAfterS = null;
+  let lastStatus = null;
   const peek = async (url, init) => {
     const res = await fetchImpl(url, init);
     retryAfterS = res.status === 429 ? Number(res.headers.get('retry-after')) : null;
+    lastStatus = res.status;
     return res;
   };
   // Every policy pins its own provider's id (`typesafe/jev-1.13-20260917`) and
@@ -139,6 +282,8 @@ export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', mo
     // The backup keeps the caller's model id: OpenRouter wants `typesafe/…`.
     // Cooling skips Zen for every caller: without a backup it fails closed with
     // no network call — a ban fed by backup-less callers never lapses (fix 11052).
+    retryAfterS = null;
+    lastStatus = null;
     if (coolingDown(now())) {
       if (backup) return backup(state, questions, opts);
       throw ERR.provider(`zen ${model} cooling down; skipped without a network call`, false);
@@ -150,6 +295,9 @@ export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', mo
       onStatus(true, { model: result.model ?? model });
       return result;
     } catch (e) {
+      // 呼叫端錯不算 Zen 故障（11-06 02:29 jev-laya prune 實例）
+      const callerStatus = lastStatus ?? e?.status ?? e?.cause?.status;
+      if (callerStatus === 400 || callerStatus === 404 || callerStatus === 409 || callerStatus === 422) throw e;
       const quota = e?.status === 429 || e?.cause?.status === 429;
       const abuse = (e?.body ?? e?.cause?.body)?.error?.type === 'FreeTierError';
       // Recorded even without a backup: the probe reports when Zen comes back.
@@ -160,7 +308,7 @@ export function makeZenAdapter({ apiKey, baseUrl = 'https://opencode.ai/zen', mo
       // `blocked` tells the probe an IP ban (needs a human) from a quota swap (heals itself).
       onStatus(false, {
         model, error: e?.message ?? String(e), error_class: e?.name ?? null, cooldown_until, blocked: abuse, block_streak,
-        ...(abuse && { remediation: `Zen 免費層 403 FreeTierError：OpenCode 判本機出口 IP 濫用，官方客戶端同樣被擋。冷卻至 ${new Date(cooldown_until).toISOString()}，期間 Jev 走付費 OpenRouter；解封要等上游。` }),
+        ...(abuse && { remediation: `Zen 免費層 403 FreeTierError：OpenCode 判本機出口 IP 濫用，官方客戶端同樣被擋。冷卻至 ${new Date(cooldown_until).toISOString()}，期間走 beam-free（API，失敗退 opencode CLI）；解封要等上游。` }),
       });
       // No backup: abort, do not degrade — the gateway fails closed.
       if (!backup) throw e;

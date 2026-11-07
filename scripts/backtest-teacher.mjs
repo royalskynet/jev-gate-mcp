@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 回測：把過去 N 天的 Claude Code 逐字稿重放成線上會送的兩組題，交付費 Jev（OpenRouter）
 // 判一次，答案以 label_source=backtest:transcripts 追加進 teacher-corpus。之後夜間
-// laya-label-corpus／laya-train 照常接手（Laya 對照、訓練、升級閘），不用改。
+// 完整版的本機模型標註與訓練流程照常接手（對照、訓練、升級閘），不用改。
 //
 // 兩組題，都逐字取自 teacher-corpus 裡該組最新一列（question_digest 同線上，同一題同一組）：
 //   route  ← ~/dev/Ether-claude/scripts/route-judge.mjs：每則真人 prompt，過同一道灰帶閘

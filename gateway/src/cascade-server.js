@@ -11,12 +11,12 @@ import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { logUsage } from '../../agent-glue/src/usage-ledger.js';
 import { DEFAULTS } from './config.js';
-import { makeOpenrouterAdapter, makeZenAdapter } from './adapters.js';
+import { makeBeamApiAdapter, makeOpencodeCliAdapter, makeZenAdapter } from './adapters.js';
 import { makeLayaAdapter } from './laya-adapter.js';
-import { withDailyBudget, withPaymentStop } from './budget.js';
 import { makeLayaRouter } from './laya-routing.js';
 import { withTeacherCorpus } from './teacher-corpus.js';
 import { withRedaction } from './redact.js';
+import { withPiiScrub } from './pii-scrub.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -181,18 +181,19 @@ export function makeCascadeServer({ cascade, layaOnly, cascadeFor, log = logUsag
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const local = makeLayaAdapter({});
-  const orKey = readKey(DEFAULTS.zenBackupKeyFile);
   const zenKey = readKey(DEFAULTS.apiKeyFile);
-  const or = orKey ? withPaymentStop(withDailyBudget(makeOpenrouterAdapter({ apiKey: orKey }))) : null;
-  const zen = zenKey ? makeZenAdapter({ apiKey: zenKey, model: 'jev-1.13-free', backup: or }) : or;
+  const beam = zenKey ? makeBeamApiAdapter({ apiKey: zenKey, backup: makeOpencodeCliAdapter({}) }) : makeOpencodeCliAdapter({});
+  const zen = zenKey ? makeZenAdapter({ apiKey: zenKey, model: 'jev-1.13-free', backup: beam }) : beam;
+  // Cloud layers (Zen → beam API → beam CLI) are scrubbed before egress; Laya stays local/original.
+  const cloud = zen ? withPiiScrub(withTeacherCorpus(zen)) : null;
   const shadow = !!zen && process.env.JEV_LAYA_SHADOW !== '0';
-  let cascade = withRedaction(makeLayaRouter({ local, cloud: zen ? withTeacherCorpus(zen) : null, shadow }));
+  let cascade = withRedaction(makeLayaRouter({ local, cloud, shadow }));
   const layaOnly = withRedaction(makeLayaRouter({ local, cloud: async () => { const e = new Error('laya abstained'); e.code = 'LAYA_ABSTAIN'; throw e; } }));
   if (process.env.JEV_CASCADE_MODE === 'laya-only') cascade = layaOnly;
   const lanes = new Map();
   const cascadeFor = process.env.JEV_CASCADE_MODE === 'laya-only' ? null : (qtypes) => {
     const k = qtypes.join(',');
-    if (!lanes.has(k)) lanes.set(k, withRedaction(makeLayaRouter({ local, cloud: zen ? withTeacherCorpus(zen) : null, qtypes, shadow })));
+    if (!lanes.has(k)) lanes.set(k, withRedaction(makeLayaRouter({ local, cloud, qtypes, shadow })));
     return lanes.get(k);
   };
   // Shared instance (e.g. for M2): JEV_CASCADE_HOST=<this node's tailnet IP>,

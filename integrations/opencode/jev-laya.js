@@ -1,17 +1,131 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { MIN_CHARS, shrink, lastUserText, defaultJevEnv, compactParts, lowerEffort, effortTiers } from './prune-core.js';
 
 // Both plugin APIs are exported from one module: opencode-ai 1.x (1.19 strict)
 // calls `server` and rejects a module without it; @opencode/cli 2.x calls
 // `setup`. Each ignores the other key (probed on 1.19.3 and 2.1.2, fix 11190).
+
+const DEFAULT_COMPACT_TIMEOUT_MS = 8000;
+
+// Build a judgeSegments-compatible function that routes via cascade daemon.
+// Returns null only if no cascade URL; on transport errors returns 'keep' for
+// all segments (fail-open, no paid fallback).
+// A choice question without options is rejected upstream (Zen: "has 0 options"),
+// and prune:opencode has none of its own; same pair as hooks/jev.js TARGETS.Bash.
+const CHUNK_CRITERIA = {
+  keep: "The chunk contains information directly needed to complete the user's current request/task.",
+  drop: "The chunk is unrelated noise, duplicated boilerplate, or otherwise does not help complete the user's current request/task.",
+};
+
+export function makeCascadeJudge({ caller, readCallers, cascadeUrlFor, cascadeTransport, timeoutMs = 90000, log, transportImpl }) {
+  return async ({ request, segments, criteria = CHUNK_CRITERIA }) => {
+    const keepAll = (segments ?? []).map(() => 'keep');
+    try {
+      // Both prune:opencode and compact:opencode route via the `compact` key; caller is only the usage label.
+      const url = cascadeUrlFor('compact', readCallers());
+      if (!url) return null;
+      const transport = transportImpl ?? cascadeTransport(url, { caller, laneQtypes: null, timeoutMs });
+      if (!keepAll.length || !String(request ?? '').trim()) return keepAll;
+      const INSTRUCTIONS = 'You are a context compactor. For each chunk, answer "drop" if the chunk is not needed to satisfy the user request, or "keep" if it may be needed. Prefer keep when unsure.';
+      const verdictOf = (answer) => {
+        if (answer?.choice === 'drop' || answer?.choice === 'keep') return answer.choice;
+        const p = answer?.probabilities?.drop;
+        return typeof p === 'number' && p >= 0.7 ? 'drop' : 'keep';
+      };
+      const per = 8;
+      const starts = [];
+      for (let i = 0; i < segments.length; i += per) starts.push(i);
+      const parts = await Promise.all(starts.map(async (s) => {
+        const batch = segments.slice(s, s + per);
+        const questions = {};
+        batch.forEach((_, i) => {
+          questions[`c${i}`] = { type: 'choice', instructions: `${INSTRUCTIONS} Judge only the chunk at \`chunks[${i}]\`.`, criteria };
+        });
+        const r = await transport.evaluate({ state: { user_request: request, chunks: batch }, questions });
+        return batch.map((_, i) => verdictOf(r?.answers?.[`c${i}`]));
+      }));
+      return parts.flat();
+    } catch (e) {
+      const reason = e?.name === 'AbortError' || /timeout|timed out/i.test(String(e?.message || e)) ? 'timeout' : String(e?.message || e).slice(0, 120);
+      try { log?.(`fail-open ${reason}`); } catch {}
+      throw e;
+    }
+  };
+}
+
+export function compactTimeoutMs(env = process.env) {
+  const n = Number(env.JEV_COMPACT_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_COMPACT_TIMEOUT_MS;
+}
+
+export function createCompactRuntime({ callersFile, compactLog, liveMod, env = process.env, now = () => new Date().toISOString() } = {}) {
+  const decisions = new Map();
+  const originals = new Map();
+  let failures = 0;
+  let disabled = false;
+  let skipLogged = false;
+  const file = callersFile ?? `${env.HOME}/.jevgate/cascade-callers.json`;
+  const logFile = compactLog ?? env.JEV_OPENCODE_COMPACT_LOG ?? `${env.HOME}/.jevgate/opencode-compact.log`;
+  const writeLog = (msg) => { try { appendFileSync(logFile, `${now()}\tjev-compact(opencode): ${msg}\n`); } catch {} };
+  const readCallers = () => { try { return readFileSync(file, 'utf8'); } catch { return ''; } };
+  const getLive = async () => liveMod ?? await import('../../agent-glue/src/live.js');
+  const hasCascade = async () => {
+    const m = await getLive();
+    return Boolean(m.cascadeUrlFor('compact', readCallers()));
+  };
+  const skipNoCascade = async () => {
+    if (skipLogged) return true;
+    if (await hasCascade()) return false;
+    skipLogged = true;
+    writeLog('skip no-cascade');
+    return true;
+  };
+  const recordFailure = (reason) => {
+    writeLog(`fail-open ${String(reason).slice(0, 120)}`);
+    failures += 1;
+    if (failures >= 3 && !disabled) {
+      disabled = true;
+      writeLog('disabled after 3 failures');
+    }
+  };
+  const judgeFor = async (usageCaller) => {
+    if (disabled) return null;
+    const m = await getLive();
+    if (!m.cascadeUrlFor('compact', readCallers())) return null;
+    const base = makeCascadeJudge({
+      caller: usageCaller,
+      readCallers,
+      cascadeUrlFor: m.cascadeUrlFor,
+      cascadeTransport: m.cascadeTransport,
+      timeoutMs: compactTimeoutMs(env),
+    });
+    return async (args) => {
+      if (disabled) return (args?.segments ?? []).map(() => 'keep');
+      try {
+        const v = await base(args);
+        if (v === null) return null;
+        failures = 0;
+        return v;
+      } catch (e) {
+        const reason = e?.name === 'AbortError' || /timeout|timed out/i.test(String(e?.message || e)) ? 'timeout' : String(e?.message || e).slice(0, 120);
+        recordFailure(reason);
+        return (args?.segments ?? []).map(() => 'keep');
+      }
+    };
+  };
+  return { decisions, originals, judgeFor, skipNoCascade, hasCascade, writeLog, recordFailure, get disabled() { return disabled; }, get failures() { return failures; } };
+}
+
 // V1 hooks: server().
-const JevLaya = async ({ client } = {}) => {
+const JevLaya = async ({ client } = {}, deps = {}) => {
   defaultJevEnv(process.env, existsSync);
   // Read by usage-ledger at import time, so it must be set before the import.
   process.env.JEV_USAGE_CALLER ??= 'opencode';
-  const glue = () => import('../../agent-glue/src/prune.js').catch(() => null);
+  const glue = deps.glue ?? (() => import('../../agent-glue/src/prune.js').catch(() => null));
   let mod;
-  const decisions = new Map(); // callID -> 'keep' | 'drop', for the life of the TUI
+  const compact = createCompactRuntime(deps);
+  if (!process.env.NODE_TEST_CONTEXT) compact.writeLog(`load v1 pid=${process.pid}`); // proves the host loaded the plugin
   const requestOf = async (sessionID) => {
     if (!client?.session?.messages || !sessionID) return '';
     const r = await client.session.messages({ path: { id: sessionID } });
@@ -63,14 +177,20 @@ const JevLaya = async ({ client } = {}) => {
   const textOf = (id, sessionID) => () => msgText.get(id) ?? requestOf(sessionID);
   const logged = new Set(); // message ids already written to the effort log
   const effortLog = process.env.JEV_EFFORT_LOG ?? `${process.env.HOME}/.jevgate/opencode-effort.log`;
-  const compactLog = process.env.JEV_OPENCODE_COMPACT_LOG ?? `${process.env.HOME}/.jevgate/opencode-compact.log`;
   return {
     'tool.execute.after': async (input, output) => {
       try {
         if (typeof output?.output !== 'string' || output.output.length < MIN_CHARS) return;
         mod ??= glue();
-        const prune = (await mod)?.pruneCommand;
         const getRequest = () => requestOf(input?.sessionID);
+        let prune = null;
+        if (!compact.disabled && !(await compact.skipNoCascade())) {
+          const cj = await compact.judgeFor('prune:opencode');
+          if (cj) prune = (payload) => (mod ?? glue()).then(async (m) => m?.pruneCommand
+            ? m.pruneCommand(payload, { judge: async (chunks) => (await cj({ request: payload.request, segments: chunks, criteria: undefined })) ?? chunks.map(() => 'keep') })
+            : { text: payload.text, judged: false });
+        }
+        // No cascade -> L0 only (prune null). Never fall back to direct judge.
         const text = await shrink({ tool: input?.tool, text: output.output }, { prune, getRequest });
         if (text.length < output.output.length) output.output = text;
       } catch {
@@ -80,17 +200,15 @@ const JevLaya = async ({ client } = {}) => {
     'experimental.chat.messages.transform': async (_input, output) => {
       if (process.env.JEV_COMPACT_ENABLED === '0') return;
       try {
-        mod ??= glue();
-        const judgeSegments = (await mod)?.judgeSegments;
-        const r = await compactParts(output?.messages, { judge: judgeSegments, decisions });
+        if (compact.disabled || await compact.skipNoCascade()) return;
+        const judge = await compact.judgeFor('compact:opencode');
+        if (!judge) return;
+        const r = await compactParts(output?.messages, { judge, decisions: compact.decisions, originals: compact.originals });
         // One line per judging pass (not per turn: drops are re-applied every turn).
-        if (r?.judged) {
-          try {
-            appendFileSync(compactLog, `${new Date().toISOString()}\tjev-compact(opencode): ${r.before} → ${r.before - r.dropped} chars, ${r.judged} judged\n`);
-          } catch { /* observation only */ }
-        }
-      } catch {
-        // fail-open: the model sees the history verbatim
+        if (r?.judged) compact.writeLog(`${r.before} → ${r.before - r.dropped} chars, ${r.judged} judged`);
+      } catch (e) {
+        const reason = e?.name === 'AbortError' || /timeout|timed out/i.test(String(e?.message || e)) ? 'timeout' : String(e?.message || e).slice(0, 120);
+        compact.recordFailure(reason);
       }
     },
     'chat.message': async (input, output) => {
@@ -144,13 +262,14 @@ const JevLaya = async ({ client } = {}) => {
 };
 
 // V2 hooks: setup(ctx), registered through ctx.session/ctx.tool.
-async function setup(ctx) {
+async function setup(ctx, deps = {}) {
   defaultJevEnv(process.env, existsSync);
   // Read by usage-ledger at import time, so it must be set before the import.
   process.env.JEV_USAGE_CALLER ??= 'opencode';
-  const glue = () => import('../../agent-glue/src/prune.js').catch(() => null);
+  const glue = deps.glue ?? (() => import('../../agent-glue/src/prune.js').catch(() => null));
   let mod;
-  const decisions = new Map(); // callID -> 'keep' | 'drop', for the life of the TUI
+  const compact = createCompactRuntime(deps);
+  if (!process.env.NODE_TEST_CONTEXT) compact.writeLog(`load v2 pid=${process.pid}`);
   const triageCache = new Map();
   // `{"effort": "http://127.0.0.1:8793"}` in cascade-callers.json sends triage
   // to the shared cascade daemon; re-read per turn, so switching needs no
@@ -194,7 +313,6 @@ async function setup(ctx) {
   const textOf = (_id, text) => () => text;
   const logged = new Set(); // message ids already written to the effort log
   const effortLog = process.env.JEV_EFFORT_LOG ?? `${process.env.HOME}/.jevgate/opencode-effort.log`;
-  const compactLog = process.env.JEV_OPENCODE_COMPACT_LOG ?? `${process.env.HOME}/.jevgate/opencode-compact.log`;
   await ctx.tool.hook('execute.after', async (event) => {
       try {
         if (event.status !== 'completed') return;
@@ -207,8 +325,15 @@ async function setup(ctx) {
             : '';
         if (text.length < MIN_CHARS) return;
         mod ??= glue();
-        const prune = (await mod)?.pruneCommand;
         const request = lastUserText(await ctx.session.context({ sessionID: event.sessionID }));
+        let prune = null;
+        if (!compact.disabled && !(await compact.skipNoCascade())) {
+          const cj = await compact.judgeFor('prune:opencode');
+          if (cj) prune = (payload) => (mod ?? glue()).then(async (m) => m?.pruneCommand
+            ? m.pruneCommand(payload, { judge: async (chunks) => (await cj({ request: payload.request, segments: chunks, criteria: undefined })) ?? chunks.map(() => 'keep') })
+            : { text: payload.text, judged: false });
+        }
+        // No cascade -> L0 only (prune null). Never fall back to direct judge.
         const shrunk = await shrink({ tool: event.tool, text }, { prune, getRequest: () => request });
         if (shrunk.length >= text.length) return;
         let firstText = true;
@@ -231,17 +356,15 @@ async function setup(ctx) {
   await ctx.session.hook('context', async (event) => {
       if (process.env.JEV_COMPACT_ENABLED === '0') return;
       try {
-        mod ??= glue();
-        const judgeSegments = (await mod)?.judgeSegments;
-        const r = await compactParts(event?.messages, { judge: judgeSegments, decisions });
+        if (compact.disabled || await compact.skipNoCascade()) return;
+        const judge = await compact.judgeFor('compact:opencode');
+        if (!judge) return;
+        const r = await compactParts(event?.messages, { judge, decisions: compact.decisions, originals: compact.originals });
         // One line per judging pass (not per turn: drops are re-applied every turn).
-        if (r?.judged) {
-          try {
-            appendFileSync(compactLog, `${new Date().toISOString()}\tjev-compact(opencode): ${r.before} → ${r.before - r.dropped} chars, ${r.judged} judged\n`);
-          } catch { /* observation only */ }
-        }
-      } catch {
-        // Fail open: the model sees the history verbatim.
+        if (r?.judged) compact.writeLog(`${r.before} → ${r.before - r.dropped} chars, ${r.judged} judged`);
+      } catch (e) {
+        const reason = e?.name === 'AbortError' || /timeout|timed out/i.test(String(e?.message || e)) ? 'timeout' : String(e?.message || e).slice(0, 120);
+        compact.recordFailure(reason);
       }
     });
 

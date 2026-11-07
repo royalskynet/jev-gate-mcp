@@ -38,16 +38,17 @@ export function logUsage(rec, file = usageFile()) {
   }
 }
 
-/** `~/.jevgate/laya-handoff.jsonl` (override: JEV_HANDOFF_LOG, `off` disables). */
+/** Handoff ledger under `~/.jevgate/` (override: JEV_HANDOFF_LOG, `off` disables). */
 export function handoffFile(env = process.env) {
   return env.JEV_HANDOFF_LOG ?? (underTest(env) ? 'off' : join(homedir(), '.jevgate', 'laya-handoff.jsonl'));
 }
 
 /**
- * One line per request that went through the Laya router: how many questions
- * Laya kept and why the rest went to Jev. usage.jsonl cannot answer "what share
- * did Laya take over" — on the gateway path it only sees outbound fetches, so a
- * request Laya answered entirely leaves no trace there. Counts only, never content.
+ * One line per request that went through the local-model router (full build
+ * only): how many questions the local model kept and why the rest went to Jev.
+ * usage.jsonl cannot answer "what share did the local model take over" — on the
+ * gateway path it only sees outbound fetches, so a request answered entirely
+ * locally leaves no trace there. Counts only, never content.
  * Never throws; returns whether it wrote.
  */
 export function logHandoff(rec, file = handoffFile()) {

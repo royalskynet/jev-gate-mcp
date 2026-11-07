@@ -13,7 +13,7 @@ import { makeMetrics } from './metrics.js';
 import { withTeacherCorpus } from './teacher-corpus.js';
 import { withRedaction } from './redact.js';
 
-// Optional local lane (JEV_PROVIDER=laya). The public lite build ships without
+// Optional local lane (full build only). The public lite build ships without
 // local-lane.js; any other load failure still throws.
 const localLane = await import('./local-lane.js').catch((e) => {
   if (e?.code === 'ERR_MODULE_NOT_FOUND' && String(e.message).includes('local-lane.js')) return null;
@@ -24,7 +24,7 @@ export const DEFAULTS = Object.freeze({
   provider: process.env.JEV_PROVIDER ?? 'zen',
   model: process.env.JEV_MODEL ?? 'jev-1.13-free',
   apiKeyFile: process.env.JEV_API_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENCODE_ZEN_API_KEY.txt'),
-  // Which cloud provider backs the laya router's fallback / the policy
+  // Which cloud provider backs the local lane's fallback / the policy
   // adapter. `null` keeps the legacy behaviour: infer from the key file's
   // basename (TYPESAFE_ -> native TypeSafe, anything else -> OpenRouter).
   // Set it explicitly (e.g. `zen`) when that inference cannot express the
@@ -70,7 +70,7 @@ export function buildGateway(cfg = {}) {
     ? makeFakeAdapter(FakeMode.SUCCESS)
     : () => { throw new Error('invalid fake mode'); };
 
-  // Telemetry sink is created before the adapters so the Laya router can
+  // Telemetry sink is created before the adapters so the local-lane router can
   // emit route/fallback events (no credentials ever go
   // near it — the allowlist in telemetry.js drops anything not named).
   const telemetry = cfg.telemetry
@@ -107,7 +107,7 @@ export function buildGateway(cfg = {}) {
     // real judgment, so remote/stdio installs must supply one. Tests use 'fake'.
     throw new Error(`provider ${cfg.provider} has no usable credential (checked ${cfg.apiKeyFile})`);
   }
-  // Mask secrets before any provider, Laya or corpus sees the state (src/redact.js).
+  // Mask secrets before any provider, local model or corpus sees the state (src/redact.js).
   rawAdapter = withRedaction(rawAdapter);
   if (policyAdapter) policyAdapter = withRedaction(policyAdapter);
   // One breaker per provider, process-wide: every request on this gateway routes

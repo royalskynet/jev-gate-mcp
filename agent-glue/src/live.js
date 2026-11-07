@@ -22,7 +22,7 @@ import { ENV } from '../claude/env.mjs';
 const transportPromises = new Map();
 
 /**
- * Question types triage lets the local Laya lane answer: `score` (difficulty).
+ * Question types triage lets the local lane answer: `score` (difficulty).
  * `kind` rides the task-kind-v1 profile lane, which needs no type here.
  * `costly_mistake` is noul and deliberately absent — the cost of a wrong
  * "this is safe" stays with the cloud judge, whatever the MCP lane admits.
@@ -32,8 +32,8 @@ export const TRIAGE_LAYA_QTYPES = Object.freeze(['score']);
 const CLOUD_PROVIDERS = new Set(['zen', 'typesafe', 'openrouter']);
 
 /**
- * Gateway overrides for the triage transport. With a Laya bundle on disk,
- * triage runs the laya router. A cloud JEV_PROVIDER (zen / typesafe /
+ * Gateway overrides for the triage transport. With a local model bundle on
+ * disk (full build), triage runs the local-lane router. A cloud JEV_PROVIDER (zen / typesafe /
  * openrouter — ~/.claude/settings.json sets `zen` for every Claude Code child)
  * is read as the router's cloud fallback, not as an opt-out: it was set to
  * pick the cloud host, before triage had a local lane. No bundle -> `{}`, the
@@ -57,8 +57,8 @@ export function triageGatewayConfig(env = ENV, exists = existsSync) {
 /**
  * The in-process gateway as an agent-glue transport, or `null` when there is
  * no usable credential. Built once per process and flavour. `{ triage: true }`
- * is the triage caller's gateway (Laya for difficulty/kind when the bundle is
- * there); every other caller (verify, retriever, jev-route) keeps the plain
+ * is the triage caller's gateway (the local model for difficulty/kind when the
+ * bundle is there); every other caller (verify, retriever, jev-route) keeps the plain
  * env-configured gateway, so their score/noul questions do not move lanes.
  * @returns {Promise<object|null>}
  */
@@ -136,8 +136,8 @@ export function resetLive() {
 
 /**
  * The local cascade daemon (gateway/src/cascade-server.js) as a triage
- * transport: one shared Laya load and a 24 h answer cache instead of a 522 MB
- * model per host process. Laya may answer only `TRIAGE_LAYA_QTYPES` (sent as
+ * transport: one shared local-model load and a 24 h answer cache instead of a 522 MB
+ * model per host process. The local model may answer only `TRIAGE_LAYA_QTYPES` (sent as
  * `x-jev-laya-qtypes`), so `costly_mistake` stays with the cloud judge exactly
  * as in-process. Any HTTP failure throws, and the caller falls back.
  */
@@ -145,7 +145,7 @@ export function resetLive() {
 // directly; JEV_CASCADE_PROXY (its --outbound-http-proxy-listen) is used for
 // this fetch only. Bun's fetch honours `proxy`; Node ignores it.
 // `laneQtypes: null` sends no lane header: the daemon then uses its own router
-// (state filter, whitelist lane, shadow) — route-judge, whose Laya lane is the
+// (state filter, whitelist lane, shadow) — route-judge, whose local lane is the
 // calibrated whitelist, not a fixed question-type list.
 export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fetchImpl = fetch, proxy = process.env.JEV_CASCADE_PROXY, laneQtypes = TRIAGE_LAYA_QTYPES } = {}) {
   const base = String(url).replace(/\/+$/, '');
@@ -167,7 +167,7 @@ export function cascadeTransport(url, { caller = 'triage', timeoutMs = 4000, fet
 }
 
 // Loopback, or a tailnet peer (100.64.0.3/10 or a MagicDNS *.ts.net name): the
-// shared daemon on another node (laya-only, source-IP allow list).
+// shared daemon on another node (local-lane only, source-IP allow list).
 const CASCADE_URL = /^http:\/\/(127\.0\.0\.1|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|[a-z0-9-]+\.[a-z0-9-]+\.ts\.net):\d+\/?$/;
 
 /** `~/.jevgate/cascade-callers.json` entry for `caller`, loopback or tailnet URLs only. */

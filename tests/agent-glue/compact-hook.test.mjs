@@ -231,11 +231,13 @@ test('compact-hook: cascade-callers.json routes the judge via the daemon, falls 
   const flag = `${ENV.HOME || ENV.USERPROFILE}/.jevgate/cascade-callers.json`;
   const calls = [];
   let daemonUp = true;
+  let daemonStatus = 200;
   const host = (files) => ({
     fs: { async read(p) { if (p in files) return files[p]; throw new Error('ENOENT'); } },
     http: { async fetch(url, init) {
       calls.push({ url, caller: init?.headers?.['x-jev-caller'], auth: init?.headers?.Authorization });
       if (url.startsWith('http://127.0.0.1:8793') && !daemonUp) throw new TypeError('fetch failed');
+      if (url.startsWith('http://127.0.0.1:8793')) return { status: daemonStatus, ok: daemonStatus < 300, text: '{}' };
       return { status: 200, ok: true, text: '{}' };
     } },
   });
@@ -261,6 +263,16 @@ test('compact-hook: cascade-callers.json routes the judge via the daemon, falls 
   assert.equal(calls.length, 2);
   assert.equal(calls[1].url, direct, 'dead daemon falls back to the original host');
   assert.equal(calls[1].caller, undefined);
+
+  // 11-07: the tailnet daemon answered 502 (free model gave no answer) and compaction failed.
+  daemonUp = true;
+  for (const [status, n] of [[502, 2], [503, 2], [400, 1]]) {
+    daemonStatus = status;
+    calls.length = 0;
+    const res = await fetchVia($, direct, init);
+    assert.equal(calls.length, n, `daemon ${status}`);
+    assert.equal(res.status, n === 2 ? 200 : status, `daemon ${status} result`);
+  }
   await readCascadeUrl(host({}));
 });
 
