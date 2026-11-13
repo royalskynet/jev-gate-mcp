@@ -23,7 +23,7 @@ export const SERVER_INSTRUCTIONS = [
   'Use jev_evaluate only for a narrow, batched Choice/Score/Noul judgment; it is advisory.',
   'Use jev_apply_policy for server-owned routing, content screening, action-risk, or completion-claim policies.',
   'Send only the smallest relevant state. Never send secrets or whole files.',
-  'A non-accept outcome stops execution; MCP availability alone is not enforcement.',
+  'Every outcome is advisory and must never hard-block on its own; MCP availability alone is not enforcement.',
   'Do deterministic math, schema checks, authorization, planning, coding, and prose without Jev.',
 ].join(' ');
 
