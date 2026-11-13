@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { terms, gather, sourceOf, botFiles, citedNames, qmdFiles, listDocs, makeRetriever } from '../integrations/openmausbot/evidence.mjs';
+import { terms, gather, sourceOf, refOf, botFiles, citedNames, qmdFiles, listDocs, makeRetriever } from '../integrations/openmausbot/evidence.mjs';
 import { runOnce } from '../integrations/openmausbot/claimcheck-watch.mjs';
 import { checkClaims } from '../plugin/lib/claimcheck.js';
 
@@ -52,6 +52,13 @@ test('sourceOf maps a quote to the block that holds it, else the thread', () => 
   assert.equal(sourceOf('方案 每月收費 500U', blocks), 'wiki');
   assert.equal(sourceOf('said in the thread', blocks), 'thread');
   assert.equal(sourceOf('', blocks), undefined);
+});
+
+test('refOf maps a quote to the block path that holds it, else undefined', () => {
+  const blocks = [{ tier: 'wiki', path: '/w/a.md', text: 'VARA 規定 30 天內 申報' }];
+  assert.deepEqual(refOf('30 天內  申報', blocks), { tier: 'wiki', path: '/w/a.md' });
+  assert.equal(refOf('不存在的句子', blocks), undefined);
+  assert.equal(refOf('', blocks), undefined);
 });
 
 test('botFiles reads Read/Write file_path across threads; citedNames finds file names', () => {

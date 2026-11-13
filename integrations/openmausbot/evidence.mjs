@@ -120,6 +120,14 @@ export function sourceOf(quote, blocks, fallback = 'thread') {
   return b ? b.tier : fallback;
 }
 
+/** {tier, path} of the first block holding the quote verbatim, else `undefined`. */
+export function refOf(quote, blocks) {
+  const q = norm(quote);
+  if (q.length < 4) return undefined;
+  const b = blocks.find((x) => norm(x.text).includes(q));
+  return b ? { tier: b.tier, path: b.path } : undefined;
+}
+
 /** Paths the bot read or wrote (Read/Write/Edit file_path) in the given threads. */
 export function botFiles(db, threads) {
   const out = new Set();

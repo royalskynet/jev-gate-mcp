@@ -90,6 +90,17 @@ test('watcher: flags an unsupported fact once, writes ledger + alert, does not r
   assert.equal(calls, 1);
 });
 
+test('watcher: ledger keeps the judge quote; a user-only quote has no file ref', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cc-'));
+  const dbPath = fixtureDb(dir);
+  const logFile = join(dir, 'l.jsonl');
+  const check = async (o) => checkClaims({ ...o, verify: async (_m, { claims }) => ({ claims: claims.map(() => ({ verdict: 'supported', gate: 'auto', quote: 'Solution monthly commitment 500U' })) }), cfg: {} });
+  await runOnce({ dbPath, bots: [{ name: '合規長', threads: ['T'] }], stateFile: join(dir, 's.json'), logFile, check, now: 0 });
+  const c = JSON.parse(readFileSync(logFile, 'utf8').trim()).claims[0];
+  assert.equal(c.quote, 'Solution monthly commitment 500U');
+  assert.equal(c.ref, undefined);
+});
+
 test('watcher: first run without backfill starts at now and checks nothing old', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cc-'));
   const dbPath = fixtureDb(dir);
