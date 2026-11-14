@@ -525,7 +525,7 @@ export const register = (on, options = {}) => {
         judgeHeadChars: CONFIG.askChars,
         judge: (pair) => judgePair({ http: { fetch: metered } }, key, request, pair),
       });
-    const before = JSON.stringify(messages).length;
+    const before = out.charsBefore ?? JSON.stringify(messages).length;
     if (!out.compacted || tooLittleFreed(out.reducedBy, before)) {
       await appendLedger($, `jev-compact: fell back to built-in (backend=${backend}, reducedBy ${out.reducedBy ?? 0} of ${before} chars, floor ${CONFIG.minReductionChars} / ${CONFIG.minReductionPct}%${out.reason ? `, ${out.reason}` : ''})`);
       return next(e);

@@ -91,6 +91,7 @@ export async function compactAnthropic({ messages, config, asker }) {
     messages: out.messages,
     compacted: reducedBy >= config.minReductionChars && reducedBy > 0,
     reducedBy,
+    charsBefore: out.stats.charsBefore,
     reason: '',
     stats: out.stats,
     decisions: out.decisions,
