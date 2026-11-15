@@ -373,3 +373,42 @@ test('tooLittleFreed: under the relative floor the host summary runs', () => {
   assert.equal(tooLittleFreed(1, 5_423_875), false);
   CONFIG.minReductionPct = saved;
 });
+
+test('compact-hook: ratio denominator is the same unit as reducedBy (not JSON with handles)', async () => {
+  const saved = { ...ENV };
+  Object.assign(ENV, {
+    JEV_COMPACT_PIN_LAST: '3', JEV_COMPACT_MIN_REDUCTION: '1000', JEV_COMPACT_MIN_REDUCTION_PCT: '30',
+    JEV_COMPACT_RESET_ABOVE: '0', JEV_COMPACT_BACKEND: 'anthropic', JEV_LEDGER: '/dev/null',
+  });
+  refreshConfig();
+  try {
+    const on = {};
+    register((name, fn) => { on[name] = fn; }, { apiKey: 'k' });
+    const host = {
+      ...fakeHost(),
+      http: {
+        async fetch(_url, init) {
+          const { questions } = JSON.parse(init.body);
+          const answers = Object.fromEntries(Object.keys(questions).map((k) => [k, { noul: 0 }]));
+          return { status: 200, ok: true, text: JSON.stringify({ answers }) };
+        },
+      },
+    };
+    const BIG = 'y'.repeat(9000);
+    const use = (id) => ({ role: 'assistant', text: '', handle: `a-${id}`, toolUses: [{ tool_use_id: id, tool: 'Bash', input: { command: 'ls' }, text: BIG }] });
+    const res = (id) => ({ role: 'user', text: '', toolUses: [], handle: `r-${id}`, toolResults: [{ tool_use_id: id, text: BIG }] });
+    // The first message's handle is the engine's raw blocks (signature, base64):
+    // it dwarfs the JSON, but is not content the model ever sees.
+    const messages = [{ role: 'user', text: 'list things', toolUses: [], handle: { raw: 'z'.repeat(400_000) } }];
+    for (let i = 1; i <= 8; i++) messages.push(use(`t${i}`), res(`t${i}`));
+    messages.push({ role: 'assistant', text: 'done', toolUses: [], handle: 'a-done' });
+    const BUILTIN = Symbol('builtin');
+    const out = await on['session.compact'](host, { messages, trigger: 'manual' }, () => BUILTIN);
+    assert.notEqual(out, BUILTIN, 'the ratio is measured against messageChars, so the Jev pass is kept');
+    assert.ok(Array.isArray(out?.messages), 'the Jev pass answered with messages');
+  } finally {
+    for (const k of Object.keys(ENV)) if (!(k in saved)) delete ENV[k];
+    Object.assign(ENV, saved);
+    refreshConfig();
+  }
+});

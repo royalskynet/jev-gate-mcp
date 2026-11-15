@@ -40,7 +40,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { selectClaims } from '../../plugin/lib/claims.js';
-import { botFiles, sourceOf, terms } from './evidence.mjs';
+import { botFiles, refOf, sourceOf, terms } from './evidence.mjs';
 
 const HOME = homedir();
 const DIR = join(HOME, '.openmausbot-claimcheck');
@@ -50,7 +50,7 @@ export function parseArgs(argv) {
   const a = { once: false, db: join(HOME, '.openmausbot', 'messages.db'), api: 'http://127.0.0.1:8799',
     state: join(DIR, 'state.json'), log: join(DIR, 'claimcheck.jsonl'), alerts: null,
     backfillMinutes: 0, evidenceChars: 60000, bots: [], intervalSec: 60,
-    judge: 'oc', ocModel: 'opencode-go/beam-free', ocBin: null,
+    judge: 'oc', ocModel: 'opencode-go/beam-free', ocBin: null, privacyCmd: null,
     workDirs: [], gapDir: null, jurDir: null, wikiRoot: null, readRoots: [], qmdBin: 'qmd', extraChars: 20000, radarDir: null, researchQueue: null };
   const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
   for (let i = 0; i < argv.length; i++) {
@@ -68,6 +68,7 @@ export function parseArgs(argv) {
     else if (k === '--judge') a.judge = v();
     else if (k === '--oc-model') a.ocModel = v();
     else if (k === '--oc-bin') a.ocBin = v();
+    else if (k === '--privacy-cmd') a.privacyCmd = v().split(/\s+/).filter(Boolean);
     else if (k === '--work-dirs') a.workDirs = list(v());
     else if (k === '--gap-dir') a.gapDir = v();
     else if (k === '--jur-dir') a.jurDir = v();
@@ -208,18 +209,19 @@ export async function runOnce({ dbPath, bots, stateFile, logFile, alertsFile, ch
           const r = await check({ text: m.text ?? '', evidence, kinds: ['fact', 'done'] });
           const judged = (r.judged ?? []).map((j) => {
             const source = j.quote ? sourceOf(j.quote, blocks) : undefined;
+            const hit = j.quote ? refOf(j.quote, blocks) : undefined;
             // The oc judge says whether a claim restates the user or infers beyond them; a restatement
             // counts only with a verbatim quote from the user's messages. Judges without `basis` fall
             // back to number containment.
             const premise = j.kind === 'fact' && (j.basis
               ? j.basis === 'user' && j.verdict === 'supported' && source === 'user'
               : userPremise(j.claim, said)) ? true : undefined;
-            return { ...j, source, premise, basis: j.basis, weak: j.verdict === 'supported' && source === 'wiki' ? true : undefined };
+            return { ...j, source, premise, basis: j.basis, weak: j.verdict === 'supported' && source === 'wiki' ? true : undefined, ref: hit };
           });
           const flagged = judged.filter((j) => FLAG.has(j.verdict) && !j.premise);
           const entry = {
             ts: new Date().toISOString(), bot: bot.name, thread, msgId: m.id, at: m.at,
-            claims: judged.map((j) => ({ claim: j.claim, kind: j.kind, verdict: j.verdict, gate: j.gate, confidence: j.confidence, source: j.source, weak: j.weak, premise: j.premise, basis: j.basis })),
+            claims: judged.map((j) => ({ claim: j.claim, kind: j.kind, verdict: j.verdict, gate: j.gate, confidence: j.confidence, source: j.source, weak: j.weak, premise: j.premise, basis: j.basis, quote: j.quote ? clip(j.quote, 400) : undefined, ref: j.ref && j.ref.tier !== 'user' ? j.ref.path : undefined })),
             skipped: r.skipped, error: r.error, flagged: flagged.length,
           };
           mkdirSync(dirname(logFile), { recursive: true });
@@ -257,7 +259,7 @@ async function main() {
   let verify;
   if (a.judge === 'oc') {
     const { ocVerifier } = await import('./oc-verify.mjs');
-    verify = ocVerifier({ model: a.ocModel, ...(a.ocBin ? { bin: a.ocBin } : {}) });
+    verify = ocVerifier({ model: a.ocModel, ...(a.ocBin ? { bin: a.ocBin } : {}), ...(a.privacyCmd ? { privacyCmd: a.privacyCmd } : {}) });
   }
   const check = (o) => checkClaims({ ...o, cfg, verify });
   const { makeRetriever } = await import('./evidence.mjs');

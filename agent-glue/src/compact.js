@@ -90,8 +90,9 @@ export async function compactMessages(opts = {}) {
     judgeHeadChars = 0,
   } = opts;
   if (!Array.isArray(messages) || messages.length === 0) {
-    return { messages, compacted: false, reason: 'empty', reducedBy: 0 };
+    return { messages, compacted: false, reason: 'empty', reducedBy: 0, charsBefore: 0 };
   }
+  const charsBefore = messages.reduce((sum, m) => sum + textLength(m), 0);
   const n = messages.length;
   const pinned = (i) => i < pinFirst || i >= n - pinLast;
 
@@ -134,7 +135,7 @@ export async function compactMessages(opts = {}) {
         })),
       })) === 'drop';
     } catch {
-      return { messages, compacted: false, reason: 'judge-failed', reducedBy: 0, droppedIds: [], maxed: false };
+      return { messages, compacted: false, reason: 'judge-failed', reducedBy: 0, charsBefore, droppedIds: [], maxed: false };
     }
     drop.set(p.callIdx, keep);
   }
@@ -188,6 +189,7 @@ export async function compactMessages(opts = {}) {
     messages: reducedBy >= minReductionChars && reducedBy > 0 ? rebuilt : messages,
     compacted: reducedBy >= minReductionChars && reducedBy > 0,
     reducedBy,
+    charsBefore,
     droppedIds,
     maxed,
   };

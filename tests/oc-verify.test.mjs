@@ -88,3 +88,51 @@ test('basis passes through; prompt asks for user/inference/evidence', () => {
   assert.equal(grade(['A'], [{ i: 1, verdict: 'supported', quote: '自動為每個對手方選用合適的協議', basis: 'banana' }], EV)[0].basis, undefined);
   assert.match(buildPrompt(['甲'], 'E'), /"basis"/);
 });
+
+test('privacy gate block: no model call, every claim held for review', async () => {
+  let called = 0;
+  const run = async () => { called++; return '[]'; };
+  const runPrivacy = (args) => (args.at(-1) === 'gate'
+    ? JSON.stringify({ ok: false, reason: 'canary' })
+    : '');
+  const r = await ocVerifier({ run, privacyCmd: ['/x/python', '/x/privacy.py'], runPrivacy })(null, { claims: ['A', 'B'], evidence: EV });
+  assert.equal(called, 0);
+  assert.deepEqual(r.claims.map((c) => [c.verdict, c.gate, c.note]), [
+    ['not_addressed', 'review', 'privacy-blocked'],
+    ['not_addressed', 'review', 'privacy-blocked'],
+  ]);
+  assert.equal(r.usage.judge, 'privacy-blocked');
+});
+
+test('privacy gate masks the prompt and restores the model quote before grading', async () => {
+  const ev = '聯絡窗口是 alice@example.com，系統自動為每個對手方選用合適的協議。';
+  let seen = '';
+  const run = async (bin, args) => { seen = args.at(-1); return '[{"i":1,"verdict":"supported","quote":"<EMAIL>，系統自動為每個對手方選用合適的協議"}]'; };
+  const runPrivacy = (args, text) => {
+    if (args.at(-1) === 'gate') return JSON.stringify({ ok: true, text: text.replace(/alice@example\.com/g, '<EMAIL>'), run_id: 'r1', n_pii: 1 });
+    return text.replace(/<EMAIL>/g, 'alice@example.com');
+  };
+  const r = await ocVerifier({ run, privacyCmd: ['/x/python', '/x/privacy.py'], runPrivacy })(null, { claims: ['窗口是 alice@example.com'], evidence: ev });
+  assert.doesNotMatch(seen, /alice@example\.com/);
+  assert.match(seen, /<EMAIL>/);
+  assert.equal(r.claims[0].verdict, 'supported');
+  assert.equal(r.claims[0].gate, 'auto');
+});
+
+test('model list falls through on a thrown run and reports the model that worked', async () => {
+  const tried = [];
+  const run = async (bin, args) => {
+    const m = args[args.indexOf('-m') + 1];
+    tried.push(m);
+    if (m === 'a') throw new Error('boom');
+    return '[{"i":1,"verdict":"not_addressed","quote":""}]';
+  };
+  const r = await ocVerifier({ model: 'a,b', run })(null, { claims: ['x'], evidence: EV });
+  assert.deepEqual(tried, ['a', 'b']);
+  assert.equal(r.usage.judge, 'b');
+});
+
+test('parseArgs splits --privacy-cmd into an argv array', () => {
+  assert.deepEqual(parseArgs(['--bots', 'x', '--privacy-cmd', 'p q']).privacyCmd, ['p', 'q']);
+  assert.equal(parseArgs(['--bots', 'x']).privacyCmd, null);
+});
