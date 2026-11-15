@@ -50,7 +50,7 @@ export function parseArgs(argv) {
   const a = { once: false, db: join(HOME, '.openmausbot', 'messages.db'), api: 'http://127.0.0.1:8799',
     state: join(DIR, 'state.json'), log: join(DIR, 'claimcheck.jsonl'), alerts: null,
     backfillMinutes: 0, evidenceChars: 60000, bots: [], intervalSec: 60,
-    judge: 'oc', ocModel: 'opencode-go/beam-free', ocBin: null,
+    judge: 'oc', ocModel: 'opencode-go/beam-free', ocBin: null, privacyCmd: null,
     workDirs: [], gapDir: null, jurDir: null, wikiRoot: null, readRoots: [], qmdBin: 'qmd', extraChars: 20000, radarDir: null, researchQueue: null };
   const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
   for (let i = 0; i < argv.length; i++) {
@@ -68,6 +68,7 @@ export function parseArgs(argv) {
     else if (k === '--judge') a.judge = v();
     else if (k === '--oc-model') a.ocModel = v();
     else if (k === '--oc-bin') a.ocBin = v();
+    else if (k === '--privacy-cmd') a.privacyCmd = v().split(/\s+/).filter(Boolean);
     else if (k === '--work-dirs') a.workDirs = list(v());
     else if (k === '--gap-dir') a.gapDir = v();
     else if (k === '--jur-dir') a.jurDir = v();
@@ -258,7 +259,7 @@ async function main() {
   let verify;
   if (a.judge === 'oc') {
     const { ocVerifier } = await import('./oc-verify.mjs');
-    verify = ocVerifier({ model: a.ocModel, ...(a.ocBin ? { bin: a.ocBin } : {}) });
+    verify = ocVerifier({ model: a.ocModel, ...(a.ocBin ? { bin: a.ocBin } : {}), ...(a.privacyCmd ? { privacyCmd: a.privacyCmd } : {}) });
   }
   const check = (o) => checkClaims({ ...o, cfg, verify });
   const { makeRetriever } = await import('./evidence.mjs');

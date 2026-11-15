@@ -106,21 +106,56 @@ export function proxyEnv(proxy, base = process.env) {
   return { ...base, HTTPS_PROXY: proxy, HTTP_PROXY: proxy, NO_PROXY: '127.0.0.1,localhost' };
 }
 
+// Privacy gate: a separate Python helper speaks JSON on stdout. `gate` masks the
+// prompt, `restore <run_id>` puts the masked spans back so the quote guard still
+// compares against the original evidence. A gate failure is a review verdict,
+// never a model call.
+function privacyRun(args, input) {
+  const r = spawnSync(args[0], args.slice(1), { input, encoding: 'utf8', timeout: 30000 });
+  if (r.error) throw r.error;
+  if (r.status !== 0) throw new Error(`privacy ${args.at(-1)} failed: rc=${r.status} ${String(r.stderr ?? '').slice(-200)}`.trim());
+  return r.stdout;
+}
+
 // opencode 2.x `run` hands the request to the background `opencode serve --service`,
 // which never sees our env; with a proxy we need --standalone (private server) for it to apply.
 export function ocVerifier({ bin = defaultBin(), model = 'opencode-go/beam-free', timeoutMs = 180000, run = runCli,
-  flags: probed = run === runCli ? runFlags(bin) : { pure: true, standalone: false }, proxy = process.env.OC_PROXY } = {}) {
-  const flags = ['run', ...(probed.pure ? ['--pure'] : []), ...(proxy && probed.standalone ? ['--standalone'] : []), '-m', model];
+  flags: probed = run === runCli ? runFlags(bin) : { pure: true, standalone: false }, proxy = process.env.OC_PROXY,
+  privacyCmd = null, runPrivacy = privacyRun } = {}) {
+  const base = ['run', ...(probed.pure ? ['--pure'] : []), ...(proxy && probed.standalone ? ['--standalone'] : [])];
   const env = proxyEnv(proxy);
+  const models = String(model ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   return async (_model, { claims, evidence }) => {
-    const cwd = mkdtempSync(join(tmpdir(), 'claimcheck-oc-'));
-    try {
-      const out = await run(bin, [...flags, buildPrompt(claims, evidence)], { timeoutMs, cwd, env });
-      const answers = parseVerdicts(out);
-      if (!answers) throw new Error(`opencode run: no JSON verdicts in output: ${String(out).slice(-200)}`);
-      return { claims: grade(claims, answers, evidence), usage: { judge: model } };
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
+    let prompt = buildPrompt(claims, evidence);
+    let runId;
+    if (privacyCmd) {
+      try {
+        const g = JSON.parse(runPrivacy([...privacyCmd, 'gate'], prompt));
+        if (g?.ok !== true) throw new Error(g?.reason ?? 'gate');
+        prompt = g.text;
+        runId = g.run_id;
+      } catch {
+        return {
+          claims: claims.map((c) => ({ claim: c, verdict: 'not_addressed', gate: 'review', note: 'privacy-blocked' })),
+          usage: { judge: 'privacy-blocked' },
+        };
+      }
     }
+    let last;
+    for (const m of models) {
+      const cwd = mkdtempSync(join(tmpdir(), 'claimcheck-oc-'));
+      try {
+        let out = await run(bin, [...base, '-m', m, prompt], { timeoutMs, cwd, env });
+        if (privacyCmd) out = runPrivacy([...privacyCmd, 'restore', runId], out);
+        const answers = parseVerdicts(out);
+        if (!answers) throw new Error(`opencode run: no JSON verdicts in output: ${String(out).slice(-200)}`);
+        return { claims: grade(claims, answers, evidence), usage: { judge: m } };
+      } catch (e) {
+        last = e;
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    }
+    throw last ?? new Error('ocVerifier: no model configured');
   };
 }
