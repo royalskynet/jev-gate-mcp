@@ -35,7 +35,7 @@ const r = await checkFacts({
 // r.decisive -> the worst verdict, or null
 ```
 
-Any verifier works. It receives `{ claims: string[], evidence: string }` and resolves to `{ claims: [{ verdict, gate }] }` in the same order. `jevwire` is an optional peer dependency used only by `jevVerifier`.
+Any verifier works. It receives `{ claims: string[], evidence: string }` and must return exactly one judgment `{ verdict, gate }` per claim in the same order, wrapped in `{ claims: [...] }`. A missing, extra, or unknown verdict yields an `error` and no judgments. `jevwire` is an optional peer dependency used only by `jevVerifier`.
 
 ## Limits
 
