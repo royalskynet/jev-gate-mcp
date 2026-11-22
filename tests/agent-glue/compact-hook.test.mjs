@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   pairState, userRequestOf, judgePair, rivalCompactor, apiKey, CONFIG, tooLittleFreed, shouldCompact, register,
-  refreshConfig,
+  refreshConfig, appendLedger,
 } from '../../agent-glue/claude/compact-hook.mjs';
 import { ENV } from '../../agent-glue/claude/env.mjs';
 import { compactMessages } from '../../agent-glue/src/compact.js';
@@ -411,4 +411,48 @@ test('compact-hook: ratio denominator is the same unit as reducedBy (not JSON wi
     Object.assign(ENV, saved);
     refreshConfig();
   }
+});
+
+// 2026-11-22: 11-13 12:27 and 11-15 07:43 compactions left no ledger line. A throw
+// inside session.compact was invisible, and two lines raised together could drop one.
+test('compact-hook: a throw inside session.compact is ledgered and the built-in runs once', async () => {
+  refreshConfig();
+  const on = {};
+  register((name, fn) => { on[name] = fn; }, { apiKey: 'k' });
+  const host = fakeHost();
+  const BUILTIN = Symbol('builtin');
+  let calls = 0;
+  const e = { trigger: 'auto', get messages() { throw new Error('boom'); } };
+  const out = await on['session.compact'](host, e, () => { calls++; return BUILTIN; });
+  assert.equal(out, BUILTIN);
+  assert.equal(calls, 1, 'the built-in must run exactly once');
+  const ledger = Object.entries(host.written).find(([k]) => k.endsWith('jev-compact.log'))?.[1] ?? '';
+  assert.match(ledger, /jev-compact: threw, built-in compaction runs \(boom\)/);
+});
+
+test('compact-hook: when the host built-in itself throws, it is not run a second time', async () => {
+  refreshConfig();
+  const on = {};
+  register((name, fn) => { on[name] = fn; }, { apiKey: 'k' });
+  let calls = 0;
+  await assert.rejects(
+    on['session.compact'](fakeHost(), { trigger: 'auto', messages: [] }, () => { calls++; return Promise.reject(new Error('host down')); }),
+    /host down/,
+  );
+  assert.equal(calls, 1);
+});
+
+test('appendLedger: two lines raised together both land (no lost update)', async () => {
+  refreshConfig();
+  let file = '';
+  const $ = {
+    clock: { async now() { return 0; } },
+    fs: {
+      async read() { const snap = file; await new Promise((r) => setTimeout(r, 10)); return snap; },
+      async write(_p, v) { file = v; },
+    },
+  };
+  await Promise.all([appendLedger($, 'line-a'), appendLedger($, 'line-b')]);
+  assert.match(file, /line-a/);
+  assert.match(file, /line-b/);
 });

@@ -315,14 +315,25 @@ export function userRequestOf(messages = []) {
  * ledger must not stop a compaction (or make one look like it never ran).
  */
 export async function appendLedger($, line) {
-  try {
-    const at = new Date(await $.clock.now()).toISOString();
-    const previous = await $.fs.read(LEDGER).catch(() => '');
-    await $.fs.write(LEDGER, `${previous}${at}\t${line}\n`);
-  } catch {
-    /* observation only */
-  }
+  // `$.fs` has read/write only, so an append is read-then-rewrite. Chain the
+  // calls so two lines raised in one process (session.compact and
+  // turn.complete) cannot read the same `previous` and drop one.
+  // ponytail: two processes (claude + deepclaude sharing one ledger) can still
+  // race; closing that needs an atomic append the hook runtime does not offer
+  // (per-process ledger files would, at the cost of every reader).
+  ledgerChain = ledgerChain.then(async () => {
+    try {
+      const at = new Date(await $.clock.now()).toISOString();
+      const previous = await $.fs.read(LEDGER).catch(() => '');
+      await $.fs.write(LEDGER, `${previous}${at}\t${line}\n`);
+    } catch {
+      /* observation only */
+    }
+  });
+  return ledgerChain;
 }
+
+let ledgerChain = Promise.resolve();
 
 let usageChain = Promise.resolve();
 
@@ -482,60 +493,74 @@ export const register = (on, options = {}) => {
     return next(e);
   });
 
+  // A throw below (provider fetch, cascade read, backend) used to leave no
+  // ledger line at all while the host quietly ran its built-in summary, which
+  // is indistinguishable from "the event never reached us". Record it, then
+  // hand the original event on. Inline on purpose: the engine's static check
+  // only lets `$` reach top-level function declarations, so no helper here.
+  // `return next(e)` stays un-awaited below, so a rejection from the host's own
+  // compaction is not caught here and the built-in never runs twice.
   on('session.compact', async ($, e, next) => {
-    await hydrate($);
-    // Say so when the event arrives and we decline it. Silence here is
-    // ambiguous in exactly the way that costs a day: a missing compact line
-    // could mean "the host never sent the event" or "we stood down", and the
-    // ledger is the only place that difference is observable.
-    if (!ENABLED || standDown) {
-      await appendLedger($, `jev-compact: session.compact arrived, not handling it (enabled=${ENABLED}, standDown=${standDown})`);
-      return next(e);
-    }
-    if (resetDue(jevResidual)) {
-      await appendLedger($, `jev-compact: reset via built-in (last jev pass left ${jevResidual} tokens > ${CONFIG.resetAbove}), trigger=${e?.trigger ?? '?'}`);
+    try {
+      await hydrate($);
+      // Say so when the event arrives and we decline it. Silence here is
+      // ambiguous in exactly the way that costs a day: a missing compact line
+      // could mean "the host never sent the event" or "we stood down", and the
+      // ledger is the only place that difference is observable.
+      if (!ENABLED || standDown) {
+        await appendLedger($, `jev-compact: session.compact arrived, not handling it (enabled=${ENABLED}, standDown=${standDown})`);
+        return next(e);
+      }
+      if (resetDue(jevResidual)) {
+        await appendLedger($, `jev-compact: reset via built-in (last jev pass left ${jevResidual} tokens > ${CONFIG.resetAbove}), trigger=${e?.trigger ?? '?'}`);
+        jevResidual = null;
+        measureNext = false;
+        return next(e);
+      }
       jevResidual = null;
       measureNext = false;
+      const messages = e?.messages ?? [];
+      // Zen free in its quota cooldown: OpenRouter answers until it lapses.
+      if (followsZen()) {
+        const status = await $.fs.read(`${ENV.HOME || ENV.USERPROFILE}/.jevgate/zen-free-status.json`).catch(() => '');
+        refreshConfig(zenCooling(status, await $.clock.now().catch(() => NaN)));
+      }
+      await readCascadeUrl($);
+      const key = await apiKey($, options);
+      if (!key) {
+        await appendLedger($, 'jev-compact: no provider key, built-in compaction runs');
+        return next(e);
+      }
+      const request = userRequestOf(messages);
+      const backend = CONFIG.backend === 'auto' ? backendFor(messages) : CONFIG.backend;
+      const metered = (url, init) => meteredFetch($, url, init);
+      const out = backend === 'anthropic'
+        ? await compactAnthropic({ messages, config: CONFIG, asker: askerFor(metered, key, CONFIG) })
+        : await compactMessages({
+          messages,
+          minReductionChars: CONFIG.minReductionChars,
+          pinFirst: CONFIG.pinFirst,
+          pinLast: CONFIG.pinLast,
+          judgeHeadChars: CONFIG.askChars,
+          judge: (pair) => judgePair({ http: { fetch: metered } }, key, request, pair),
+        });
+      const before = out.charsBefore ?? JSON.stringify(messages).length;
+      if (!out.compacted || tooLittleFreed(out.reducedBy, before)) {
+        await appendLedger($, `jev-compact: fell back to built-in (backend=${backend}, reducedBy ${out.reducedBy ?? 0} of ${before} chars, floor ${CONFIG.minReductionChars} / ${CONFIG.minReductionPct}%${out.reason ? `, ${out.reason}` : ''})`);
+        return next(e);
+      }
+      const line = `jev-compact: backend=${backend}, ${before} → ${before - (out.reducedBy ?? 0)} chars, ${out.reducedBy} dropped, ${out.messages.length}/${messages.length} messages, verbatim, trigger=${e?.trigger ?? '?'}`;
+      // ponytail: SDK hosts (Happy) turn every ui.log into a visible message; the ledger already has it.
+      if (ENV.JEV_UI_LOG === '1') $.ui.log(line);
+      await appendLedger($, line);
+      measureNext = true;
+      return { messages: detachToolResultHandles(out.messages) };
+    } catch (error) {
+      jevResidual = null;
+      measureNext = false;
+      await appendLedger($, `jev-compact: threw, built-in compaction runs (${error instanceof Error ? error.message : String(error)})`.slice(0, 300));
       return next(e);
     }
-    jevResidual = null;
-    measureNext = false;
-    const messages = e?.messages ?? [];
-    // Zen free in its quota cooldown: OpenRouter answers until it lapses.
-    if (followsZen()) {
-      const status = await $.fs.read(`${ENV.HOME || ENV.USERPROFILE}/.jevgate/zen-free-status.json`).catch(() => '');
-      refreshConfig(zenCooling(status, await $.clock.now().catch(() => NaN)));
-    }
-    await readCascadeUrl($);
-    const key = await apiKey($, options);
-    if (!key) {
-      await appendLedger($, 'jev-compact: no provider key, built-in compaction runs');
-      return next(e);
-    }
-    const request = userRequestOf(messages);
-    const backend = CONFIG.backend === 'auto' ? backendFor(messages) : CONFIG.backend;
-    const metered = (url, init) => meteredFetch($, url, init);
-    const out = backend === 'anthropic'
-      ? await compactAnthropic({ messages, config: CONFIG, asker: askerFor(metered, key, CONFIG) })
-      : await compactMessages({
-        messages,
-        minReductionChars: CONFIG.minReductionChars,
-        pinFirst: CONFIG.pinFirst,
-        pinLast: CONFIG.pinLast,
-        judgeHeadChars: CONFIG.askChars,
-        judge: (pair) => judgePair({ http: { fetch: metered } }, key, request, pair),
-      });
-    const before = out.charsBefore ?? JSON.stringify(messages).length;
-    if (!out.compacted || tooLittleFreed(out.reducedBy, before)) {
-      await appendLedger($, `jev-compact: fell back to built-in (backend=${backend}, reducedBy ${out.reducedBy ?? 0} of ${before} chars, floor ${CONFIG.minReductionChars} / ${CONFIG.minReductionPct}%${out.reason ? `, ${out.reason}` : ''})`);
-      return next(e);
-    }
-    const line = `jev-compact: backend=${backend}, ${before} → ${before - (out.reducedBy ?? 0)} chars, ${out.reducedBy} dropped, ${out.messages.length}/${messages.length} messages, verbatim, trigger=${e?.trigger ?? '?'}`;
-    // ponytail: SDK hosts (Happy) turn every ui.log into a visible message; the ledger already has it.
-    if (ENV.JEV_UI_LOG === '1') $.ui.log(line);
-    await appendLedger($, line);
-    measureNext = true;
-    return { messages: detachToolResultHandles(out.messages) };
   });
 
   // The "fast" trigger: compact on a context percentage rather than waiting
