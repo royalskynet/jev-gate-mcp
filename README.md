@@ -20,7 +20,6 @@ Jev Gate 會判斷哪些內容與眼前工作有關，減少送進對話的無�
 Jev Gate 的目標是留下錯誤線索，讓 AI 少讀那些重複內容。
 它可能判錯，所以不能把它的意見當成操作授權。
 
-不需要本機模型的話，可以用精簡版 [jev-gate-lite](https://github.com/royalskynet/jev-gate-lite)：只用雲端 JEV，壓縮與裁剪功能相同。
 
 ## 對話太長時怎麼壓縮？
 

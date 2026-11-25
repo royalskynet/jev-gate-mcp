@@ -21,7 +21,6 @@ For example, a tool might return hundreds of repeated messages while you are
 looking for one error. Jev Gate aims to retain the useful clues and reduce the
 repetition. It can make mistakes, so its judgments cannot authorize actions.
 
-If you do not want the local model, use [jev-gate-lite](https://github.com/royalskynet/jev-gate-lite): cloud JEV only, with the same compaction and pruning.
 
 ## How is a long conversation compacted?
 
