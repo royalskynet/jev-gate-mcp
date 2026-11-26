@@ -1,0 +1,8 @@
+# Laya 權重落地與 Provider 切換報告
+
+MERGE: 324b3b74531deb89a09b344d20428dc592055cc6
+ONNX: 540524682 33f86af38198a1c4ad00f9c2312c28f8e8abf6ddfed1e9e8e82e4dcb5f446baf
+SELFCHECK: pass
+TESTS: pass=5 fail=0
+SMOKE: 7/8
+SETTINGS: "JEV_PROVIDER": "laya",

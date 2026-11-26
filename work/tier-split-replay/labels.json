@@ -1,0 +1,327 @@
+{
+ "tuning_set_s34_s35": [
+  {
+   "id": "f24b1e32-14da-45dc-8b86-74d0ecce7514",
+   "gold": "L0"
+  },
+  {
+   "id": "610206d0-fd68-4000-a34b-101ed4a17895",
+   "gold": "L2"
+  },
+  {
+   "id": "4902cbb6-8498-411c-b629-0321a488515c",
+   "gold": "L2"
+  },
+  {
+   "id": "2af0d185-c45a-4b61-bafc-35534e093e83",
+   "gold": "L2"
+  },
+  {
+   "id": "e101a908-15eb-43d6-ab1e-d4213a5ef867",
+   "gold": "L2"
+  },
+  {
+   "id": "eb4ccff8-e1e7-45e0-8811-da8bb1a559a8",
+   "gold": "L0"
+  },
+  {
+   "id": "c4fbf9e1-94b6-4ccf-8f85-69e16ffee859",
+   "gold": "L2"
+  },
+  {
+   "id": "240a12d9-64e7-48cd-aac4-1c426e0723e6",
+   "gold": "L2"
+  },
+  {
+   "id": "c45e6f37-c3d5-458c-987c-3f2affb41c2f",
+   "gold": "L2"
+  },
+  {
+   "id": "186eb837-4f3d-4a23-b367-8ee3815c1221",
+   "gold": "L0"
+  },
+  {
+   "id": "99273317-aee7-46da-871c-f632205e61df",
+   "gold": "L1"
+  },
+  {
+   "id": "dfd32fc3-daeb-43b6-ae35-d83ce718a037",
+   "gold": "L2"
+  },
+  {
+   "id": "84cf7db0-2370-4f95-bab5-e8e2f700dc84",
+   "gold": "L2"
+  },
+  {
+   "id": "80a59afe-f639-44a8-a405-c1d114e5c030",
+   "gold": "L1"
+  },
+  {
+   "id": "8f5ae3b5-aa65-4fe2-ae04-d552e41c19e0",
+   "gold": "L0"
+  },
+  {
+   "id": "7335fc51-e2f6-4177-b66f-d8a4744eec4a",
+   "gold": "L2"
+  },
+  {
+   "id": "461d1e84-b6a9-47a0-b8dd-7d60fd5cc9dc",
+   "gold": "L2"
+  },
+  {
+   "id": "80a26078-4377-48e2-b5e1-a1bfa3766579",
+   "gold": "L1"
+  },
+  {
+   "id": "3e1b0425-92fd-42dd-bbdf-bc9cc0fa37c6",
+   "gold": "L1"
+  },
+  {
+   "id": "320d734a-a486-4bd4-ad5a-a06cf676d657",
+   "gold": "L2"
+  },
+  {
+   "id": "9e6bd33e-e604-42d2-9ecc-87b45f311168",
+   "gold": "L0"
+  },
+  {
+   "id": "20e084d4-f2cc-4e1e-a6f7-9a5785bf066d",
+   "gold": "L0"
+  },
+  {
+   "id": "bf73471a-2381-4757-b957-991d07212872",
+   "gold": "L0"
+  },
+  {
+   "id": "19f73252-ce3a-4d9f-969a-6e3cd5060971",
+   "gold": "L0"
+  },
+  {
+   "id": "c32e01fc-90ce-4a02-8cf1-d39d02d17a7c",
+   "gold": "L0"
+  },
+  {
+   "id": "4dbe2349-3b50-492d-ac36-1c61561cb206",
+   "gold": "L0"
+  },
+  {
+   "id": "32020c36-8f8a-4a76-b15a-1867fa1e3742",
+   "gold": "L0"
+  },
+  {
+   "id": "9f8e0d2c-a671-476a-9ac3-278e3db41ac6",
+   "gold": "L0"
+  },
+  {
+   "id": "3d1b866e-6297-4305-b9c3-1448d01b12d2",
+   "gold": "L2"
+  },
+  {
+   "id": "f2956565-fa41-4d38-acb3-66f35d409793",
+   "gold": "L1"
+  },
+  {
+   "id": "b197fea0-246b-4e61-8dc1-a142e6688adb",
+   "gold": "L0"
+  },
+  {
+   "id": "9d9d2ec4-c08a-4fdb-aaa5-00540275a884",
+   "gold": "L0"
+  },
+  {
+   "id": "4bf018c3-08b6-4c6e-b331-da321a67a92f",
+   "gold": "L0"
+  },
+  {
+   "id": "46125ce7-1250-410e-be5e-8d4df00ec89c",
+   "gold": "L0"
+  },
+  {
+   "id": "eca3dc9b-a3da-42f8-9830-7f8ee051e885",
+   "gold": "L2"
+  },
+  {
+   "id": "963b8bc8-6dfd-429e-b066-e49410b901b0",
+   "gold": "L0"
+  },
+  {
+   "id": "b071eb71-a9bf-4e0e-aba1-0de90393e29b",
+   "gold": "L2"
+  },
+  {
+   "id": "33256e2c-830d-4bee-9453-052735ca5e28",
+   "gold": "L1"
+  },
+  {
+   "id": "25cac8ea-fa58-4635-abda-b5d427a2582c",
+   "gold": "L2"
+  },
+  {
+   "id": "e3d4a1ae-129f-4cdb-a6c8-0b3bfd4827b8",
+   "gold": "L1"
+  }
+ ],
+ "holdout_s36": [
+  {
+   "id": "6b4777f6-ee96-44df-8aa5-447a0d5e0966",
+   "gold": "L0"
+  },
+  {
+   "id": "c693270b-ff36-4f48-bb93-e85c37347d35",
+   "gold": "L0"
+  },
+  {
+   "id": "311dd8b7-d71a-475b-ab1b-1d97d5ed2323",
+   "gold": "L0"
+  },
+  {
+   "id": "4e1242f8-1d48-4651-9ee5-07230a41a6c3",
+   "gold": "L2"
+  },
+  {
+   "id": "49d73473-e77f-4bff-9878-bd9a29b9267b",
+   "gold": "L2"
+  },
+  {
+   "id": "ca76ba4b-7375-4851-a981-b4c290346461",
+   "gold": "L0"
+  },
+  {
+   "id": "0023d6cb-05be-4904-9301-f37316e5f4e8",
+   "gold": "L2"
+  },
+  {
+   "id": "79979894-3f67-41d6-9b29-ebc4be9a570c",
+   "gold": "L2"
+  },
+  {
+   "id": "ecf13e7f-b01e-472a-90b0-0529806f0695",
+   "gold": "L2"
+  },
+  {
+   "id": "3be4a0f8-46a2-486a-befa-62085dcd2a21",
+   "gold": "L2"
+  },
+  {
+   "id": "acbef486-cdd6-47c3-a791-9c2ecfc2ac8f",
+   "gold": "L0"
+  },
+  {
+   "id": "a280144e-6f15-4b31-bff3-dbf14cac5888",
+   "gold": "L2"
+  },
+  {
+   "id": "d7aa1da2-afd0-4ee1-9606-9677d89b4e5c",
+   "gold": "L0"
+  },
+  {
+   "id": "2bdd0004-47b5-4c93-9d8e-aa71eb4fd191",
+   "gold": "L1"
+  },
+  {
+   "id": "1b77ea28-adba-4eab-8104-c9fb89fb6de9",
+   "gold": "L0"
+  },
+  {
+   "id": "47a657f2-fb3b-4664-9622-0fdbec497126",
+   "gold": "L0"
+  },
+  {
+   "id": "b7fc80ca-435a-4d37-ad5f-9d401c61b08e",
+   "gold": "L0"
+  },
+  {
+   "id": "e0a0a46b-287c-423c-a273-58bfb3da5ec7",
+   "gold": "L1"
+  },
+  {
+   "id": "0bfdf72b-648f-4e90-a1f5-c24ce0140797",
+   "gold": "L1"
+  },
+  {
+   "id": "28940d22-4153-4590-b624-74a50c40461b",
+   "gold": "L0"
+  },
+  {
+   "id": "69894b9d-6fb8-4ee3-956e-2f64152190fd",
+   "gold": "L0"
+  },
+  {
+   "id": "74bd3869-91a3-4a8a-91c5-bade0be2ba66",
+   "gold": "L0"
+  },
+  {
+   "id": "a5d6f5f1-789e-4c7c-9057-db5787ff109b",
+   "gold": "L0"
+  },
+  {
+   "id": "a0a9aad4-0216-40c6-8ffc-26d113a4c2bb",
+   "gold": "L0"
+  },
+  {
+   "id": "69a54295-b912-4740-a3b6-f9d18854a55a",
+   "gold": "L1"
+  },
+  {
+   "id": "5bf24b5a-63fc-4ca9-90e7-d3b0e7994f67",
+   "gold": "L0"
+  },
+  {
+   "id": "64079fbc-96bc-48fb-9a4d-dc7bacf165ae",
+   "gold": "L1"
+  },
+  {
+   "id": "797be624-bb3f-47a3-9959-336d3d456ac0",
+   "gold": "L0"
+  },
+  {
+   "id": "625f74c4-8c98-4e30-8df7-929b0b9d6e49",
+   "gold": "L0"
+  },
+  {
+   "id": "bf09a266-c455-444c-8026-1cbf653ba36a",
+   "gold": "L0"
+  },
+  {
+   "id": "2470ecd9-d5ad-4048-9d95-5dfba091a4a4",
+   "gold": "L0"
+  },
+  {
+   "id": "3ffb7a6d-dcc8-49d8-bfc8-c5d5d1b00553",
+   "gold": "L0"
+  },
+  {
+   "id": "8a3b1920-21c8-4d2f-8233-641e41a4bbbb",
+   "gold": "L1"
+  },
+  {
+   "id": "b010c088-7636-46f6-9adf-118f62fb1b11",
+   "gold": "L0"
+  },
+  {
+   "id": "d4ad2bd4-ac63-4a78-a93a-04cf71e688aa",
+   "gold": "L0"
+  },
+  {
+   "id": "c7b9f749-5847-4fa5-8a08-1ca780581121",
+   "gold": "L2"
+  },
+  {
+   "id": "765dd5b4-2908-46d6-8b09-3a5ad213a660",
+   "gold": "L0"
+  },
+  {
+   "id": "a015a7e6-4ca5-4e78-9669-aa6ae212e102",
+   "gold": "L0"
+  },
+  {
+   "id": "23d85ee4-0481-442a-8e59-a3a89d8f0faa",
+   "gold": "L2"
+  },
+  {
+   "id": "61d02801-bdf3-4d2d-8104-dbf560dcd9da",
+   "gold": "L2"
+  }
+ ],
+ "note": "gold = CLAUDE.md 判斷閘人工標註；tuning set 看過答案後標，holdout 先標後問（sha1 2c762321）。ids 對應 ~/.jevgate/teacher-corpus.jsonl 的 id；下一輪驗證要排除這 80 筆"
+}
