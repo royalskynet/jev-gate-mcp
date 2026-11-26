@@ -23,6 +23,8 @@ gateway 有自己的 [README](../gateway/README.md)，glue 看
 
 設定 `JEV_PROVIDER=laya` 後，**Decision Gateway** 只把核准的簡短固定選項分類
 交給現有 LAYA 模型，其餘判斷交給 Jev。這不會把獨立的 prune／壓縮 hook 改成本機 LAYA。
+若要嚴格禁止雲端 fallback，改設 `JEV_PROVIDER=laya-only`；此模式下 Laya 不能回答就報錯，
+不會改用 Jev，也不需要有雲端 credential。
 
 | 請求 | 分工 |
 |---|---|

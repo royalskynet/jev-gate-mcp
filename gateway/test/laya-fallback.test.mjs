@@ -73,3 +73,22 @@ test('laya without a key fails with the credential error, not a TypeError', asyn
     delete process.env.JEV_LAYA_MODEL_DIR;
   }
 });
+
+test('provider laya-only never constructs or calls the cloud fallback', async () => {
+  const keyFile = tmpKey('OPENROUTER_API_KEY.txt', 'sk-or-test');
+  let fetchCalled = false;
+  const realFetch = global.fetch;
+  global.fetch = async () => { fetchCalled = true; throw new Error('cloud must not be called'); };
+  process.env.JEV_LAYA_MODEL_DIR = path.join(os.tmpdir(), 'jev-laya-does-not-exist-strict');
+  try {
+    const { gateway } = buildGateway({ provider: 'laya-only', model: 'typesafe/jev-1.13', apiKeyFile: keyFile });
+    const err = await gateway.evaluate({ state: 'x', questions: { q: { type: 'noul', instructions: 'ok?', criteria: { true: 'yes', false: 'no' } } } })
+      .then((r) => r, (e) => e);
+    assert.equal(fetchCalled, false, 'strict mode called the cloud fallback');
+    const text = JSON.stringify(err, Object.getOwnPropertyNames(err ?? {}));
+    assert.match(text, /credential|auth|laya/i);
+  } finally {
+    global.fetch = realFetch;
+    delete process.env.JEV_LAYA_MODEL_DIR;
+  }
+});

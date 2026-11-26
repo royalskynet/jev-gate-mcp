@@ -377,30 +377,47 @@ async function meteredFetch($, url, init) {
  * Local cascade daemon (gateway/src/cascade-server.js), switched on per caller
  * by ~/.jevgate/cascade-callers.json `{"compact": "http://127.0.0.1:8793"}`
  * and re-read every session.compact, so cutover and rollback need no restart.
- * Same contract as the Stop gate (plugin/lib/judge.js getStopModel): the
- * daemon owns the keys, and an unreachable daemon sends the request straight
- * to its original host, so a dead daemon never turns compaction off.
+ * Same contract as the Stop gate (plugin/lib/judge.js getStopModel): by
+ * default an unreachable daemon sends the request straight to its original
+ * host, so a dead daemon never turns compaction off. The operator opt-in
+ * `compact-mode: "laya-only"` reverses that fallback on purpose: no compact
+ * judgment may become a cloud call, even when the daemon is down.
  */
 let cascadeUrl = '';
+let cascadeMode = '';
 export async function readCascadeUrl($, file = `${ENV.HOME || ENV.USERPROFILE}/.jevgate/cascade-callers.json`) {
   try {
     const raw = await $.fs.read(file);
-    const url = JSON.parse(raw)?.compact;
+    const parsed = JSON.parse(raw);
+    const url = parsed?.compact;
     cascadeUrl = typeof url === 'string' && /^http:\/\/127\.0\.0\.1:\d+\/?$/.test(url) ? url.replace(/\/+$/, '') : '';
+    cascadeMode = parsed?.['compact-mode'] === 'laya-only' ? 'laya-only' : '';
   } catch {
     cascadeUrl = '';
+    cascadeMode = '';
   }
   return cascadeUrl;
 }
 
+function layaOnlyUnavailable() {
+  return { status: 503, ok: false, text: '{"error":{"type":"LAYA_ONLY_UNAVAILABLE"}}' };
+}
+
 export async function fetchVia($, url, init) {
   const path = url.match(/\/v1\/systemone$/) ? '/v1/systemone' : '';
-  if (!cascadeUrl || !path) return $.http.fetch(url, init);
+  if (!path) return $.http.fetch(url, init);
+  const strictLaya = cascadeMode === 'laya-only';
+  if (!cascadeUrl) return strictLaya ? layaOnlyUnavailable() : $.http.fetch(url, init);
   try {
-    const res = await $.http.fetch(cascadeUrl + path, { ...init, headers: { ...init?.headers, 'x-jev-caller': 'compact' } });
+    const headers = { ...init?.headers, 'x-jev-caller': 'compact' };
+    if (strictLaya) headers['x-jev-mode'] = 'laya-only';
+    const res = await $.http.fetch(cascadeUrl + path, { ...init, headers });
+    if (strictLaya) return res;
     // Daemon 5xx (its whole chain failed or timed out) falls back too; a 4xx is the request's own fault.
     if (!(res?.status >= 500)) return res;
-  } catch { /* daemon down */ }
+  } catch {
+    if (strictLaya) return layaOnlyUnavailable();
+  }
   return $.http.fetch(url, init);
 }
 
@@ -526,7 +543,8 @@ export const register = (on, options = {}) => {
         refreshConfig(zenCooling(status, await $.clock.now().catch(() => NaN)));
       }
       await readCascadeUrl($);
-      const key = await apiKey($, options);
+      const strictLaya = cascadeMode === 'laya-only';
+      const key = strictLaya ? 'laya-only' : await apiKey($, options);
       if (!key) {
         await appendLedger($, 'jev-compact: no provider key, built-in compaction runs');
         return next(e);

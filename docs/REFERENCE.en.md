@@ -25,6 +25,8 @@ has [`docs/agent-glue.md`](agent-glue.md).
 With `JEV_PROVIDER=laya`, the **Decision Gateway** uses the existing local LAYA
 model only for approved, short, fixed-choice classifications. Jev handles other
 judgments. This setting does not move the separate prune/compaction hooks to LAYA.
+To disable the cloud fallback entirely, set `JEV_PROVIDER=laya-only`: requests
+Laya cannot answer fail instead of reaching Jev, and no cloud credential is required.
 
 | Request | Provider |
 |---|---|

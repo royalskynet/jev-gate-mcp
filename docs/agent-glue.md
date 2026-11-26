@@ -36,6 +36,8 @@ skills/jev-agent/   兩端共用操作規則
   user/assistant 文字逐字保留、call 與其 result 成對刪、首尾 turn 釘住、
   judge 失敗或縮減未達 `JEV_COMPACT_MIN_REDUCTION`（預設 4000 字元）就把**原始**
   messages 還給 host 走內建壓縮。`JEV_COMPACT_ENABLED=0` 關閉。
+  `~/.jevgate/cascade-callers.json` 可設 `"compact-mode":"laya-only"`：compact judge 只打本機 cascade
+  並帶 `x-jev-mode: laya-only`；Laya abstain、daemon 5xx 或 daemon 不在都不回退雲端，改由 host 內建壓縮。
   觀測：`~/.openclaw/state/jev-compact.log`。
 - **壓縮互斥**：外部 fast-jev plugin（`~/dev/fast-jev-compaction-openrouter`）也註冊
   `session.compact`。**不要雙開**——兩個模組回同一事件是 undefined。本 plugin 會讓路：

@@ -1,5 +1,6 @@
 // JEV_PROVIDER=laya wiring: local Laya weights first, the configured Jev
-// provider as fallback and teacher. Loaded optionally by config.js.
+// provider as fallback and teacher. JEV_PROVIDER=laya-only uses the same local
+// lane with the cloud fallback disabled. Loaded optionally by config.js.
 import path from 'node:path';
 import { makeLayaAdapter } from './laya-adapter.js';
 import { makeLayaRouter } from './laya-routing.js';
@@ -20,13 +21,13 @@ export function buildLayaProvider(cfg, { readKey, makeZen, makeTypesafeAdapter, 
   const keyType = cfg.fallbackProvider
     ?? (base.includes('TYPESAFE') ? 'typesafe' : base.includes('OPENCODE') ? 'zen' : 'openrouter');
   const policyProvider = keyType;
-  const fallback = cfg.jevAdapter ?? (key
+  const fallback = cfg.layaOnly ? null : (cfg.jevAdapter ?? (key
     ? (keyType === 'typesafe'
       ? makeTypesafeAdapter({ apiKey: key, model: cfg.model })
       : keyType === 'zen'
         ? makeZen(cfg, key)
         : makeOpenrouterAdapter({ apiKey: key, model: cfg.model }))
-    : null);
+    : null));
   const policyAdapter = fallback ?? (async () => { throw new Error('Jev policy provider has no configured credential'); });
   // Any answer this provider gives is the teacher the local weights get
   // distilled against later, so every cloud answer is recorded. A request

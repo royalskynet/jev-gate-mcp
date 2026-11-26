@@ -42,7 +42,8 @@ LAYA 是跑在你電腦上的小模型，JEV 是雲端判斷服務。
 | LAYA 出錯、答案格式不對，或沒有匹配分類 | JEV 接手 |
 
 **LAYA 目前只適合有限範圍的試行。**它仍可能把主題分錯。
-裁剪日誌和壓縮對話也繼續用 JEV，不交給 LAYA。
+裁剪日誌和壓縮對話預設繼續用 JEV；若明確選 `JEV_PROVIDER=laya-only` 或 compact 的
+`compact-mode: laya-only`，不能由 LAYA 回答的判斷不會改用雲端，壓縮則退回 Claude Code 內建摘要。
 
 只有簡單分類、而且 LAYA 成功處理時，可以省下一次雲端呼叫。
 混合任務仍可能需要 JEV；整體能省多少，還沒有實測結論。
