@@ -15,8 +15,9 @@
 
 1. `laya` 維持原意：本機優先、雲端 fallback，行為不變。
 2. `laya-only` 使用同一條 local lane，但不建立 cloud fallback adapter。Laya abstain、模型不可用、題型不合格或沒有 credential 時 fail closed；policy judgment 也沒有隱藏雲端出口。
-3. Claude compact hook 增加對應的 per-caller 設定 `compact-mode: "laya-only"`。它對 cascade daemon 加 `x-jev-mode: laya-only`；daemon abstain、daemon 5xx 或 daemon 不在時不回退直接雲端，改把原始 messages 交還 host 內建 compaction。
-4. 不用額外 boolean 作為正式介面。模式必須在 provider 名稱或 caller mode 中顯示，避免 `provider=laya` 與另一個開關組合出不清楚的語意。
+3. process 以 `JEV_PROVIDER=laya-only` 啟動時，strict mode 是部署安全邊界；程式內明確傳 `provider: 'laya'` 給 `buildGateway` 也不能重新啟用 hybrid cloud fallback。
+4. Claude compact hook 增加對應的 per-caller 設定 `compact-mode: "laya-only"`。它對 cascade daemon 加 `x-jev-mode: laya-only`；daemon abstain、daemon 5xx 或 daemon 不在時不回退直接雲端，改把原始 messages 交還 host 內建 compaction。
+5. 不用額外 boolean 作為正式介面。模式必須在 provider 名稱或 caller mode 中顯示，避免 `provider=laya` 與另一個開關組合出不清楚的語意。
 
 ## Consequences
 

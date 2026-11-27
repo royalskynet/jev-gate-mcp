@@ -1,7 +1,7 @@
 # Jev Agent Glue — 雙端安裝／停用／觀測／成效
 
 Claude Code 與 OpenAI Codex 共用 `agent-glue/src/` 的判斷核心。本文件說明兩端的啟用方式、
-停用方式、觀測通道，以及四項成效指標的定義（對照 `docs/HANDOFF-20260921.md` §6）。
+停用方式、觀測通道，以及五項成效指標的定義。
 
 ## 1. 元件地圖
 
@@ -108,7 +108,7 @@ cached／latency_ms／是否 fail-open。**不記原文不記 secret。**
 
 **驗收**：`npm run agents:acceptance` 已含 triage + spawn-hook smoke stage。
 
-## 4. 成效指標（對照 HANDOFF §6）
+## 4. 成效指標
 
 | 指標 | 定義 | 從哪量 | 目標方向 |
 |---|---|---|---|

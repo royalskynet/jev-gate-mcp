@@ -201,8 +201,7 @@ so and never labels a policy `calibrated`. Synthetic/demo sources are always
 parse/validation/provenance failure.
 
 See `operations/runbook.md` for breaker tuning, telemetry schema, calibration /
-drift data contracts, live commands, and the raw-state rule. Wheel/research
-rationale is in `docs/research/issue-1-prior-art.md`.
+drift data contracts, live commands, and the raw-state rule.
 
 The plugin side of this repo (`hooks/`, `plugin/`) is the Claude Code prune
 plugin; it is separate from this gateway and deliberately left untouched.

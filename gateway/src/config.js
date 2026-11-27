@@ -65,7 +65,11 @@ function readKey(file) {
 
 export function buildGateway(cfg = {}) {
   cfg = { ...DEFAULTS, ...cfg }; // merges over defaults; env spread may override
-  if (cfg.provider === 'laya-only') cfg = { ...cfg, layaOnly: true };
+  // `JEV_PROVIDER=laya-only` is a deployment safety boundary: once the process
+  // starts strict, an explicit `provider: 'laya'` cannot re-enable cloud fallback.
+  if (cfg.provider === 'laya-only' || (DEFAULTS.layaOnly && cfg.provider === 'laya')) {
+    cfg = { ...cfg, layaOnly: true };
+  }
   if (cfg.killSwitch) killSwitchGlobal();
   const registry = loadRegistry(cfg.registryDir);
   const fake = cfg.fakeMode === FakeMode.SUCCESS

@@ -1,6 +1,5 @@
 #!/bin/bash
-# P2b cutover (PLAN-20261008-laya-first-cascade.md): called by
-# cascade-stopgate-report-once.sh with the P2a report. Machine-checks the
+# P2b cutover: called by cascade-stopgate-report-once.sh with the P2a report. Machine-checks the
 # report and, on PASS, flips two callers onto the :8793 daemon by writing
 # ~/.jevgate/cascade-callers.json (both read it every call, no restart):
 #   compact      → agent-glue/claude/compact-hook.mjs readCascadeUrl
