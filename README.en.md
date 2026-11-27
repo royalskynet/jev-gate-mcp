@@ -81,7 +81,6 @@ for LAYA settings and data collection details.
 | Host capabilities and setup | [Connection guide, Traditional Chinese](docs/zh-TW/README.md) |
 | Model routing, saved data, advanced settings | [Technical reference](docs/REFERENCE.en.md) |
 | MCP interfaces and development | [Gateway documentation](gateway/README.md) |
-| Test results and implementation history | [Development log, Traditional Chinese](docs/DEVLOG.md) |
 | Bug reports and progress | [GitHub Issues](https://github.com/royalskynet/jev-gate-mcp/issues) |
 
 The remaining local-model quality limitations are tracked in [Issue #10](https://github.com/royalskynet/jev-gate-mcp/issues/10).

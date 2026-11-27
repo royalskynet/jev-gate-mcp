@@ -23,6 +23,9 @@ gateway 有自己的 [README](../gateway/README.md)，glue 看
 
 設定 `JEV_PROVIDER=laya` 後，**Decision Gateway** 只把核准的簡短固定選項分類
 交給現有 LAYA 模型，其餘判斷交給 Jev。這不會把獨立的 prune／壓縮 hook 改成本機 LAYA。
+若要嚴格禁止雲端 fallback，改設 `JEV_PROVIDER=laya-only`；此模式下 Laya 不能回答就報錯，
+不會改用 Jev，也不需要有雲端 credential。process 以這個環境值啟動時，它是部署安全邊界：
+即使程式明確傳 `provider: 'laya'` 給 `buildGateway`，也不會重新啟用 hybrid 雲端 fallback。
 
 | 請求 | 分工 |
 |---|---|
@@ -57,8 +60,7 @@ fallback 合併一次 Jev 請求，本機成功的題目不重問。
 不可信的 `rl_agent` 原始 action logits 已移除，不轉成看似有效的機率。
 policy 維持既有 advisory／shadow 設定。更新 checkout 後必須重啟 MCP；獨立安裝的
 plugin cache 需另外更新。本次未驗證真實雲端與重啟後流量。
-語意品質後續追蹤見 [Issue #10](https://github.com/royalskynet/jev-gate-mcp/issues/10)，
-完整離線命令及證據見 [DEV LOG §25](DEVLOG.md)。
+語意品質後續追蹤見 [Issue #10](https://github.com/royalskynet/jev-gate-mcp/issues/10)。
 
 ## Prune plugin
 
@@ -573,9 +575,7 @@ frontmatter 才是 skill 能被找到的前提。`skills/jev-agent/SKILL.md` 原
 - [架構決策](adr/0001-governed-two-tool-mcp-boundary.md)
 - [接下來做什麼](NEXT.md)
 - [繁中接線與 Codex 快速指南](zh-TW/README.md) — 把 gateway 接到 Claude Code／Codex
-- [Handoff 2026-09-21（繁中）](HANDOFF-20260921.md) — **沒有前情提要就從這裡開始**
 - [Jev 十步操作手冊（繁中）](zh-TW/PLAYBOOK.md) — 十步手冊對應到這個 repo，含缺口
 - [TypeSafe skill](../skills/typesafe-ai/SKILL.md) — vendored 上游 skill（MIT）＋對應到本 repo 的 addendum
-- [Agent glue（繁中）](agent-glue.md) — 各 host 的安裝／停用／觀測，以及四項有效性指標
+- [Agent glue（繁中）](agent-glue.md) — 各 host 的安裝／停用／觀測，以及五項有效性指標
 - [Agent skill](../skills/jev-agent/SKILL.md) — 兩個 host 共用的操作規則
-- [開發日誌](DEVLOG.md) — 怎麼做出來的，以及踩過哪些坑

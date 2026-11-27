@@ -45,9 +45,11 @@ stage('claude plugin validate', () => {
   }
 });
 
-// 2. Full test suite (same discovery as `npm test` — node --test with no path
-// picks up every test file under gateway/ and tests/).
-stage('full tests', () => run(process.execPath, ['--test']).trim());
+// 2. Full test suite. Delegate to `npm test` rather than reproducing it here:
+// package.json also supplies the no-network preload and ledgers-off env, and
+// duplicating that setup silently lets the acceptance gate drift from the real
+// test command.
+stage('full tests', () => run('npm', ['test', '--silent']).trim());
 
 // 3. Build check.
 stage('build', () => run(process.execPath, ['gateway/scripts/build-check.mjs']).trim());

@@ -23,6 +23,7 @@ const localLane = await import('./local-lane.js').catch((e) => {
 export const DEFAULTS = Object.freeze({
   provider: process.env.JEV_PROVIDER ?? 'zen',
   model: process.env.JEV_MODEL ?? 'jev-1.13-free',
+  layaOnly: process.env.JEV_PROVIDER === 'laya-only',
   apiKeyFile: process.env.JEV_API_KEY_FILE ?? path.join(os.homedir(), '.creds', 'kv', 'OPENCODE_ZEN_API_KEY.txt'),
   // Which cloud provider backs the local lane's fallback / the policy
   // adapter. `null` keeps the legacy behaviour: infer from the key file's
@@ -64,6 +65,11 @@ function readKey(file) {
 
 export function buildGateway(cfg = {}) {
   cfg = { ...DEFAULTS, ...cfg }; // merges over defaults; env spread may override
+  // `JEV_PROVIDER=laya-only` is a deployment safety boundary: once the process
+  // starts strict, an explicit `provider: 'laya'` cannot re-enable cloud fallback.
+  if (cfg.provider === 'laya-only' || (DEFAULTS.layaOnly && cfg.provider === 'laya')) {
+    cfg = { ...cfg, layaOnly: true };
+  }
   if (cfg.killSwitch) killSwitchGlobal();
   const registry = loadRegistry(cfg.registryDir);
   const fake = cfg.fakeMode === FakeMode.SUCCESS
@@ -81,8 +87,8 @@ export function buildGateway(cfg = {}) {
   let policyProvider;
   if (cfg.provider === 'fake') {
     rawAdapter = fake;
-  } else if (cfg.provider === 'laya') {
-    if (!localLane) throw new Error('provider laya is not included in this build');
+  } else if (cfg.provider === 'laya' || cfg.provider === 'laya-only') {
+    if (!localLane) throw new Error(`provider ${cfg.provider} is not included in this build`);
     ({ rawAdapter, policyAdapter, policyProvider } = localLane.buildLayaProvider(cfg, {
       readKey, makeZen, makeTypesafeAdapter, makeOpenrouterAdapter, withTeacherCorpus, telemetry,
     }));

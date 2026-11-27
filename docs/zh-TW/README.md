@@ -151,6 +151,8 @@ transport 掛了就保留現狀，絕不往上或往下猜。每筆決策記一�
 契約在 `agent-glue/src/compact.js`，不是調參：user/assistant 文字逐字保留、
 call 與其 result 成對刪、首尾 turn 釘住；judge 失敗或縮減未達門檻就把**原始** messages
 還給 host 走內建壓縮。這裡的 fail-open 方向是「保留 context」。
+`~/.jevgate/cascade-callers.json` 設 `"compact-mode":"laya-only"` 時，compact judge 只走本機 cascade，
+Laya abstain 或 daemon 失敗不回退雲端，而是由 host 內建壓縮接手。
 觀測：`~/.openclaw/state/jev-compact.log`。
 
 **壓縮互斥**：外部 fast-jev compaction plugin 也註冊 `session.compact`，**不要雙開**。

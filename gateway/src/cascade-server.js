@@ -1,5 +1,5 @@
 // Local cascade daemon: one HTTP surface for every host, Laya-first routing
-// behind a shared cache. See docs/prd/PLAN-20261008-laya-first-cascade.md.
+// behind a shared cache.
 //
 // The exported factory takes injected cascade/layaOnly/log so tests never load
 // ONNX, hit the network, or read ~/.creds. The real chain is wired only when

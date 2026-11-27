@@ -12,7 +12,7 @@
 // tiny structured interface (correlation id, tool/provider/model, policy
 // metadata, latency, cost when present, gate, error class, breaker state).
 // Pino satisfies that without an agent, a collector contract, or a heavier
-// dependency tree. See docs/research/issue-1-prior-art.md.
+// dependency tree.
 import pino from 'pino';
 
 // The entire telemetry field surface. Only these top-level keys survive

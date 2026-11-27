@@ -276,6 +276,97 @@ test('compact-hook: cascade-callers.json routes the judge via the daemon, falls 
   await readCascadeUrl(host({}));
 });
 
+test('compact-hook: compact-mode laya-only never falls back to direct cloud', async () => {
+  const { readCascadeUrl, fetchVia } = await import('../../agent-glue/claude/compact-hook.mjs');
+  const flag = `${ENV.HOME || ENV.USERPROFILE}/.jevgate/cascade-callers.json`;
+  const calls = [];
+  let daemonUp = true;
+  const host = {
+    fs: { async read(p) { if (p === flag) return '{"compact":"http://127.0.0.1:8793","compact-mode":"laya-only"}'; throw new Error('ENOENT'); } },
+    http: { async fetch(url, init) {
+      calls.push({ url, mode: init?.headers?.['x-jev-mode'] });
+      if (url.startsWith('http://127.0.0.1:8793')) {
+        if (!daemonUp) throw new TypeError('fetch failed');
+        return { status: 503, ok: false, text: '{"error":{"type":"LAYA_ABSTAIN"}}' };
+      }
+      return { status: 200, ok: true, text: '{}' };
+    } },
+  };
+  const direct = 'https://opencode.ai/zen/v1/systemone';
+  const init = { method: 'POST', headers: { Authorization: 'Bearer k' }, body: '{}' };
+
+  assert.equal(await readCascadeUrl(host), 'http://127.0.0.1:8793');
+  const abstain = await fetchVia(host, direct, init);
+  assert.equal(abstain.status, 503);
+  assert.equal(calls.length, 1, 'daemon abstention must not fall through to the cloud');
+  assert.equal(calls[0].mode, 'laya-only');
+
+  daemonUp = false;
+  const down = await fetchVia(host, direct, init);
+  assert.equal(down.status, 503);
+  assert.equal(calls.length, 2, 'daemon down must not fall through to the cloud');
+  assert.equal(calls.every((c) => c.url.startsWith('http://127.0.0.1:8793')), true);
+  await readCascadeUrl({ fs: { async read() { throw new Error('ENOENT'); } } });
+});
+
+test('compact-hook: strict laya-only compaction does not require a provider key', async () => {
+  const saved = { ...ENV };
+  const prevOpenRouter = process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
+  Object.assign(ENV, {
+    JEV_COMPACT_PIN_LAST: '1',
+    JEV_COMPACT_MIN_REDUCTION: '1000',
+    JEV_COMPACT_MIN_REDUCTION_PCT: '0',
+    JEV_COMPACT_BACKEND: 'openai',
+  });
+  refreshConfig();
+  const flag = `${ENV.HOME || ENV.USERPROFILE}/.jevgate/cascade-callers.json`;
+  const ledger = `${ENV.HOME || ENV.USERPROFILE}/.openclaw/state/jev-compact.log`;
+  const calls = [];
+  const written = {};
+  try {
+    const host = {
+      fs: {
+        async read(p) {
+          if (p === flag) return '{"compact":"http://127.0.0.1:8793","compact-mode":"laya-only"}';
+          if (p === ledger) return '';
+          throw new Error(`ENOENT ${p}`);
+        },
+        async write(p, v) { written[p] = v; },
+        async exists() { return false; },
+      },
+      http: { async fetch(url, init) {
+        calls.push({ url, mode: init?.headers?.['x-jev-mode'] });
+        return { status: 200, ok: true, text: JSON.stringify({ answers: { q: { choice: 'drop' } } }) };
+      } },
+      clock: { async now() { return 0; } },
+      ui: { log() {} },
+    };
+    const on = {};
+    register((name, fn) => { on[name] = fn; }, {});
+    const bulk = 'x'.repeat(9000);
+    const messages = [
+      { role: 'user', content: 'find the slow step' },
+      { role: 'assistant', content: 'checking', tool_calls: [{ id: 'a', function: { name: 'Bash', arguments: bulk } }] },
+      { role: 'tool', tool_call_id: 'a', content: bulk },
+      { role: 'user', content: 'and now?' },
+    ];
+    const out = await on['session.compact'](host, { messages, trigger: 'auto' }, () => 'builtin');
+    assert.notEqual(out, 'builtin', 'strict mode without a cloud key was stopped before calling the daemon');
+    assert.equal(calls.length > 0, true, 'strict mode never called the cascade daemon');
+    assert.equal(calls[0].url, 'http://127.0.0.1:8793/v1/systemone');
+    assert.equal(calls[0].mode, 'laya-only');
+  } finally {
+    for (const k of Object.keys(ENV)) delete ENV[k];
+    Object.assign(ENV, saved);
+    if (prevOpenRouter === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = prevOpenRouter;
+    refreshConfig();
+    const { readCascadeUrl } = await import('../../agent-glue/claude/compact-hook.mjs');
+    await readCascadeUrl({ fs: { async read() { throw new Error('ENOENT'); } } });
+  }
+});
+
 test('compact-hook: a Jev pass that leaves too much makes the next compaction the built-in, then Jev resumes', async () => {
   const saved = { ...ENV };
   Object.assign(ENV, { JEV_COMPACT_PIN_LAST: '1', JEV_COMPACT_MIN_REDUCTION: '1000', JEV_COMPACT_RESET_ABOVE: '60000', JEV_COMPACT_AT_PERCENT: '101', JEV_COMPACT_AT_TOKENS: '0', JEV_COMPACT_BACKEND: 'openai' });

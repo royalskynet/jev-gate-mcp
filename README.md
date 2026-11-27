@@ -42,7 +42,8 @@ LAYA 是跑在你電腦上的小模型，JEV 是雲端判斷服務。
 | LAYA 出錯、答案格式不對，或沒有匹配分類 | JEV 接手 |
 
 **LAYA 目前只適合有限範圍的試行。**它仍可能把主題分錯。
-裁剪日誌和壓縮對話也繼續用 JEV，不交給 LAYA。
+裁剪日誌和壓縮對話預設繼續用 JEV；若明確選 `JEV_PROVIDER=laya-only` 或 compact 的
+`compact-mode: laya-only`，不能由 LAYA 回答的判斷不會改用雲端，壓縮則退回 Claude Code 內建摘要。
 
 只有簡單分類、而且 LAYA 成功處理時，可以省下一次雲端呼叫。
 混合任務仍可能需要 JEV；整體能省多少，還沒有實測結論。
@@ -78,7 +79,6 @@ LAYA 的設定和資料留存方式見[分工與設定詳解](docs/REFERENCE.zh-
 | 各工具支援哪些功能、怎麼設定 | [連接指南](docs/zh-TW/README.md) |
 | 模型分工、資料留存、進階設定 | [技術參考](docs/REFERENCE.zh-TW.md) |
 | MCP 接口與開發方式 | [Gateway 文件](gateway/README.md) |
-| 做過哪些測試、遇過哪些問題 | [開發日誌](docs/DEVLOG.md) |
 | 回報問題或查看進度 | [GitHub Issues](https://github.com/royalskynet/jev-gate-mcp/issues) |
 
 目前的本機模型品質限制，持續記錄在 [Issue #10](https://github.com/royalskynet/jev-gate-mcp/issues/10)。

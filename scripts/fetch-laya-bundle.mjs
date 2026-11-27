@@ -6,7 +6,7 @@
  * The bundle is not a single upstream repo: the int8 graph comes from one
  * Hugging Face mirror, `laya_config.json` from another, and the graph output
  * has to be renamed (`act_logits` -> `act_probs`) before `@receptron/laya`
- * can read it. That assembly is what this script pins — see docs/DEVLOG.md §24.
+ * can read it. That assembly is what this script pins.
  *
  * Usage:
  *   node scripts/fetch-laya-bundle.mjs                 # int8 (the default bundle)

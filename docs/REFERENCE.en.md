@@ -25,6 +25,11 @@ has [`docs/agent-glue.md`](agent-glue.md).
 With `JEV_PROVIDER=laya`, the **Decision Gateway** uses the existing local LAYA
 model only for approved, short, fixed-choice classifications. Jev handles other
 judgments. This setting does not move the separate prune/compaction hooks to LAYA.
+To disable the cloud fallback entirely, set `JEV_PROVIDER=laya-only`: requests
+Laya cannot answer fail instead of reaching Jev, and no cloud credential is required.
+When the process starts with that environment value, it is a deployment safety
+boundary: explicitly passing `provider: 'laya'` to `buildGateway` does not
+re-enable the hybrid cloud fallback.
 
 | Request | Provider |
 |---|---|
@@ -70,8 +75,7 @@ Policies remain advisory/shadow as configured. After updating this checkout,
 restart its MCP process; separately installed plugin caches need their own
 update. Live cloud behavior and post-restart traffic were not verified in this
 change. See [Issue #10](https://github.com/royalskynet/jev-gate-mcp/issues/10) for
-the remaining semantic-quality problem and [DEV LOG §25](DEVLOG.md) for
-the exact offline command and evidence.
+the remaining semantic-quality problem.
 
 ## Prune plugin
 
@@ -675,9 +679,7 @@ tested but deliberately not wired — see `docs/NEXT.md` for why.
 - [Architecture decisions](adr/0001-governed-two-tool-mcp-boundary.md)
 - [What is next](NEXT.md)
 - [繁中接線與 Codex 快速指南](zh-TW/README.md) — wiring the gateway into Claude Code / Codex
-- [Handoff 2026-09-21（繁中）](HANDOFF-20260921.md) — **start here if you have no prior context**
 - [Jev 十步操作手冊（繁中）](zh-TW/PLAYBOOK.md) — the ten-step playbook mapped onto this repo, gaps included
-- [Agent glue（繁中）](agent-glue.md) — install / disable / observability per host, and the four effectiveness metrics
+- [Agent glue（繁中）](agent-glue.md) — install / disable / observability per host, and the five effectiveness metrics
 - [Agent skill](../skills/jev-agent/SKILL.md) — the operating rules both hosts share
 - [TypeSafe skill](../skills/typesafe-ai/SKILL.md) — vendored upstream skill (MIT) + how its patterns map onto this repo
-- [Dev log](DEVLOG.md) — how this got built, and the traps that cost time

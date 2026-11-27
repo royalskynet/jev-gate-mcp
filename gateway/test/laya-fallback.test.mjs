@@ -3,6 +3,7 @@
 // on the OpenRouter endpoint, fix 9708 class); anything else to OpenRouter.
 import test from 'node:test';
 import assert from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -72,4 +73,67 @@ test('laya without a key fails with the credential error, not a TypeError', asyn
   } finally {
     delete process.env.JEV_LAYA_MODEL_DIR;
   }
+});
+
+test('provider laya-only never constructs or calls the cloud fallback', async () => {
+  const keyFile = tmpKey('OPENROUTER_API_KEY.txt', 'sk-or-test');
+  let fetchCalled = false;
+  const realFetch = global.fetch;
+  global.fetch = async () => { fetchCalled = true; throw new Error('cloud must not be called'); };
+  process.env.JEV_LAYA_MODEL_DIR = path.join(os.tmpdir(), 'jev-laya-does-not-exist-strict');
+  try {
+    const { gateway } = buildGateway({ provider: 'laya-only', model: 'typesafe/jev-1.13', apiKeyFile: keyFile });
+    const err = await gateway.evaluate({ state: 'x', questions: { q: { type: 'noul', instructions: 'ok?', criteria: { true: 'yes', false: 'no' } } } })
+      .then((r) => r, (e) => e);
+    assert.equal(fetchCalled, false, 'strict mode called the cloud fallback');
+    const text = JSON.stringify(err, Object.getOwnPropertyNames(err ?? {}));
+    assert.match(text, /credential|auth|laya/i);
+  } finally {
+    global.fetch = realFetch;
+    delete process.env.JEV_LAYA_MODEL_DIR;
+  }
+});
+
+// Strict mode is process-start deployment state, so this needs a child process:
+// DEFAULTS are fixed when config.js is first imported.
+test('env laya-only stays strict when config explicitly asks for hybrid laya', () => {
+  const script = `
+    const { buildGateway } = await import('./gateway/src/config.js');
+    let cloudCalls = 0;
+    const local = async () => { throw new Error('local unavailable'); };
+    const cloud = async () => {
+      cloudCalls += 1;
+      return { model: 'cloud', answers: { q: { noul: 1 } }, usage: { input_tokens: 0, output_tokens: 0 } };
+    };
+    const { gateway } = buildGateway({
+      provider: 'laya',
+      layaOnly: false,
+      telemetry: false,
+      apiKeyFile: '/no/key',
+      layaAdapter: local,
+      jevAdapter: cloud,
+    });
+    const err = await gateway.evaluate({
+      state: 'x',
+      questions: { q: { type: 'noul', instructions: 'ok?', criteria: { true: 'yes', false: 'no' } } },
+    }).then(() => null, (e) => e);
+    if (!err || cloudCalls !== 0) {
+      console.error(JSON.stringify({ err: String(err), cloudCalls }));
+      process.exit(1);
+    }
+    console.log('strict-env-wins');
+  `;
+  const out = execFileSync(process.execPath, ['--input-type=module', '--eval', script], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      JEV_PROVIDER: 'laya-only',
+      JEV_ROUTING_LOG: '/dev/null',
+      JEV_TEACHER_CORPUS: '/dev/null',
+      JEV_USAGE_LOG: 'off',
+      JEV_HANDOFF_LOG: 'off',
+    },
+  });
+  assert.match(out, /strict-env-wins/);
 });
